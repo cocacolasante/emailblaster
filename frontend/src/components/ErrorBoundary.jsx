@@ -26,36 +26,23 @@ export default class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div data-testid="error-boundary" style={containerStyle}>
-          <h2 style={{ margin: 0 }}>Something went wrong</h2>
-          <p style={{ color: '#666' }}>
-            {this.state.error?.message || 'An unexpected error occurred.'}
-          </p>
-          <button type="button" onClick={this.handleReset} style={btnStyle}>
-            Try again
-          </button>
+        <div data-testid="error-boundary" className="min-h-96 flex flex-col items-center justify-center gap-4 p-8">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6 max-w-lg text-center">
+            <h2 className="text-lg font-semibold text-red-800 m-0">Something went wrong</h2>
+            <p className="text-sm text-red-600 font-mono mt-2">
+              {this.state.error?.message || 'An unexpected error occurred.'}
+            </p>
+            <button
+              type="button"
+              onClick={this.handleReset}
+              className="mt-4 inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors cursor-pointer"
+            >
+              Try again
+            </button>
+          </div>
         </div>
       );
     }
     return this.props.children;
   }
 }
-
-const containerStyle = {
-  padding: 32,
-  margin: 24,
-  border: '1px solid #fde68a',
-  background: '#fffbeb',
-  borderRadius: 8,
-  color: '#7a5a00',
-};
-
-const btnStyle = {
-  marginTop: 12,
-  padding: '8px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 14,
-};

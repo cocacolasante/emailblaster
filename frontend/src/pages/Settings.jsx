@@ -14,26 +14,20 @@ const STATUS_LABEL = {
   failed: 'Failed',
 };
 
-const STATUS_COLOR = {
-  untested: { bg: '#fff3cd', fg: '#7a5a00' },
-  ok: { bg: '#e6f7ed', fg: '#1b5e20' },
-  failed: { bg: '#fdecea', fg: '#b71c1c' },
+const STATUS_CLASSES = {
+  untested: 'bg-yellow-100 text-yellow-700',
+  ok: 'bg-emerald-100 text-emerald-700',
+  failed: 'bg-red-100 text-red-600',
 };
 
 
 function StatusBadge({ status }) {
-  const colors = STATUS_COLOR[status] || STATUS_COLOR.untested;
+  const cls = STATUS_CLASSES[status] || STATUS_CLASSES.untested;
   return (
     <span
       data-testid="status-badge"
       data-status={status}
-      style={{
-        padding: '2px 8px',
-        borderRadius: 12,
-        fontSize: 12,
-        background: colors.bg,
-        color: colors.fg,
-      }}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${cls}`}
     >
       {STATUS_LABEL[status] || status}
     </span>
@@ -72,62 +66,75 @@ function ConnectedInboxesTab() {
     queryClient.invalidateQueries({ queryKey: ['connected-accounts'] });
   }
 
-  if (isLoading) return <p>Loading inboxes…</p>;
-  if (error) return <p style={{ color: '#b71c1c' }}>Failed to load inboxes: {String(error.message)}</p>;
+  if (isLoading) return <p className="text-sm text-slate-500">Loading inboxes…</p>;
+  if (error) return <p className="text-sm text-red-600">Failed to load inboxes: {String(error.message)}</p>;
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>Connected inboxes</h2>
-        <button onClick={openCreate} style={primaryBtn}>+ Connect inbox</button>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-semibold text-slate-900 m-0">Connected inboxes</h2>
+        <button
+          onClick={openCreate}
+          className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          + Connect inbox
+        </button>
       </div>
 
       {accounts.length === 0 ? (
-        <div data-testid="empty-state" style={{ padding: 32, textAlign: 'center', background: '#f9fafb', borderRadius: 8 }}>
-          <p>No inboxes connected yet.</p>
-          <p style={{ fontSize: 13, color: '#666' }}>
+        <div data-testid="empty-state" className="text-center py-16 text-slate-500">
+          <div className="w-14 h-14 mx-auto mb-4 bg-slate-100 rounded-full flex items-center justify-center">
+            <svg className="w-7 h-7 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <p className="font-medium text-slate-700 mb-1">No inboxes connected yet.</p>
+          <p className="text-sm text-slate-400">
             Connect an inbox to enable reply tracking on your campaigns.
           </p>
         </div>
       ) : (
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div className="space-y-3">
           {accounts.map((acc) => (
-            <div key={acc.id} data-testid="account-card" style={cardStyle}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <strong>{acc.label}</strong>
+            <div key={acc.id} data-testid="account-card" className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex items-center gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-semibold text-slate-900 text-sm">{acc.label}</span>
                   <StatusBadge status={acc.last_test_status} />
                 </div>
-                <div style={{ fontSize: 13, color: '#666' }}>
+                <div className="text-xs text-slate-500">
                   {acc.email_address} · {acc.imap_host}:{acc.imap_port}
                 </div>
                 {acc.last_test_status === 'failed' && acc.last_test_error && (
-                  <div style={{ fontSize: 12, color: '#b71c1c', marginTop: 4 }}>
-                    {acc.last_test_error}
-                  </div>
+                  <div className="text-xs text-red-600 mt-1">{acc.last_test_error}</div>
                 )}
                 {acc.last_polled_at && (
-                  <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+                  <div className="text-xs text-slate-400 mt-1">
                     Last polled: {new Date(acc.last_polled_at).toLocaleString()}
                   </div>
                 )}
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div className="flex gap-2">
                 <button
                   onClick={() => testMutation.mutate(acc.id)}
                   disabled={testMutation.isPending}
-                  style={btnStyle}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors disabled:opacity-50"
                 >
                   Test
                 </button>
-                <button onClick={() => openEdit(acc)} style={btnStyle}>Edit</button>
+                <button
+                  onClick={() => openEdit(acc)}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors"
+                >
+                  Edit
+                </button>
                 <button
                   onClick={() => {
                     if (confirm(`Delete inbox "${acc.label}"?`)) {
                       deleteMutation.mutate(acc.id);
                     }
                   }}
-                  style={{ ...btnStyle, color: '#b71c1c' }}
+                  className="px-3 py-1.5 bg-white hover:bg-red-50 text-red-600 text-xs font-medium border border-red-200 rounded-md transition-colors"
                 >
                   Delete
                 </button>
@@ -155,8 +162,8 @@ function ApiStatusTab() {
     queryFn: getApiStatus,
   });
 
-  if (isLoading) return <p>Loading API status…</p>;
-  if (error) return <p style={{ color: '#b71c1c' }}>Failed to load API status</p>;
+  if (isLoading) return <p className="text-sm text-slate-500">Loading API status…</p>;
+  if (error) return <p className="text-sm text-red-600">Failed to load API status</p>;
 
   const rows = [
     { key: 'anthropic', label: 'Anthropic API', required: true },
@@ -167,24 +174,35 @@ function ApiStatusTab() {
 
   return (
     <div>
-      <h2 style={{ marginTop: 0 }}>API status</h2>
-      <div style={{ display: 'grid', gap: 8 }}>
+      <h2 className="text-lg font-semibold text-slate-900 mb-4">API status</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {rows.map((r) => {
           const configured = data?.[r.key];
           return (
-            <div key={r.key} data-testid={`api-row-${r.key}`} style={cardStyle}>
-              <div style={{ flex: 1 }}>
-                <strong>{r.label}</strong>
-                {!r.required && (
-                  <span style={{ marginLeft: 8, fontSize: 12, color: '#888' }}>
-                    optional — app works without this
-                  </span>
+            <div key={r.key} data-testid={`api-row-${r.key}`} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex items-center gap-4">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${configured ? 'bg-emerald-50' : 'bg-red-50'}`}>
+                {configured ? (
+                  <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
                 )}
               </div>
-              <StatusBadge status={configured ? 'ok' : 'untested'} />
-              <span style={{ marginLeft: 8, fontSize: 13 }}>
-                {configured ? 'Configured' : 'Not configured'}
-              </span>
+              <div className="flex-1">
+                <div className="font-semibold text-slate-900 text-sm">{r.label}</div>
+                {!r.required && (
+                  <div className="text-xs text-slate-400">optional — app works without this</div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <StatusBadge status={configured ? 'ok' : 'untested'} />
+                <span className="text-xs text-slate-600">
+                  {configured ? 'Configured' : 'Not configured'}
+                </span>
+              </div>
             </div>
           );
         })}
@@ -198,14 +216,18 @@ export default function Settings() {
   const [tab, setTab] = useState('inboxes');
 
   return (
-    <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
-      <h1>Settings</h1>
-      <div role="tablist" style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
+    <div className="p-8 max-w-[900px] mx-auto">
+      <h1 className="text-2xl font-bold text-slate-900 mb-6">Settings</h1>
+      <div role="tablist" className="flex border-b border-slate-200 mb-6">
         <button
           role="tab"
           aria-selected={tab === 'inboxes'}
           onClick={() => setTab('inboxes')}
-          style={tabBtn(tab === 'inboxes')}
+          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
+            tab === 'inboxes'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
         >
           Connected inboxes
         </button>
@@ -213,7 +235,11 @@ export default function Settings() {
           role="tab"
           aria-selected={tab === 'api'}
           onClick={() => setTab('api')}
-          style={tabBtn(tab === 'api')}
+          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
+            tab === 'api'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
         >
           API status
         </button>
@@ -222,44 +248,4 @@ export default function Settings() {
       {tab === 'api' && <ApiStatusTab />}
     </div>
   );
-}
-
-const btnStyle = {
-  padding: '6px 12px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const primaryBtn = {
-  ...btnStyle,
-  background: '#2563eb',
-  color: 'white',
-  border: '1px solid #2563eb',
-};
-
-const cardStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
-  padding: 16,
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  background: 'white',
-};
-
-function tabBtn(active) {
-  return {
-    padding: '10px 18px',
-    border: 'none',
-    background: 'none',
-    cursor: 'pointer',
-    fontSize: 14,
-    fontWeight: active ? 600 : 400,
-    color: active ? '#2563eb' : '#666',
-    borderBottom: active ? '2px solid #2563eb' : '2px solid transparent',
-    marginBottom: -1,
-  };
 }

@@ -49,10 +49,10 @@ export default function ScheduleConfig({ value, onChange }) {
   }
 
   return (
-    <div data-testid="schedule-config" style={{ display: 'grid', gap: 16 }}>
+    <div data-testid="schedule-config" className="grid gap-4">
       <div>
-        <label style={labelStyle}>Days</label>
-        <div role="group" aria-label="Days of week" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <label className="block text-sm font-medium text-slate-700 mb-2">Days</label>
+        <div role="group" aria-label="Days of week" className="flex gap-2 flex-wrap">
           {DAYS.map((d) => {
             const active = value.schedule_days.includes(d.value);
             return (
@@ -62,7 +62,11 @@ export default function ScheduleConfig({ value, onChange }) {
                 aria-pressed={active}
                 aria-label={d.label}
                 onClick={() => toggleDay(d.value)}
-                style={active ? activePillStyle : pillStyle}
+                className={`px-3 py-1.5 text-xs rounded-full border font-medium transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'border-slate-300 text-slate-600 hover:border-blue-400 bg-white'
+                }`}
               >
                 {d.label}
               </button>
@@ -71,36 +75,36 @@ export default function ScheduleConfig({ value, onChange }) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Start time</label>
+      <div className="flex gap-4">
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-slate-700 mb-1">Start time</label>
           <input
             type="time"
             aria-label="Start time"
             value={value.schedule_time_start.slice(0, 5)}
             onChange={(e) => onChange({ ...value, schedule_time_start: e.target.value })}
-            style={inputStyle}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
           />
         </div>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>End time</label>
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-slate-700 mb-1">End time</label>
           <input
             type="time"
             aria-label="End time"
             value={value.schedule_time_end.slice(0, 5)}
             onChange={(e) => onChange({ ...value, schedule_time_end: e.target.value })}
-            style={inputStyle}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
           />
         </div>
       </div>
 
       <div>
-        <label style={labelStyle}>Timezone</label>
+        <label className="block text-sm font-medium text-slate-700 mb-1">Timezone</label>
         <select
           aria-label="Timezone"
           value={value.schedule_timezone}
           onChange={(e) => onChange({ ...value, schedule_timezone: e.target.value })}
-          style={inputStyle}
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
         >
           {TIMEZONES.map((tz) => (
             <option key={tz} value={tz}>{tz}</option>
@@ -108,9 +112,9 @@ export default function ScheduleConfig({ value, onChange }) {
         </select>
       </div>
 
-      <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Max per hour</label>
+      <div className="flex gap-4">
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-slate-700 mb-1">Max per hour</label>
           <input
             type="number"
             min="1"
@@ -123,11 +127,11 @@ export default function ScheduleConfig({ value, onChange }) {
                 max_per_hour: e.target.value === '' ? null : Number(e.target.value),
               })
             }
-            style={inputStyle}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
           />
         </div>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Max per day</label>
+        <div className="flex-1">
+          <label className="block text-sm font-medium text-slate-700 mb-1">Max per day</label>
           <input
             type="number"
             min="1"
@@ -140,27 +144,27 @@ export default function ScheduleConfig({ value, onChange }) {
                 max_per_day: e.target.value === '' ? null : Number(e.target.value),
               })
             }
-            style={inputStyle}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
           />
         </div>
       </div>
 
       <div>
-        <label style={labelStyle}>Minimum delay between sends</label>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <label className="block text-sm font-medium text-slate-700 mb-1">Minimum delay between sends</label>
+        <div className="flex gap-2">
           <input
             type="number"
             min="0"
             aria-label="Min delay"
             value={displayDelay}
             onChange={(e) => setDelayValue(e.target.value)}
-            style={{ ...inputStyle, flex: 1 }}
+            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
           />
           <select
             aria-label="Min delay unit"
             value={delayInMinutes ? 'minutes' : 'seconds'}
             onChange={(e) => setDelayUnit(e.target.value)}
-            style={{ ...inputStyle, width: 120 }}
+            className="w-28 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
           >
             <option value="seconds">seconds</option>
             <option value="minutes">minutes</option>
@@ -170,37 +174,3 @@ export default function ScheduleConfig({ value, onChange }) {
     </div>
   );
 }
-
-const labelStyle = {
-  display: 'block',
-  marginBottom: 6,
-  fontSize: 13,
-  fontWeight: 500,
-  color: '#333',
-};
-
-const inputStyle = {
-  display: 'block',
-  width: '100%',
-  padding: '8px 10px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  fontSize: 14,
-  boxSizing: 'border-box',
-};
-
-const pillStyle = {
-  padding: '6px 12px',
-  border: '1px solid #ccc',
-  borderRadius: 999,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const activePillStyle = {
-  ...pillStyle,
-  background: '#2563eb',
-  color: 'white',
-  border: '1px solid #2563eb',
-};

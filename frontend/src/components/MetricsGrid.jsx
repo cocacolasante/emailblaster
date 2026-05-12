@@ -7,40 +7,26 @@ export default function MetricsGrid({ metrics }) {
   return (
     <div
       data-testid="metrics-grid"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-        gap: 12,
-        marginBottom: 20,
-      }}
+      className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4"
     >
       {metrics.map((m) => (
         <div
           key={m.label}
           data-testid={`metric-${m.label.toLowerCase().replace(/\s+/g, '-')}`}
           title={m.tooltip || ''}
-          style={{
-            padding: 16,
-            border: '1px solid #e5e7eb',
-            borderRadius: 8,
-            background: 'white',
-          }}
+          className="bg-white rounded-xl border border-slate-200 shadow-sm p-4"
         >
-          <div style={{ fontSize: 12, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div className="text-xs text-slate-500 uppercase tracking-wide">
             {m.label}
           </div>
           <div
-            style={{
-              fontSize: 24,
-              fontWeight: 600,
-              marginTop: 4,
-              color: m.accent || '#111',
-            }}
+            className="text-2xl font-bold text-slate-900 mt-1"
+            style={m.accent ? { color: m.accent } : undefined}
           >
             {m.value}
           </div>
           {m.tooltip && (
-            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>{m.tooltip}</div>
+            <div className="text-xs text-slate-400 mt-1">{m.tooltip}</div>
           )}
         </div>
       ))}

@@ -7,31 +7,24 @@ import LeadTable from '../components/LeadTable.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { AnalyticsContent } from './Analytics.jsx';
 
-const STATUS_COLORS = {
-  draft:      { bg: '#e5e7eb', fg: '#374151' },
-  previewing: { bg: '#fff3cd', fg: '#7a5a00' },
-  approved:   { bg: '#dbeafe', fg: '#1e40af' },
-  running:    { bg: '#dcfce7', fg: '#166534' },
-  paused:     { bg: '#fef3c7', fg: '#92400e' },
-  complete:   { bg: '#e0e7ff', fg: '#3730a3' },
+const STATUS_CLASSES = {
+  draft:      'bg-slate-100 text-slate-600',
+  previewing: 'bg-yellow-100 text-yellow-700',
+  approved:   'bg-blue-100 text-blue-700',
+  running:    'bg-emerald-100 text-emerald-700',
+  paused:     'bg-amber-100 text-amber-700',
+  complete:   'bg-indigo-100 text-indigo-700',
+  failed:     'bg-red-100 text-red-600',
 };
 
 
 function StatusBadge({ status }) {
-  const c = STATUS_COLORS[status] || STATUS_COLORS.draft;
+  const cls = STATUS_CLASSES[status] || STATUS_CLASSES.draft;
   return (
     <span
       data-testid="status-badge"
       data-status={status}
-      style={{
-        padding: '4px 12px',
-        borderRadius: 12,
-        fontSize: 13,
-        fontWeight: 500,
-        background: c.bg,
-        color: c.fg,
-        textTransform: 'capitalize',
-      }}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${cls}`}
     >
       {status}
     </span>
@@ -51,95 +44,105 @@ function OverviewTab({ campaign, onPauseToggle, pauseLoading }) {
   const progress = total > 0 ? Math.min(100, (sent / total) * 100) : 0;
 
   return (
-    <div data-testid="overview-tab">
-      <section style={cardStyle}>
-        <h2 style={sectionH2}>Status</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <StatusBadge status={campaign.status} />
-          {campaign.status === 'running' && (
-            <button
-              type="button"
-              onClick={onPauseToggle}
-              disabled={pauseLoading}
-              style={btnStyle}
-              data-testid="pause-resume-button"
-            >
-              Pause
-            </button>
-          )}
-          {campaign.status === 'paused' && (
-            <button
-              type="button"
-              onClick={onPauseToggle}
-              disabled={pauseLoading}
-              style={btnStyle}
-              data-testid="pause-resume-button"
-            >
-              Resume
-            </button>
-          )}
+    <div data-testid="overview-tab" className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Left column */}
+      <div className="space-y-4">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 className="text-base font-semibold text-slate-900 mb-4">Status</h2>
+          <div className="flex items-center gap-3 mb-4">
+            <StatusBadge status={campaign.status} />
+            {campaign.status === 'running' && (
+              <button
+                type="button"
+                onClick={onPauseToggle}
+                disabled={pauseLoading}
+                className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50"
+                data-testid="pause-resume-button"
+              >
+                Pause
+              </button>
+            )}
+            {campaign.status === 'paused' && (
+              <button
+                type="button"
+                onClick={onPauseToggle}
+                disabled={pauseLoading}
+                className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50"
+                data-testid="pause-resume-button"
+              >
+                Resume
+              </button>
+            )}
+          </div>
+          <div className="text-sm text-slate-500 mb-2">{sent} of {total} sent</div>
+          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div className="h-full bg-blue-600 rounded-full transition-all" style={{ width: `${progress}%` }} />
+          </div>
         </div>
-        <div style={{ marginTop: 16, fontSize: 13, color: '#666' }}>
-          {sent} of {total} sent
-        </div>
-        <div style={progressTrackStyle}>
-          <div style={{ ...progressFillStyle, width: `${progress}%` }} />
-        </div>
-      </section>
 
-      <section style={cardStyle}>
-        <h2 style={sectionH2}>Quick stats</h2>
-        <div style={{ display: 'flex', gap: 32 }}>
-          <div>
-            <div style={statLabel}>Open rate</div>
-            <div style={statValue}>{pct(campaign.stats?.open_rate)}</div>
-          </div>
-          <div>
-            <div style={statLabel}>Click rate</div>
-            <div style={statValue}>{pct(campaign.stats?.click_rate)}</div>
-          </div>
-          <div>
-            <div style={statLabel}>Reply rate</div>
-            <div style={statValue} data-testid="reply-rate">
-              {campaign.connected_account_configured ? pct(campaign.stats?.reply_rate) : '--'}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 className="text-base font-semibold text-slate-900 mb-4">Quick stats</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Open rate</div>
+              <div className="text-2xl font-bold text-slate-900">{pct(campaign.stats?.open_rate)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Click rate</div>
+              <div className="text-2xl font-bold text-slate-900">{pct(campaign.stats?.click_rate)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Reply rate</div>
+              <div className="text-2xl font-bold text-slate-900" data-testid="reply-rate">
+                {campaign.connected_account_configured ? pct(campaign.stats?.reply_rate) : '--'}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Bounce rate</div>
+              <div className="text-2xl font-bold text-slate-900">{pct(campaign.stats?.bounce_rate)}</div>
             </div>
           </div>
-          <div>
-            <div style={statLabel}>Bounce rate</div>
-            <div style={statValue}>{pct(campaign.stats?.bounce_rate)}</div>
-          </div>
         </div>
-      </section>
+      </div>
 
-      <section style={cardStyle}>
-        <h2 style={sectionH2}>Reply tracking</h2>
-        {campaign.connected_account_configured && campaign.connected_account ? (
-          <p data-testid="reply-tracking-info" style={{ margin: 0 }}>
-            <strong>{campaign.connected_account.label}</strong>{' '}
-            ({campaign.connected_account.email_address})
-          </p>
-        ) : (
-          <p data-testid="reply-tracking-info" style={{ margin: 0, color: '#666' }}>
-            Reply tracking not configured for this campaign.
-          </p>
-        )}
-      </section>
+      {/* Right column */}
+      <div className="space-y-4">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 className="text-base font-semibold text-slate-900 mb-4">Reply tracking</h2>
+          {campaign.connected_account_configured && campaign.connected_account ? (
+            <p data-testid="reply-tracking-info" className="m-0 text-sm text-slate-700">
+              <strong className="font-medium">{campaign.connected_account.label}</strong>{' '}
+              <span className="text-slate-500">({campaign.connected_account.email_address})</span>
+            </p>
+          ) : (
+            <p data-testid="reply-tracking-info" className="m-0 text-sm text-slate-500">
+              Reply tracking not configured for this campaign.
+            </p>
+          )}
+        </div>
 
-      <section style={cardStyle}>
-        <h2 style={sectionH2}>Campaign config</h2>
-        <dl style={dlStyle}>
-          <dt>Goal</dt><dd>{campaign.goal}</dd>
-          <dt>Tone</dt><dd>{campaign.tone}</dd>
-          <dt>Sender</dt><dd>{campaign.sender_name} &lt;{campaign.sender_email}&gt;</dd>
-          <dt>Research mode</dt><dd>{campaign.research_mode}</dd>
-          <dt>Sample count</dt><dd>{campaign.sample_count}</dd>
-          <dt>Schedule</dt>
-          <dd>
-            {campaign.schedule_time_start?.slice(0, 5)} – {campaign.schedule_time_end?.slice(0, 5)}{' '}
-            ({campaign.schedule_timezone})
-          </dd>
-        </dl>
-      </section>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 className="text-base font-semibold text-slate-900 mb-4">Campaign config</h2>
+          <dl className="space-y-2">
+            {[
+              { label: 'Goal', value: campaign.goal },
+              { label: 'Tone', value: campaign.tone },
+              { label: 'Sender', value: `${campaign.sender_name} <${campaign.sender_email}>` },
+              { label: 'Research mode', value: campaign.research_mode },
+              { label: 'Sample count', value: campaign.sample_count },
+              {
+                label: 'Schedule',
+                value: `${campaign.schedule_time_start?.slice(0, 5)} – ${campaign.schedule_time_end?.slice(0, 5)} (${campaign.schedule_timezone})`,
+              },
+            ].map(({ label, value }) => (
+              <div key={label} className="flex gap-4">
+                <dt className="text-sm text-slate-500 w-32 flex-shrink-0">{label}</dt>
+                <dd className="text-sm text-slate-900 font-medium m-0">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </div>
     </div>
   );
 }
@@ -179,12 +182,16 @@ export default function CampaignDetail() {
     else if (campaign?.status === 'paused') resumeMutation.mutate();
   }
 
-  if (isLoading) return <div style={{ padding: 24 }}>Loading campaign…</div>;
+  if (isLoading) return <div className="p-8 text-sm text-slate-500">Loading campaign…</div>;
   if (error || !campaign) {
     return (
-      <div style={{ padding: 24 }}>
-        <p style={{ color: '#b71c1c' }}>Failed to load campaign.</p>
-        <button type="button" onClick={() => navigate('/')} style={btnStyle}>
+      <div className="p-8">
+        <p className="text-red-600 text-sm mb-4">Failed to load campaign.</p>
+        <button
+          type="button"
+          onClick={() => navigate('/')}
+          className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
+        >
           Back to campaigns
         </button>
       </div>
@@ -192,18 +199,22 @@ export default function CampaignDetail() {
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ marginBottom: 8 }}>
-        <button type="button" onClick={() => navigate('/')} style={linkBtn}>
+    <div className="p-8 max-w-[1100px] mx-auto">
+      <div className="mb-3">
+        <button
+          type="button"
+          onClick={() => navigate('/')}
+          className="text-sm text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+        >
           ← All campaigns
         </button>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
-        <h1 style={{ margin: 0 }} data-testid="campaign-name">{campaign.name}</h1>
+      <div className="flex justify-between items-center gap-3 mb-2">
+        <h1 className="text-2xl font-bold text-slate-900 m-0" data-testid="campaign-name">{campaign.name}</h1>
         <StatusBadge status={campaign.status} />
       </div>
 
-      <div role="tablist" style={tabsStyle}>
+      <div role="tablist" className="flex border-b border-slate-200 mb-6 mt-4">
         {[
           { id: 'overview', label: 'Overview' },
           { id: 'leads', label: 'Leads' },
@@ -214,7 +225,11 @@ export default function CampaignDetail() {
             role="tab"
             aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
-            style={tabBtnStyle(tab === t.id)}
+            className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
+              tab === t.id
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
             data-testid={`tab-${t.id}`}
           >
             {t.label}
@@ -245,87 +260,3 @@ export default function CampaignDetail() {
     </div>
   );
 }
-
-
-const cardStyle = {
-  background: 'white',
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  padding: 16,
-  marginBottom: 16,
-};
-
-const sectionH2 = {
-  marginTop: 0,
-  marginBottom: 12,
-  fontSize: 14,
-  textTransform: 'uppercase',
-  color: '#666',
-  letterSpacing: 0.5,
-};
-
-const tabsStyle = {
-  display: 'flex',
-  gap: 4,
-  borderBottom: '1px solid #e5e7eb',
-  marginTop: 16,
-  marginBottom: 20,
-};
-
-function tabBtnStyle(active) {
-  return {
-    padding: '10px 18px',
-    border: 'none',
-    background: 'none',
-    cursor: 'pointer',
-    fontSize: 14,
-    fontWeight: active ? 600 : 400,
-    color: active ? '#2563eb' : '#666',
-    borderBottom: active ? '2px solid #2563eb' : '2px solid transparent',
-    marginBottom: -1,
-  };
-}
-
-const btnStyle = {
-  padding: '6px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const linkBtn = {
-  border: 'none',
-  background: 'none',
-  color: '#2563eb',
-  cursor: 'pointer',
-  padding: 0,
-  fontSize: 13,
-};
-
-const progressTrackStyle = {
-  height: 8,
-  background: '#e5e7eb',
-  borderRadius: 999,
-  overflow: 'hidden',
-  marginTop: 4,
-};
-
-const progressFillStyle = {
-  height: '100%',
-  background: '#2563eb',
-  transition: 'width 0.3s',
-};
-
-const statLabel = { fontSize: 11, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5 };
-const statValue = { fontSize: 22, fontWeight: 600 };
-
-const dlStyle = {
-  display: 'grid',
-  gridTemplateColumns: '140px 1fr',
-  rowGap: 8,
-  columnGap: 16,
-  margin: 0,
-  fontSize: 14,
-};

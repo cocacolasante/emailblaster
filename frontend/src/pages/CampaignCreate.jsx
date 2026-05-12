@@ -31,25 +31,18 @@ const DEFAULT_FORM = {
 
 function StatusBadge({ status }) {
   if (!status) return null;
-  const colors = {
-    untested: { bg: '#fff3cd', fg: '#7a5a00' },
-    ok: { bg: '#e6f7ed', fg: '#1b5e20' },
-    failed: { bg: '#fdecea', fg: '#b71c1c' },
+  const classes = {
+    untested: 'bg-yellow-100 text-yellow-700',
+    ok: 'bg-emerald-100 text-emerald-700',
+    failed: 'bg-red-100 text-red-600',
   };
-  const c = colors[status] || colors.untested;
+  const labels = { untested: 'Untested', ok: 'Connected', failed: 'Failed' };
   return (
     <span
       data-testid="inbox-status"
-      style={{
-        padding: '2px 8px',
-        borderRadius: 12,
-        fontSize: 12,
-        background: c.bg,
-        color: c.fg,
-        marginLeft: 8,
-      }}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${classes[status] || classes.untested}`}
     >
-      {status === 'ok' ? 'Connected' : status === 'failed' ? 'Failed' : 'Untested'}
+      {labels[status] || status}
     </span>
   );
 }
@@ -71,119 +64,138 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, onConnect
         e.preventDefault();
         onSubmit();
       }}
-      style={{ display: 'grid', gap: 16 }}
+      className="space-y-6"
     >
-      <section>
-        <h2 style={sectionH2}>Campaign details</h2>
-        <label style={labelStyle}>
-          Name
-          <input
-            required
-            value={form.name}
-            onChange={(e) => update('name', e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-
-        <label style={labelStyle}>
-          Goal
-          <textarea
-            required
-            rows={3}
-            placeholder="What is the goal of this campaign? E.g. Book a demo, announce a product, invite to event"
-            value={form.goal}
-            onChange={(e) => update('goal', e.target.value)}
-            style={{ ...inputStyle, fontFamily: 'inherit' }}
-          />
-        </label>
-
-        <div style={{ display: 'flex', gap: 12 }}>
-          <label style={{ ...labelStyle, flex: 1 }}>
-            Tone
-            <select
-              value={form.tone}
-              onChange={(e) => update('tone', e.target.value)}
-              style={inputStyle}
-            >
-              {TONES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ ...labelStyle, flex: 1 }}>
-            Sample count
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h2 className="text-base font-semibold text-slate-900 mb-4">Campaign details</h2>
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="campaign-name" className="block text-sm font-medium text-slate-700 mb-1">Name</label>
             <input
-              type="number"
-              min="1"
+              id="campaign-name"
               required
-              value={form.sample_count}
-              onChange={(e) => update('sample_count', Number(e.target.value))}
-              style={inputStyle}
+              value={form.name}
+              onChange={(e) => update('name', e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
             />
-          </label>
-        </div>
+          </div>
 
-        <div style={{ display: 'flex', gap: 12 }}>
-          <label style={{ ...labelStyle, flex: 1 }}>
-            Sender name
-            <input
+          <div>
+            <label htmlFor="campaign-goal" className="block text-sm font-medium text-slate-700 mb-1">Goal</label>
+            <textarea
+              id="campaign-goal"
               required
-              value={form.sender_name}
-              onChange={(e) => update('sender_name', e.target.value)}
-              style={inputStyle}
+              rows={3}
+              placeholder="What is the goal of this campaign? E.g. Book a demo, announce a product, invite to event"
+              value={form.goal}
+              onChange={(e) => update('goal', e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-[inherit]"
             />
-          </label>
-          <label style={{ ...labelStyle, flex: 1 }}>
-            Sender email
-            <input
-              type="email"
-              required
-              value={form.sender_email}
-              onChange={(e) => update('sender_email', e.target.value)}
-              style={inputStyle}
-            />
-          </label>
-        </div>
+          </div>
 
-        <div style={{ marginTop: 8 }}>
-          <span style={labelStyle}>Research mode</span>
-          <div role="radiogroup" style={{ display: 'flex', gap: 8 }}>
-            {['fast', 'deep'].map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                role="radio"
-                aria-checked={form.research_mode === mode}
-                onClick={() => update('research_mode', mode)}
-                style={form.research_mode === mode ? activePillStyle : pillStyle}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="campaign-tone" className="block text-sm font-medium text-slate-700 mb-1">Tone</label>
+              <select
+                id="campaign-tone"
+                value={form.tone}
+                onChange={(e) => update('tone', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
               >
-                {mode === 'fast' ? 'Fast (web only, ~10s/lead)' : 'Deep (+Apollo, ~45s/lead)'}
-              </button>
-            ))}
+                {TONES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="campaign-sample-count" className="block text-sm font-medium text-slate-700 mb-1">Sample count</label>
+              <input
+                id="campaign-sample-count"
+                type="number"
+                min="1"
+                required
+                value={form.sample_count}
+                onChange={(e) => update('sample_count', Number(e.target.value))}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="campaign-sender-name" className="block text-sm font-medium text-slate-700 mb-1">Sender name</label>
+              <input
+                id="campaign-sender-name"
+                required
+                value={form.sender_name}
+                onChange={(e) => update('sender_name', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+            </div>
+            <div>
+              <label htmlFor="campaign-sender-email" className="block text-sm font-medium text-slate-700 mb-1">Sender email</label>
+              <input
+                id="campaign-sender-email"
+                type="email"
+                required
+                value={form.sender_email}
+                onChange={(e) => update('sender_email', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+            </div>
+          </div>
+
+          <div>
+            <span className="block text-sm font-medium text-slate-700 mb-2">Research mode</span>
+            <div role="radiogroup" className="flex gap-2">
+              {['fast', 'deep'].map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={form.research_mode === mode}
+                  onClick={() => update('research_mode', mode)}
+                  className={`px-4 py-2 rounded-full text-sm border font-medium transition-colors ${
+                    form.research_mode === mode
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'border-slate-300 text-slate-600 hover:border-blue-400 bg-white'
+                  }`}
+                >
+                  {mode === 'fast' ? 'Fast (web only, ~10s/lead)' : 'Deep (+Apollo, ~45s/lead)'}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-      </section>
+      </div>
 
-      <section>
-        <h2 style={sectionH2}>Reply tracking <span style={{ fontWeight: 400, color: '#888', fontSize: 14 }}>(optional)</span></h2>
-        <p style={{ color: '#555', fontSize: 13, marginTop: 0 }}>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h2 className="text-base font-semibold text-slate-900 mb-1">
+          Reply tracking{' '}
+          <span className="text-slate-400 font-normal text-sm">(optional)</span>
+        </h2>
+        <p className="text-sm text-slate-500 mb-4">
           Connect an inbox to automatically detect when leads reply to your emails.
         </p>
 
         {accounts.length === 0 ? (
-          <div data-testid="no-inbox-prompt" style={{ padding: 12, background: '#f5f5f5', borderRadius: 6 }}>
-            <p style={{ margin: 0, marginBottom: 8 }}>No inboxes connected yet.</p>
-            <button type="button" onClick={onConnectInbox} style={btnStyle}>
+          <div data-testid="no-inbox-prompt" className="p-4 bg-slate-50 border border-slate-200 rounded-lg">
+            <p className="text-sm text-slate-600 m-0 mb-3">No inboxes connected yet.</p>
+            <button
+              type="button"
+              onClick={onConnectInbox}
+              className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
+            >
               Connect an inbox
             </button>
           </div>
         ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="flex items-center gap-3">
             <select
               aria-label="Reply tracking inbox"
               value={form.connected_account_id}
               onChange={(e) => update('connected_account_id', e.target.value)}
-              style={{ ...inputStyle, flex: 1 }}
+              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
             >
               <option value="">No reply tracking</option>
               {accounts.map((a) => (
@@ -195,22 +207,22 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, onConnect
             {selectedAccount && <StatusBadge status={selectedAccount.last_test_status} />}
           </div>
         )}
-      </section>
+      </div>
 
-      <section>
-        <h2 style={sectionH2}>Schedule</h2>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h2 className="text-base font-semibold text-slate-900 mb-4">Schedule</h2>
         <ScheduleConfig value={form} onChange={(next) => setForm(next)} />
-      </section>
+      </div>
 
       {error && (
-        <div data-testid="step1-error" style={errorStyle}>{error}</div>
+        <div data-testid="step1-error" className="flex items-center gap-3 p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">{error}</div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div className="flex justify-end">
         <button
           type="submit"
           disabled={submitting}
-          style={primaryBtn}
+          className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="step1-submit"
         >
           {submitting ? 'Creating…' : 'Next: upload leads'}
@@ -246,23 +258,25 @@ function Step3({ campaignId, onComplete }) {
   const pct = total ? Math.min(100, Math.round((composed / total) * 100)) : 0;
 
   return (
-    <div data-testid="step3" style={{ textAlign: 'center', padding: 32 }}>
-      <h2>Researching and composing emails…</h2>
-      <p style={{ color: '#555' }}>
+    <div data-testid="step3" className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
+      <div className="w-12 h-12 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
+        <svg className="w-6 h-6 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+      </div>
+      <h2 className="text-lg font-semibold text-slate-900 mb-2">Researching and composing emails…</h2>
+      <p className="text-sm text-slate-500 mb-4">
         {composed} of {total} composed · {researched} researched
       </p>
-      <div style={{ background: '#e5e7eb', borderRadius: 8, overflow: 'hidden', height: 12, margin: '20px 0' }}>
+      <div className="h-3 bg-slate-200 rounded-full overflow-hidden mx-auto max-w-sm mb-4">
         <div
           data-testid="progress-bar"
-          style={{
-            width: `${pct}%`,
-            height: '100%',
-            background: '#2563eb',
-            transition: 'width 0.3s',
-          }}
+          className="h-full bg-blue-600 rounded-full transition-all"
+          style={{ width: `${pct}%` }}
         />
       </div>
-      <p style={{ fontSize: 13, color: '#666' }}>
+      <p className="text-sm text-slate-400">
         This page will auto-advance once the sample emails are ready for review.
       </p>
     </div>
@@ -329,17 +343,40 @@ export default function CampaignCreate() {
     if (campaignId) navigate(`/campaigns/${campaignId}/preview`);
   }
 
+  const STEP_LABELS = ['Details', 'Upload leads', 'Research'];
+
   return (
-    <div style={{ padding: 24, maxWidth: 760, margin: '0 auto' }}>
-      <h1>New campaign</h1>
-      <div role="list" aria-label="Steps" style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
-        {['Details', 'Upload leads', 'Research'].map((label, i) => {
+    <div className="p-8 max-w-2xl mx-auto">
+      <h1 className="text-2xl font-bold text-slate-900 mb-6">New campaign</h1>
+
+      {/* Step indicator */}
+      <div role="list" aria-label="Steps" className="flex items-center gap-2 mb-8">
+        {STEP_LABELS.map((label, i) => {
           const idx = i + 1;
           const active = idx === step;
           const done = idx < step;
           return (
-            <div key={label} data-testid={`step-${idx}-indicator`} style={stepIndicator(active, done)}>
-              {idx}. {label}
+            <div key={label} className="flex items-center gap-2">
+              <div
+                data-testid={`step-${idx}-indicator`}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+                  active
+                    ? 'bg-blue-600 text-white'
+                    : done
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                  active ? 'bg-white/20' : done ? 'bg-emerald-600 text-white' : 'bg-slate-300 text-slate-600'
+                }`}>
+                  {done ? '✓' : idx}
+                </span>
+                {label}
+              </div>
+              {i < STEP_LABELS.length - 1 && (
+                <div className="w-8 h-px bg-slate-300" />
+              )}
             </div>
           );
         })}
@@ -357,7 +394,9 @@ export default function CampaignCreate() {
         />
       )}
       {step === 2 && campaignId && (
-        <LeadUpload campaignId={campaignId} onComplete={onUploadComplete} />
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <LeadUpload campaignId={campaignId} onComplete={onUploadComplete} />
+        </div>
       )}
       {step === 3 && campaignId && (
         <Step3 campaignId={campaignId} onComplete={onStep3Complete} />
@@ -377,77 +416,4 @@ export default function CampaignCreate() {
       )}
     </div>
   );
-}
-
-// ---------- shared styles ----------
-
-const labelStyle = {
-  display: 'block',
-  marginBottom: 10,
-  fontSize: 13,
-  fontWeight: 500,
-  color: '#333',
-};
-
-const inputStyle = {
-  display: 'block',
-  width: '100%',
-  padding: '8px 10px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  fontSize: 14,
-  marginTop: 4,
-  boxSizing: 'border-box',
-};
-
-const sectionH2 = { marginTop: 0, fontSize: 18 };
-
-const pillStyle = {
-  padding: '6px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 999,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const activePillStyle = {
-  ...pillStyle,
-  background: '#2563eb',
-  color: 'white',
-  border: '1px solid #2563eb',
-};
-
-const btnStyle = {
-  padding: '8px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 14,
-};
-
-const primaryBtn = {
-  ...btnStyle,
-  background: '#2563eb',
-  color: 'white',
-  border: '1px solid #2563eb',
-};
-
-const errorStyle = {
-  color: '#b71c1c',
-  background: '#fdecea',
-  padding: 10,
-  borderRadius: 4,
-};
-
-function stepIndicator(active, done) {
-  return {
-    padding: '8px 14px',
-    borderRadius: 4,
-    fontSize: 13,
-    fontWeight: active ? 600 : 400,
-    background: active ? '#2563eb' : done ? '#86efac' : '#e5e7eb',
-    color: active ? 'white' : done ? '#065f46' : '#666',
-  };
 }

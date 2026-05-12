@@ -53,85 +53,92 @@ export default function LeadTable({ campaignId, replyTrackingEnabled }) {
 
   return (
     <div data-testid="lead-table">
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+      <div className="flex gap-3 mb-4 items-center">
         <input
           type="search"
           placeholder="Search by email or name"
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           aria-label="Search leads"
-          style={{ ...inputStyle, flex: 1 }}
+          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
         />
         <select
           aria-label="Filter by send status"
           value={sendStatus}
           onChange={(e) => { setSendStatus(e.target.value); setPage(1); }}
-          style={inputStyle}
+          className="px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
         >
           {SEND_STATUSES.map((s) => (
             <option key={s} value={s}>{s ? s : 'All statuses'}</option>
           ))}
         </select>
-        <button type="button" onClick={exportCsv} style={btnStyle} disabled={!data?.items?.length}>
+        <button
+          type="button"
+          onClick={exportCsv}
+          disabled={!data?.items?.length}
+          className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           Export CSV
         </button>
       </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            <th style={thStyle}>Name</th>
-            <th style={thStyle}>Email</th>
-            <th style={thStyle}>Company</th>
-            <th style={thStyle}>Send status</th>
-            <th style={thStyle}>Replied</th>
-            <th style={thStyle}>Created</th>
-          </tr>
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <tr><td colSpan={6} style={tdStyle}>Loading…</td></tr>
-          ) : data?.items?.length === 0 ? (
-            <tr><td colSpan={6} style={{ ...tdStyle, color: '#666', textAlign: 'center' }}>No leads.</td></tr>
-          ) : (
-            data?.items?.map((lead) => (
-              <tr key={lead.id}>
-                <td style={tdStyle}>
-                  {lead.first_name || lead.last_name
-                    ? `${lead.first_name || ''} ${lead.last_name || ''}`.trim()
-                    : '—'}
-                </td>
-                <td style={tdStyle}>{lead.email}</td>
-                <td style={tdStyle}>{lead.company || '—'}</td>
-                <td style={tdStyle}>
-                  <span data-testid="row-send-status">{lead.send_status}</span>
-                </td>
-                <td
-                  style={tdStyle}
-                  title={replyTrackingEnabled ? '' : 'Connect an inbox to track replies'}
-                >
-                  {replyTrackingEnabled ? '—' : '—'}
-                </td>
-                <td style={tdStyle}>
-                  {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '—'}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+      <div className="overflow-hidden rounded-xl border border-slate-200">
+        <table className="w-full text-sm">
+          <thead>
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Name</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Email</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Company</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Send status</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Replied</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={6} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
+            ) : data?.items?.length === 0 ? (
+              <tr><td colSpan={6} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
+            ) : (
+              data?.items?.map((lead) => (
+                <tr key={lead.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">
+                    {lead.first_name || lead.last_name
+                      ? `${lead.first_name || ''} ${lead.last_name || ''}`.trim()
+                      : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{lead.email}</td>
+                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{lead.company || '—'}</td>
+                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">
+                    <span data-testid="row-send-status">{lead.send_status}</span>
+                  </td>
+                  <td
+                    className="px-4 py-3 text-slate-700 border-b border-slate-100"
+                    title={replyTrackingEnabled ? '' : 'Connect an inbox to track replies'}
+                  >
+                    {replyTrackingEnabled ? '—' : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">
+                    {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '—'}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
 
       {totalPages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-          <span style={{ fontSize: 13, color: '#666' }}>
+        <div className="flex justify-between items-center mt-4">
+          <span className="text-sm text-slate-500">
             Page {page} of {totalPages} · {total} leads total
           </span>
-          <div style={{ display: 'flex', gap: 4 }}>
+          <div className="flex gap-2">
             <button
               type="button"
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
-              style={btnStyle}
+              className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label="Previous page"
             >
               ← Prev
@@ -140,7 +147,7 @@ export default function LeadTable({ campaignId, replyTrackingEnabled }) {
               type="button"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
-              style={btnStyle}
+              className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label="Next page"
             >
               Next →
@@ -151,36 +158,3 @@ export default function LeadTable({ campaignId, replyTrackingEnabled }) {
     </div>
   );
 }
-
-const inputStyle = {
-  padding: '8px 10px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  fontSize: 14,
-};
-
-const btnStyle = {
-  padding: '8px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 14,
-};
-
-const thStyle = {
-  textAlign: 'left',
-  padding: '10px 12px',
-  borderBottom: '2px solid #e5e7eb',
-  fontSize: 12,
-  textTransform: 'uppercase',
-  letterSpacing: 0.5,
-  color: '#666',
-  background: '#f9fafb',
-};
-
-const tdStyle = {
-  padding: '10px 12px',
-  borderBottom: '1px solid #eee',
-  fontSize: 14,
-};

@@ -105,150 +105,181 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
   }
 
   return (
-    <div data-testid="modal-overlay" style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
-        <h2 style={{ marginTop: 0 }}>{editing ? 'Edit inbox' : 'Connect inbox'}</h2>
-
-        <label style={labelStyle}>
-          Label
-          <input
-            value={form.label}
-            onChange={(e) => update('label', e.target.value)}
-            placeholder="e.g. Work Gmail"
-            style={inputStyle}
-          />
-        </label>
-
-        <label style={labelStyle}>
-          Email address
-          <input
-            value={form.email_address}
-            onChange={(e) => update('email_address', e.target.value)}
-            placeholder="you@example.com"
-            style={inputStyle}
-          />
-        </label>
-
-        <div style={{ marginBottom: 8 }}>
-          <span style={{ fontSize: 13, color: '#555', marginRight: 8 }}>Preset:</span>
-          {Object.keys(PRESETS).map((p) => (
-            <button
-              type="button"
-              key={p}
-              onClick={() => applyPreset(p)}
-              style={pillStyle}
-              aria-label={`Use ${p} preset`}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-
-        <label style={labelStyle}>
-          IMAP host
-          <input
-            value={form.imap_host}
-            onChange={(e) => update('imap_host', e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-
-        <div style={{ display: 'flex', gap: 12 }}>
-          <label style={{ ...labelStyle, flex: 1 }}>
-            Port
-            <input
-              type="number"
-              value={form.imap_port}
-              onChange={(e) => update('imap_port', Number(e.target.value))}
-              style={inputStyle}
-            />
-          </label>
-          <label style={{ ...labelStyle, flex: 1, justifyContent: 'flex-end' }}>
-            <span style={{ display: 'block' }}>
-              <input
-                type="checkbox"
-                checked={form.imap_use_ssl}
-                onChange={(e) => update('imap_use_ssl', e.target.checked)}
-              />{' '}
-              Use SSL
-            </span>
-          </label>
-        </div>
-
-        <label style={labelStyle}>
-          Username
-          <input
-            value={form.username}
-            onChange={(e) => update('username', e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-
-        <label style={labelStyle}>
-          Password {editing && <span style={{ fontSize: 12, color: '#888' }}>(leave blank to keep current)</span>}
-          <div style={{ display: 'flex', gap: 4 }}>
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={form.password}
-              onChange={(e) => update('password', e.target.value)}
-              style={{ ...inputStyle, flex: 1 }}
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              style={pillStyle}
-              aria-label={showPassword ? 'Hide password' : 'Show password'}
-            >
-              {showPassword ? 'Hide' : 'Show'}
-            </button>
-          </div>
-        </label>
-
-        <p style={helperStyle}>
-          For Gmail, use an{' '}
-          <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">
-            App Password
-          </a>{' '}
-          (not your account password). Requires 2-Step Verification.
-          For Outlook, use your regular password or an app password if MFA is enabled.
-        </p>
-
-        {testResult && (
-          <div
-            data-testid="test-result"
-            style={{
-              padding: 10,
-              marginBottom: 12,
-              borderRadius: 4,
-              background: testResult.ok ? '#e6f7ed' : '#fdecea',
-              color: testResult.ok ? '#1b5e20' : '#b71c1c',
-              fontSize: 13,
-            }}
+    <div data-testid="modal-overlay" className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-5">
+          <h2 className="m-0 text-lg font-semibold text-slate-900">{editing ? 'Edit inbox' : 'Connect inbox'}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 text-xl font-medium leading-none bg-transparent border-none cursor-pointer p-1"
+            aria-label="Close"
           >
-            {testResult.ok
-              ? `Connection OK${testResult.message_count != null ? ` — ${testResult.message_count} messages in INBOX` : ''}`
-              : `Connection failed: ${testResult.error || 'unknown error'}`}
-          </div>
-        )}
+            ×
+          </button>
+        </div>
 
-        {error && (
-          <div data-testid="modal-error" style={{ color: '#b71c1c', marginBottom: 12 }}>
-            {error}
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="inbox-label" className="block text-sm font-medium text-slate-700 mb-1">Label</label>
+            <input
+              id="inbox-label"
+              value={form.label}
+              onChange={(e) => update('label', e.target.value)}
+              placeholder="e.g. Work Gmail"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            />
           </div>
-        )}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" onClick={handleTest} disabled={testing || !editing} style={btnStyle}>
+          <div>
+            <label htmlFor="inbox-email" className="block text-sm font-medium text-slate-700 mb-1">Email address</label>
+            <input
+              id="inbox-email"
+              value={form.email_address}
+              onChange={(e) => update('email_address', e.target.value)}
+              placeholder="you@example.com"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            />
+          </div>
+
+          <div>
+            <span className="block text-sm font-medium text-slate-700 mb-2">Preset</span>
+            <div className="flex gap-2 flex-wrap">
+              {Object.keys(PRESETS).map((p) => (
+                <button
+                  type="button"
+                  key={p}
+                  onClick={() => applyPreset(p)}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors"
+                  aria-label={`Use ${p} preset`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="inbox-imap-host" className="block text-sm font-medium text-slate-700 mb-1">IMAP host</label>
+            <input
+              id="inbox-imap-host"
+              value={form.imap_host}
+              onChange={(e) => update('imap_host', e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            />
+          </div>
+
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label htmlFor="inbox-port" className="block text-sm font-medium text-slate-700 mb-1">Port</label>
+              <input
+                id="inbox-port"
+                type="number"
+                value={form.imap_port}
+                onChange={(e) => update('imap_port', Number(e.target.value))}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+            </div>
+            <div className="flex-1 flex items-end pb-2">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.imap_use_ssl}
+                  onChange={(e) => update('imap_use_ssl', e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                Use SSL
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="inbox-username" className="block text-sm font-medium text-slate-700 mb-1">Username</label>
+            <input
+              id="inbox-username"
+              value={form.username}
+              onChange={(e) => update('username', e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="inbox-password" className="block text-sm font-medium text-slate-700 mb-1">
+              Password{' '}
+              {editing && <span className="text-xs text-slate-400 font-normal">(leave blank to keep current)</span>}
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="inbox-password"
+                type={showPassword ? 'text' : 'password'}
+                value={form.password}
+                onChange={(e) => update('password', e.target.value)}
+                className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+            <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+            <span>
+              For Gmail, use an{' '}
+              <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="underline">
+                App Password
+              </a>{' '}
+              (not your account password). Requires 2-Step Verification.
+              For Outlook, use your regular password or an app password if MFA is enabled.
+            </span>
+          </div>
+
+          {testResult && (
+            <div
+              data-testid="test-result"
+              className={`p-3 rounded-lg text-sm ${testResult.ok ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-red-50 border border-red-200 text-red-800'}`}
+            >
+              {testResult.ok
+                ? `Connection OK${testResult.message_count != null ? ` — ${testResult.message_count} messages in INBOX` : ''}`
+                : `Connection failed: ${testResult.error || 'unknown error'}`}
+            </div>
+          )}
+
+          {error && (
+            <div data-testid="modal-error" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 justify-end mt-6 pt-4 border-t border-slate-100">
+          <button
+            type="button"
+            onClick={handleTest}
+            disabled={testing || !editing}
+            className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
             {testing ? 'Testing…' : 'Test connection'}
           </button>
-          <button type="button" onClick={onClose} style={btnStyle}>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
+          >
             Cancel
           </button>
           <button
             type="button"
             onClick={handleSave}
             disabled={saving}
-            style={{ ...btnStyle, background: '#2563eb', color: 'white' }}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
@@ -257,67 +288,3 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
     </div>
   );
 }
-
-const overlayStyle = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0,0,0,0.4)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 1000,
-};
-
-const modalStyle = {
-  background: 'white',
-  padding: 24,
-  borderRadius: 8,
-  width: 480,
-  maxWidth: '90vw',
-  maxHeight: '90vh',
-  overflowY: 'auto',
-  boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
-};
-
-const labelStyle = {
-  display: 'block',
-  marginBottom: 10,
-  fontSize: 13,
-  color: '#333',
-};
-
-const inputStyle = {
-  display: 'block',
-  width: '100%',
-  padding: '8px 10px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  fontSize: 14,
-  marginTop: 4,
-  boxSizing: 'border-box',
-};
-
-const btnStyle = {
-  padding: '8px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 14,
-};
-
-const pillStyle = {
-  ...btnStyle,
-  padding: '4px 10px',
-  fontSize: 12,
-  marginRight: 4,
-};
-
-const helperStyle = {
-  fontSize: 12,
-  color: '#555',
-  background: '#f5f5f5',
-  padding: 10,
-  borderRadius: 4,
-  marginBottom: 12,
-};

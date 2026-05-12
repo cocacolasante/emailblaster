@@ -12,9 +12,9 @@ import { ToastProvider } from './components/Toast.jsx';
 export default function App() {
   return (
     <ToastProvider>
-      <div style={{ display: 'flex', minHeight: '100vh', background: '#f9fafb' }}>
+      <div className="flex min-h-screen bg-slate-50">
         <Nav />
-        <main style={{ flex: 1, minWidth: 0 }}>
+        <main className="flex-1 min-w-0 overflow-auto">
           <ErrorBoundary>
             <Routes>
               <Route path="/" element={<Campaigns />} />

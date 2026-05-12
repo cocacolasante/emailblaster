@@ -58,11 +58,11 @@ export default function Preview() {
   }
 
   if (previewQuery.isLoading || campaignQuery.isLoading) {
-    return <div style={{ padding: 24 }}>Loading preview…</div>;
+    return <div className="p-8 text-sm text-slate-500">Loading preview…</div>;
   }
   if (previewQuery.error || campaignQuery.error) {
     return (
-      <div style={{ padding: 24, color: '#b71c1c' }}>
+      <div className="p-8 text-sm text-red-600">
         Failed to load preview.
       </div>
     );
@@ -75,18 +75,38 @@ export default function Preview() {
   const total = samples.length;
 
   return (
-    <div style={{ padding: 24, maxWidth: 880, margin: '0 auto', paddingBottom: 120 }}>
-      <h1>Preview</h1>
+    <div className="p-8 max-w-[880px] mx-auto pb-32">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold text-slate-900 m-0">Preview</h1>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => rejectMutation.mutate()}
+            disabled={rejectMutation.isPending}
+            className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50"
+          >
+            Reject all
+          </button>
+          <button
+            type="button"
+            onClick={() => approveAllMutation.mutate()}
+            disabled={approveAllMutation.isPending || total === 0}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {approveAllMutation.isPending ? 'Launching…' : 'Approve all & launch'}
+          </button>
+        </div>
+      </div>
 
-      <div data-testid="campaign-context" style={contextStripStyle}>
-        <div><strong>Goal:</strong> {campaign?.goal}</div>
-        <div><strong>Tone:</strong> {campaign?.tone}</div>
+      <div data-testid="campaign-context" className="flex gap-8 p-4 bg-slate-50 border border-slate-200 rounded-lg mb-6 text-sm">
+        <div><span className="text-slate-500">Goal:</span> <strong className="font-medium text-slate-900">{campaign?.goal}</strong></div>
+        <div><span className="text-slate-500">Tone:</span> <strong className="font-medium text-slate-900">{campaign?.tone}</strong></div>
       </div>
 
       {samples.length === 0 ? (
-        <p style={{ padding: 40, textAlign: 'center', color: '#666' }}>
-          No samples available yet. Wait for research and composition to complete.
-        </p>
+        <div className="text-center py-16 text-slate-500">
+          <p>No samples available yet. Wait for research and composition to complete.</p>
+        </div>
       ) : (
         samples.map((sample) => (
           <EmailPreviewCard
@@ -100,16 +120,16 @@ export default function Preview() {
       )}
 
       {/* Sticky bottom action bar */}
-      <div style={actionBarStyle}>
-        <span data-testid="approval-counter" style={{ fontSize: 14 }}>
-          <strong>{approvedCount}</strong> of {total} approved
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-3 flex items-center justify-between shadow-[0_-2px_8px_rgba(0,0,0,0.05)] z-40">
+        <span data-testid="approval-counter" className="text-sm text-slate-600">
+          <strong className="font-semibold text-slate-900">{approvedCount}</strong> of {total} approved
         </span>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="flex gap-2">
           <button
             type="button"
             onClick={() => rejectMutation.mutate()}
             disabled={rejectMutation.isPending}
-            style={btnStyle}
+            className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
           >
             Reject and reconfigure
           </button>
@@ -117,7 +137,7 @@ export default function Preview() {
             type="button"
             onClick={() => approveAllMutation.mutate()}
             disabled={approveAllMutation.isPending || total === 0}
-            style={primaryBtn}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {approveAllMutation.isPending ? 'Launching…' : 'Approve and launch campaign'}
           </button>
@@ -126,44 +146,3 @@ export default function Preview() {
     </div>
   );
 }
-
-const contextStripStyle = {
-  background: '#f9fafb',
-  border: '1px solid #e5e7eb',
-  padding: 12,
-  borderRadius: 6,
-  marginBottom: 20,
-  display: 'flex',
-  gap: 32,
-  fontSize: 14,
-};
-
-const actionBarStyle = {
-  position: 'fixed',
-  bottom: 0,
-  left: 0,
-  right: 0,
-  background: 'white',
-  borderTop: '1px solid #e5e7eb',
-  padding: '12px 24px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  boxShadow: '0 -2px 8px rgba(0,0,0,0.05)',
-};
-
-const btnStyle = {
-  padding: '8px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 14,
-};
-
-const primaryBtn = {
-  ...btnStyle,
-  background: '#2563eb',
-  color: 'white',
-  border: '1px solid #2563eb',
-};

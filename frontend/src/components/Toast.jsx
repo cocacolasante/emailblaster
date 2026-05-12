@@ -2,10 +2,16 @@ import { createContext, useCallback, useContext, useState } from 'react';
 
 const ToastContext = createContext(null);
 
-const TYPE_STYLES = {
-  success: { bg: '#1b5e20', fg: 'white', icon: '✓' },
-  error:   { bg: '#b71c1c', fg: 'white', icon: '✕' },
-  info:    { bg: '#1e40af', fg: 'white', icon: 'ℹ' },
+const TYPE_CLASSES = {
+  success: 'bg-emerald-600 text-white',
+  error:   'bg-red-600 text-white',
+  info:    'bg-slate-800 text-white',
+};
+
+const TYPE_ICONS = {
+  success: '✓',
+  error:   '✕',
+  info:    'ℹ',
 };
 
 export function ToastProvider({ children, defaultDuration = 4000 }) {
@@ -37,19 +43,28 @@ export function ToastProvider({ children, defaultDuration = 4000 }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div data-testid="toast-container" style={containerStyle}>
+      <div data-testid="toast-container" className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map((t) => {
-          const style = TYPE_STYLES[t.type] || TYPE_STYLES.info;
+          const colorClass = TYPE_CLASSES[t.type] || TYPE_CLASSES.info;
+          const icon = TYPE_ICONS[t.type] || TYPE_ICONS.info;
           return (
             <div
               key={t.id}
               data-testid="toast"
               data-toast-type={t.type}
-              style={{ ...toastStyle, background: style.bg, color: style.fg }}
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg text-sm font-medium min-w-64 max-w-sm cursor-pointer ${colorClass}`}
               onClick={() => remove(t.id)}
             >
-              <span style={{ marginRight: 8 }}>{style.icon}</span>
-              {t.message}
+              <span>{icon}</span>
+              <span className="flex-1">{t.message}</span>
+              <button
+                type="button"
+                className="ml-auto text-white/70 hover:text-white"
+                onClick={() => remove(t.id)}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
             </div>
           );
         })}
@@ -70,22 +85,3 @@ export function useToast() {
     }
   );
 }
-
-const containerStyle = {
-  position: 'fixed',
-  bottom: 20,
-  right: 20,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  zIndex: 2000,
-  maxWidth: 360,
-};
-
-const toastStyle = {
-  padding: '10px 14px',
-  borderRadius: 6,
-  fontSize: 14,
-  cursor: 'pointer',
-  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-};

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
-const QUALITY_BADGE = {
-  rich:    { bg: '#e6f7ed', fg: '#1b5e20', label: 'Rich research' },
-  partial: { bg: '#fff3cd', fg: '#7a5a00', label: 'Partial research' },
-  low:     { bg: '#e5e7eb', fg: '#555',    label: 'Generic' },
+const QUALITY_CONFIG = {
+  rich:    { borderClass: 'border-l-emerald-500', badgeClass: 'bg-emerald-100 text-emerald-700', label: 'Rich research' },
+  partial: { borderClass: 'border-l-yellow-400', badgeClass: 'bg-yellow-100 text-yellow-700',   label: 'Partial research' },
+  low:     { borderClass: 'border-l-slate-300',  badgeClass: 'bg-slate-100 text-slate-600',     label: 'Generic' },
 };
 
 /**
@@ -45,30 +45,27 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
     }
   }
 
-  const quality = QUALITY_BADGE[sample.research_quality] || QUALITY_BADGE.low;
+  const quality = QUALITY_CONFIG[sample.research_quality] || QUALITY_CONFIG.low;
 
   return (
-    <div data-testid="email-preview-card" data-lead-id={sample.lead_id} style={cardStyle}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+    <div
+      data-testid="email-preview-card"
+      data-lead-id={sample.lead_id}
+      className={`bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-4 border-l-4 ${quality.borderClass}`}
+    >
+      <header className="flex justify-between items-start gap-3">
         <div>
-          <h3 style={{ margin: 0 }}>
+          <h3 className="m-0 text-base font-semibold text-slate-900">
             {sample.first_name} {sample.last_name}
           </h3>
-          <p style={{ margin: '4px 0 0', color: '#666', fontSize: 13 }}>
+          <p className="mt-1 mb-0 text-slate-500 text-sm">
             {sample.job_title ? `${sample.job_title} at ` : ''}{sample.company || sample.email}
           </p>
         </div>
         <span
           data-testid="quality-badge"
           data-quality={sample.research_quality}
-          style={{
-            padding: '4px 10px',
-            borderRadius: 12,
-            background: quality.bg,
-            color: quality.fg,
-            fontSize: 12,
-            whiteSpace: 'nowrap',
-          }}
+          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${quality.badgeClass}`}
         >
           {quality.label}
         </span>
@@ -77,51 +74,57 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
       <button
         type="button"
         onClick={() => setShowResearch((v) => !v)}
-        style={{ ...linkBtn, marginTop: 8 }}
+        className="mt-3 text-sm text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
         aria-expanded={showResearch}
       >
         {showResearch ? '▾ Hide research' : '▸ Show research'}
       </button>
       {showResearch && (
-        <div data-testid="research-panel" style={{ background: '#f9fafb', padding: 12, borderRadius: 6, marginTop: 8, fontSize: 13 }}>
+        <div data-testid="research-panel" className="bg-slate-50 rounded-lg p-3 mt-2 text-sm text-slate-700">
           {sample.research_summary || 'No research findings.'}
         </div>
       )}
 
-      <label style={labelStyle}>
-        Subject
+      <div className="mt-3">
+        <label htmlFor={`subject-${sample.lead_id}`} className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
         <input
+          id={`subject-${sample.lead_id}`}
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
           onBlur={handleBlur}
-          style={inputStyle}
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
         />
-      </label>
+      </div>
 
-      <label style={labelStyle}>
-        Body
+      <div className="mt-3">
+        <label htmlFor={`body-${sample.lead_id}`} className="block text-sm font-medium text-slate-700 mb-1">Body</label>
         <textarea
+          id={`body-${sample.lead_id}`}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           onBlur={handleBlur}
           rows={8}
-          style={{ ...inputStyle, fontFamily: 'inherit', resize: 'vertical' }}
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-[inherit] resize-y"
         />
-      </label>
+      </div>
 
       {dirty && remainingSamples > 0 && (
-        <p data-testid="dirty-hint" style={{ fontSize: 12, color: '#7a5a00', margin: '4px 0' }}>
+        <p data-testid="dirty-hint" className="text-xs text-amber-700 mt-1 mb-0">
           Your edits will improve the remaining {remainingSamples} {remainingSamples === 1 ? 'email' : 'emails'}.
         </p>
       )}
 
-      {saving && <p style={{ fontSize: 12, color: '#888' }}>Saving…</p>}
+      {saving && <p className="text-xs text-slate-400 mt-1">Saving…</p>}
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+      <div className="flex gap-2 mt-4">
         <button
           type="button"
           onClick={() => onApprove(sample.lead_id, true)}
-          style={sample.sample_approved === true ? activeBtn : btnStyle}
+          className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+            sample.sample_approved === true
+              ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+              : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-300'
+          }`}
           data-testid="approve-button"
           aria-pressed={sample.sample_approved === true}
         >
@@ -130,7 +133,11 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
         <button
           type="button"
           onClick={() => onApprove(sample.lead_id, false)}
-          style={sample.sample_approved === false ? activeRejectBtn : btnStyle}
+          className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+            sample.sample_approved === false
+              ? 'bg-red-600 hover:bg-red-700 text-white'
+              : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-300'
+          }`}
           data-testid="reject-button"
           aria-pressed={sample.sample_approved === false}
         >
@@ -140,62 +147,3 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
     </div>
   );
 }
-
-const cardStyle = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  padding: 16,
-  background: 'white',
-  marginBottom: 16,
-};
-
-const labelStyle = {
-  display: 'block',
-  marginTop: 12,
-  fontSize: 13,
-  fontWeight: 500,
-  color: '#333',
-};
-
-const inputStyle = {
-  display: 'block',
-  width: '100%',
-  padding: '8px 10px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  fontSize: 14,
-  marginTop: 4,
-  boxSizing: 'border-box',
-};
-
-const linkBtn = {
-  background: 'none',
-  border: 'none',
-  color: '#2563eb',
-  cursor: 'pointer',
-  fontSize: 13,
-  padding: 0,
-};
-
-const btnStyle = {
-  padding: '6px 14px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: 'white',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const activeBtn = {
-  ...btnStyle,
-  background: '#22c55e',
-  color: 'white',
-  border: '1px solid #22c55e',
-};
-
-const activeRejectBtn = {
-  ...btnStyle,
-  background: '#dc2626',
-  color: 'white',
-  border: '1px solid #dc2626',
-};
