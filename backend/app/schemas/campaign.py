@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, time
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models import CampaignStatus, ResearchMode
+
+
+# --------------------------------------------------------------------------
+# Nested sub-schemas
+# --------------------------------------------------------------------------
+
+
+class ConnectedAccountInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    label: str
+    email_address: str
+
+
+class LeadCounts(BaseModel):
+    total: int
+    pending: int
+    scheduled: int
+    sent: int
+    failed: int
+
+
+class FailedLeadInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    lead_id: uuid.UUID
+    email: str
+    first_name: str | None
+    last_name: str | None
+    research_status: str
+    compose_status: str
+    send_status: str
+    failed_stage: str  # "research" | "compose" | "send"
+
+
+class RetryFailedResponse(BaseModel):
+    research_retried: int
+    compose_retried: int
+    send_retried: int
+
+    @property
+    def total(self) -> int:
+        return self.research_retried + self.compose_retried + self.send_retried
+
+
+class CampaignStats(BaseModel):
+    sent_count: int
+    delivered: int
+    opened: int
+    clicked: int
+    bounced: int
+    replied: int
+    unsubscribed: int
+    open_rate: float | None
+    click_rate: float | None
+    bounce_rate: float | None
+    reply_rate: float | None
+    reply_tracking_note: str | None = None
+
+
+# --------------------------------------------------------------------------
+# Validators reused across create + update
+# --------------------------------------------------------------------------
+
+
+def _validate_days(v: list[int] | None) -> list[int] | None:
+    if v is None:
+        return v
+    for d in v:
+        if d < 0 or d > 6:
+            raise ValueError("schedule_days values must be 0-6")
+    return v
+
+
+# --------------------------------------------------------------------------
+# Create / Update
+# --------------------------------------------------------------------------
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(min_length=1)
+    goal: str = Field(min_length=1)
+    tone: str = Field(min_length=1)
+    sender_name: str = Field(min_length=1)
+    sender_email: str = Field(min_length=1)
+    research_mode: ResearchMode = ResearchMode.FAST
+    sample_count: int = Field(default=5, ge=1)
+    connected_account_id: uuid.UUID | None = None
+    schedule_days: list[int] = Field(default_factory=list)
+    schedule_time_start: time
+    schedule_time_end: time
+    schedule_timezone: str = "UTC"
+    max_per_hour: int | None = Field(default=None, ge=1)
+    max_per_day: int | None = Field(default=None, ge=1)
+    min_delay_seconds: int = Field(default=60, ge=0)
+
+    _v_days = field_validator("schedule_days")(_validate_days)
+
+    @model_validator(mode="after")
+    def _check_time_order(self) -> "CampaignCreate":
+        if self.schedule_time_start >= self.schedule_time_end:
+            raise ValueError("schedule_time_start must be before schedule_time_end")
+        return self
+
+
+class CampaignUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    goal: str | None = Field(default=None, min_length=1)
+    tone: str | None = Field(default=None, min_length=1)
+    sender_name: str | None = Field(default=None, min_length=1)
+    sender_email: str | None = Field(default=None, min_length=1)
+    research_mode: ResearchMode | None = None
+    sample_count: int | None = Field(default=None, ge=1)
+    connected_account_id: uuid.UUID | None = None
+    schedule_days: list[int] | None = None
+    schedule_time_start: time | None = None
+    schedule_time_end: time | None = None
+    schedule_timezone: str | None = None
+    max_per_hour: int | None = Field(default=None, ge=1)
+    max_per_day: int | None = Field(default=None, ge=1)
+    min_delay_seconds: int | None = Field(default=None, ge=0)
+
+    _v_days = field_validator("schedule_days")(_validate_days)
+
+    @model_validator(mode="after")
+    def _check_time_order(self) -> "CampaignUpdate":
+        if (
+            self.schedule_time_start is not None
+            and self.schedule_time_end is not None
+            and self.schedule_time_start >= self.schedule_time_end
+        ):
+            raise ValueError("schedule_time_start must be before schedule_time_end")
+        return self
+
+
+# --------------------------------------------------------------------------
+# Response
+# --------------------------------------------------------------------------
+
+
+class CampaignResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    goal: str
+    tone: str
+    sender_name: str
+    sender_email: str
+    research_mode: ResearchMode
+    sample_count: int
+    connected_account_id: uuid.UUID | None
+    connected_account: ConnectedAccountInfo | None
+    connected_account_configured: bool
+    schedule_days: list[int]
+    schedule_time_start: time
+    schedule_time_end: time
+    schedule_timezone: str
+    max_per_hour: int | None
+    max_per_day: int | None
+    min_delay_seconds: int
+    status: CampaignStatus
+    created_at: datetime
+    updated_at: datetime
+    lead_counts: LeadCounts
+    stats: CampaignStats
+
+
+def campaign_to_dict(c: Any) -> dict[str, Any]:
+    """Extract the campaign's own columns (without computed/nested fields)."""
+    return {
+        "id": c.id,
+        "name": c.name,
+        "goal": c.goal,
+        "tone": c.tone,
+        "sender_name": c.sender_name,
+        "sender_email": c.sender_email,
+        "research_mode": c.research_mode,
+        "sample_count": c.sample_count,
+        "connected_account_id": c.connected_account_id,
+        "schedule_days": c.schedule_days,
+        "schedule_time_start": c.schedule_time_start,
+        "schedule_time_end": c.schedule_time_end,
+        "schedule_timezone": c.schedule_timezone,
+        "max_per_hour": c.max_per_hour,
+        "max_per_day": c.max_per_day,
+        "min_delay_seconds": c.min_delay_seconds,
+        "status": c.status,
+        "created_at": c.created_at,
+        "updated_at": c.updated_at,
+    }

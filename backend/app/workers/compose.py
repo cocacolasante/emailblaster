@@ -1,0 +1,279 @@
+"""Compose worker: generate the personalized email for a researched lead.
+
+Picks a generic or personalized prompt based on research quality, calls
+Anthropic without tools, parses the JSON response (retrying once with a
+stricter system prompt on parse failure), appends the unsubscribe footer,
+and enqueues send_lead when the campaign is in the running state.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from typing import Any
+
+from anthropic import AsyncAnthropic
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+from app.config import settings
+from app.models import (
+    Campaign,
+    CampaignStatus,
+    ComposeStatus,
+    Lead,
+    StyleCorrection,
+)
+from app.services.web_research import _extract_text, _parse_json
+from app.workers.celery_app import celery_app
+from app.workers.send import send_lead
+
+logger = logging.getLogger(__name__)
+
+_client: AsyncAnthropic | None = None
+
+
+def _get_client() -> AsyncAnthropic:
+    global _client
+    if _client is None:
+        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    return _client
+
+
+# --------------------------------------------------------------------------
+# Prompt construction
+# --------------------------------------------------------------------------
+
+
+def _build_generic_prompt(
+    goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str,
+) -> str:
+    return (
+        "You are an expert cold email copywriter.\n"
+        f"Campaign goal: {goal}\n"
+        f"Tone: {tone}\n"
+        f"Sender: {sender_name}\n\n"
+        "Recipient:\n"
+        f"Name: {first_name} {last_name}\n"
+        f"Company: {company}\n\n"
+        "Research on this person was limited — use only their name and company.\n"
+        "Write a compelling subject line and email body under 150 words. Focus on "
+        "value, not flattery.\n\n"
+        'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
+    )
+
+
+def _build_personalized_prompt(
+    goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str, job_title: str,
+    research_data: dict[str, Any], corrected_examples: list[str],
+) -> str:
+    person_news = "; ".join(research_data.get("person_news") or []) or "(none)"
+    company_news = "; ".join(research_data.get("company_news") or []) or "(none)"
+    recent_updates = "; ".join(research_data.get("recent_updates") or []) or "(none)"
+    company_desc = research_data.get("company_description") or "(unknown)"
+    linkedin_headline = research_data.get("linkedin_headline") or "(unknown)"
+
+    if corrected_examples:
+        style_block = (
+            "Style corrections from user (MATCH THIS STYLE CLOSELY):\n"
+            + "\n---\n".join(corrected_examples)
+        )
+    else:
+        style_block = "No style corrections yet — use your best judgment."
+
+    return (
+        "You are an expert cold email copywriter.\n"
+        f"Campaign goal: {goal}\n"
+        f"Tone: {tone}\n"
+        f"Sender: {sender_name}\n\n"
+        "Recipient:\n"
+        f"Name: {first_name} {last_name}, {job_title} at {company}\n"
+        f"LinkedIn headline: {linkedin_headline}\n"
+        f"Recent person news: {person_news}\n"
+        f"Recent company news: {company_news}\n"
+        f"Company: {company_desc}\n"
+        f"Recent company updates: {recent_updates}\n\n"
+        f"{style_block}\n\n"
+        "Write a personalized subject line and email body. Reference something "
+        "specific and real from the research above. Keep under 200 words. No "
+        "sycophancy. Do not mention doing research.\n\n"
+        'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
+    )
+
+
+# --------------------------------------------------------------------------
+# Anthropic call + parse
+# --------------------------------------------------------------------------
+
+
+def _validate_email_json(parsed: Any) -> dict[str, str] | None:
+    if not isinstance(parsed, dict):
+        return None
+    subject = parsed.get("subject")
+    body = parsed.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        return None
+    if not subject.strip() or not body.strip():
+        return None
+    return {"subject": subject.strip(), "body": body.strip()}
+
+
+async def _call_anthropic(system_prompt: str) -> str:
+    message = await _get_client().messages.create(
+        model=settings.ANTHROPIC_MODEL,
+        max_tokens=1000,
+        system=system_prompt,
+        messages=[{
+            "role": "user",
+            "content": "Write the email now. Respond ONLY with the JSON object.",
+        }],
+    )
+    return _extract_text(message)
+
+
+async def _generate_email(system_prompt: str) -> dict[str, str]:
+    """Call Anthropic; on parse failure, retry once with a stricter prompt."""
+    text = await _call_anthropic(system_prompt)
+    parsed = _validate_email_json(_parse_json(text))
+    if parsed is not None:
+        return parsed
+
+    stricter = (
+        system_prompt
+        + "\n\nCRITICAL: Your previous response was not valid JSON. "
+        'Respond with ONLY one JSON object: {"subject": "...", "body": "..."} '
+        "— no markdown fences, no preamble, no commentary, no trailing text."
+    )
+    text = await _call_anthropic(stricter)
+    parsed = _validate_email_json(_parse_json(text))
+    if parsed is None:
+        raise ValueError("Anthropic returned unparseable JSON after retry")
+    return parsed
+
+
+# --------------------------------------------------------------------------
+# Async core
+# --------------------------------------------------------------------------
+
+
+async def _mark_compose_failed(lead_id: str) -> None:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine) as session:
+            lead = await session.get(Lead, uuid.UUID(lead_id))
+            if lead is not None:
+                lead.compose_status = ComposeStatus.FAILED
+                await session.commit()
+    finally:
+        await engine.dispose()
+
+
+async def compose_lead_async(lead_id: str) -> dict[str, Any]:
+    lid = uuid.UUID(str(lead_id))
+    engine = create_async_engine(settings.DATABASE_URL)
+
+    try:
+        # Load lead, campaign, style corrections.  Snapshot the strings we
+        # need so we don't hold the session open across the API call.
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            lead = await session.get(Lead, lid)
+            if lead is None:
+                return {"status": "not_found"}
+            campaign = await session.get(Campaign, lead.campaign_id)
+            if campaign is None:
+                return {"status": "not_found"}
+
+            sc_rows = (await session.execute(
+                select(StyleCorrection.corrected_body)
+                .where(StyleCorrection.campaign_id == campaign.id)
+                .order_by(StyleCorrection.created_at.asc())
+            )).scalars().all()
+            corrected_examples = list(sc_rows)
+
+            quality = (lead.research_data or {}).get("quality", "low")
+            ctx = {
+                "first_name": lead.first_name or "",
+                "last_name": lead.last_name or "",
+                "company": lead.company or "",
+                "job_title": lead.job_title or "",
+                "research_data": lead.research_data or {},
+                "goal": campaign.goal,
+                "tone": campaign.tone,
+                "sender_name": campaign.sender_name,
+            }
+            is_sample = lead.is_sample
+            campaign_status_now = campaign.status
+
+            lead.compose_status = ComposeStatus.RUNNING
+            await session.commit()
+
+        # Build prompt + call Anthropic.
+        if quality == "low":
+            system_prompt = _build_generic_prompt(
+                ctx["goal"], ctx["tone"], ctx["sender_name"],
+                ctx["first_name"], ctx["last_name"], ctx["company"],
+            )
+        else:
+            system_prompt = _build_personalized_prompt(
+                ctx["goal"], ctx["tone"], ctx["sender_name"],
+                ctx["first_name"], ctx["last_name"], ctx["company"], ctx["job_title"],
+                ctx["research_data"], corrected_examples,
+            )
+
+        try:
+            composed = await _generate_email(system_prompt)
+        except ValueError as e:
+            # Parse failure — retrying won't help. Mark failed and return.
+            logger.warning("compose_lead parse-failed for %s: %s", lead_id, e)
+            await _mark_compose_failed(str(lid))
+            return {"status": "parse_failed", "error": str(e)}
+
+        # Append unsubscribe footer.
+        unsub_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/unsubscribe/{lid}"
+        body_with_footer = (
+            f"{composed['body']}\n\n---\nTo unsubscribe: {unsub_url}"
+        )
+
+        # Re-open session to persist the result.
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            lead = await session.get(Lead, lid)
+            if lead is None:
+                return {"status": "not_found"}
+            lead.composed_subject = composed["subject"]
+            lead.composed_body = body_with_footer
+            lead.compose_status = ComposeStatus.DONE
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    # Enqueue send only for non-sample leads on a running campaign.
+    send_enqueued = False
+    if not is_sample and campaign_status_now == CampaignStatus.RUNNING:
+        send_lead.delay(str(lid))
+        send_enqueued = True
+
+    return {
+        "status": "done",
+        "quality": quality,
+        "send_enqueued": send_enqueued,
+    }
+
+
+# --------------------------------------------------------------------------
+# Celery task wrapper
+# --------------------------------------------------------------------------
+
+
+@celery_app.task(bind=True, name="compose.compose_lead", max_retries=2)
+def compose_lead(self, lead_id: str) -> dict[str, Any]:  # noqa: D401
+    try:
+        return asyncio.run(compose_lead_async(lead_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("compose_lead failed for %s", lead_id)
+        try:
+            raise self.retry(exc=exc, countdown=60 * (2**self.request.retries))
+        except self.MaxRetriesExceededError:
+            asyncio.run(_mark_compose_failed(lead_id))
+            return {"status": "failed", "error": str(exc)}

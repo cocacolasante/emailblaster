@@ -1,0 +1,374 @@
+"""Phase 7: compose_lead worker (Anthropic mocked, real DB)."""
+import uuid
+from datetime import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from sqlalchemy import select
+
+from app.models import (
+    Campaign,
+    CampaignStatus,
+    ComposeStatus,
+    Lead,
+    StyleCorrection,
+)
+from app.workers import compose as compose_mod
+
+
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+
+
+def _anthropic_text(body: str) -> SimpleNamespace:
+    return SimpleNamespace(content=[SimpleNamespace(type="text", text=body)])
+
+
+async def _make_campaign(
+    db_session, *,
+    status: CampaignStatus = CampaignStatus.PREVIEWING,
+) -> Campaign:
+    c = Campaign(
+        name="Phase 7 test",
+        goal="Book a discovery call",
+        tone="Direct",
+        sender_name="Anthony",
+        sender_email="a@x.com",
+        sample_count=1,
+        schedule_days=[0, 1, 2, 3, 4],
+        schedule_time_start=time(9, 0),
+        schedule_time_end=time(17, 0),
+        status=status,
+    )
+    db_session.add(c)
+    await db_session.commit()
+    await db_session.refresh(c)
+    return c
+
+
+async def _make_lead(db_session, campaign: Campaign, **overrides) -> Lead:
+    defaults = {
+        "email": "lead@example.com",
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "company": "Acme",
+        "job_title": "CEO",
+        "research_data": {"quality": "rich", "person_news": ["raised Series B"]},
+    }
+    defaults.update(overrides)
+    l = Lead(campaign_id=campaign.id, **defaults)
+    db_session.add(l)
+    await db_session.commit()
+    await db_session.refresh(l)
+    return l
+
+
+def _patch_create(create_mock: AsyncMock):
+    """Patch _get_client to return a stub with messages.create=create_mock."""
+    return patch.object(
+        compose_mod, "_get_client",
+        return_value=SimpleNamespace(
+            messages=SimpleNamespace(create=create_mock)
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_client():
+    compose_mod._client = None
+    yield
+    compose_mod._client = None
+
+
+# --------------------------------------------------------------------------
+# Prompt selection
+# --------------------------------------------------------------------------
+
+
+async def test_low_quality_lead_uses_generic_prompt(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(
+        db_session, campaign,
+        research_data={"quality": "low", "person_news": [], "company_description": ""},
+    )
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '{"subject": "Quick question", "body": "Hi Jane, value prop here."}'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "done"
+    system_prompt = create_mock.call_args.kwargs["system"]
+    assert "Research on this person was limited" in system_prompt
+    # Personalized-only hints must NOT appear.
+    assert "LinkedIn headline" not in system_prompt
+    assert "Recent person news" not in system_prompt
+
+
+async def test_rich_quality_lead_uses_personalized_prompt(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign, research_data={
+        "quality": "rich",
+        "person_news": ["raised Series B"],
+        "company_news": ["launched X"],
+        "company_description": "AI for SMB",
+        "recent_updates": ["new partnership"],
+        "linkedin_headline": "CEO at Acme",
+    })
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '{"subject": "Series B + AI", "body": "Hi Jane, saw your Series B..."}'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    system_prompt = create_mock.call_args.kwargs["system"]
+    assert "raised Series B" in system_prompt
+    assert "CEO at Acme" in system_prompt
+    assert "AI for SMB" in system_prompt
+    assert "Research on this person was limited" not in system_prompt
+
+
+async def test_partial_quality_also_uses_personalized_prompt(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign, research_data={
+        "quality": "partial",
+        "person_news": [],
+        "company_description": "AI startup",
+    })
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '{"subject": "S", "body": "B"}'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    system_prompt = create_mock.call_args.kwargs["system"]
+    assert "AI startup" in system_prompt
+    assert "Research on this person was limited" not in system_prompt
+
+
+# --------------------------------------------------------------------------
+# Style corrections
+# --------------------------------------------------------------------------
+
+
+async def test_style_corrections_included_in_personalized_prompt(db_session):
+    campaign = await _make_campaign(db_session)
+    db_session.add(StyleCorrection(
+        campaign_id=campaign.id,
+        original_body="Original verbose",
+        corrected_body="Tight punchy version",
+    ))
+    db_session.add(StyleCorrection(
+        campaign_id=campaign.id,
+        original_body="Another",
+        corrected_body="Another short rewrite",
+    ))
+    await db_session.commit()
+
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    system_prompt = create_mock.call_args.kwargs["system"]
+    assert "Tight punchy version" in system_prompt
+    assert "Another short rewrite" in system_prompt
+    assert "MATCH THIS STYLE CLOSELY" in system_prompt
+
+
+async def test_personalized_prompt_when_no_corrections(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    system_prompt = create_mock.call_args.kwargs["system"]
+    assert "No style corrections yet" in system_prompt
+
+
+# --------------------------------------------------------------------------
+# JSON parsing + retry
+# --------------------------------------------------------------------------
+
+
+async def test_retries_with_stricter_prompt_on_parse_failure(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(side_effect=[
+        _anthropic_text("not json at all"),
+        _anthropic_text('{"subject": "Hi", "body": "Body text"}'),
+    ])
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "done"
+    assert create_mock.call_count == 2
+    # The stricter retry should include the explicit instruction.
+    second_call_system = create_mock.call_args_list[1].kwargs["system"]
+    assert "CRITICAL" in second_call_system
+
+
+async def test_marks_failed_when_both_attempts_fail_to_parse(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(side_effect=[
+        _anthropic_text("garbage 1"),
+        _anthropic_text("garbage 2"),
+    ])
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay") as enqueue:
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "parse_failed"
+    enqueue.assert_not_called()
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.compose_status == ComposeStatus.FAILED
+
+
+async def test_strips_markdown_fences_before_parsing(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '```json\n{"subject": "Hello", "body": "Hi"}\n```'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "done"
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.composed_subject == "Hello"
+
+
+async def test_rejects_empty_subject_or_body(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(side_effect=[
+        _anthropic_text('{"subject": "", "body": "Hi"}'),
+        _anthropic_text('{"subject": "OK", "body": ""}'),
+    ])
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "parse_failed"
+
+
+# --------------------------------------------------------------------------
+# Persistence + footer
+# --------------------------------------------------------------------------
+
+
+async def test_appends_unsubscribe_footer_with_lead_id(db_session, monkeypatch):
+    monkeypatch.setattr(
+        "app.workers.compose.settings.WEBHOOK_BASE_URL",
+        "https://test.example.com",
+    )
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '{"subject": "Hi", "body": "Hello there."}'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    expected_footer = f"\n\n---\nTo unsubscribe: https://test.example.com/unsubscribe/{lead.id}"
+    assert refreshed.composed_body.endswith(expected_footer)
+    assert refreshed.composed_body.startswith("Hello there.")
+
+
+async def test_status_transitions_to_done(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+    assert lead.compose_status == ComposeStatus.PENDING
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.compose_status == ComposeStatus.DONE
+
+
+# --------------------------------------------------------------------------
+# Send-enqueue gating
+# --------------------------------------------------------------------------
+
+
+async def test_sample_lead_does_not_enqueue_send(db_session):
+    campaign = await _make_campaign(db_session, status=CampaignStatus.RUNNING)
+    lead = await _make_lead(db_session, campaign, is_sample=True)
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay") as enqueue:
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "done"
+    assert result["send_enqueued"] is False
+    enqueue.assert_not_called()
+
+
+async def test_non_sample_on_running_campaign_enqueues_send(db_session):
+    campaign = await _make_campaign(db_session, status=CampaignStatus.RUNNING)
+    lead = await _make_lead(db_session, campaign, is_sample=False)
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay") as enqueue:
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["send_enqueued"] is True
+    enqueue.assert_called_once_with(str(lead.id))
+
+
+async def test_non_sample_on_previewing_campaign_does_not_send(db_session):
+    campaign = await _make_campaign(db_session, status=CampaignStatus.PREVIEWING)
+    lead = await _make_lead(db_session, campaign, is_sample=False)
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay") as enqueue:
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["send_enqueued"] is False
+    enqueue.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# Edge cases
+# --------------------------------------------------------------------------
+
+
+async def test_missing_lead_returns_not_found():
+    with patch.object(compose_mod.send_lead, "delay") as enqueue:
+        result = await compose_mod.compose_lead_async(str(uuid.uuid4()))
+    assert result == {"status": "not_found"}
+    enqueue.assert_not_called()
+
+
+async def test_calls_anthropic_with_max_tokens_1000_and_no_tools(db_session):
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text('{"subject": "S", "body": "B"}'))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    kwargs = create_mock.call_args.kwargs
+    assert kwargs["max_tokens"] == 1000
+    # Spec: compose tasks use no tools.
+    assert "tools" not in kwargs

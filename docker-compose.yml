@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-emailblaster}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emailblaster}
+      POSTGRES_DB: ${POSTGRES_DB:-emailblaster}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-emailblaster}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-noreply@example.com}
+      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Email Blaster}
+      APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+      HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      IMAP_POLL_INTERVAL_MINUTES: ${IMAP_POLL_INTERVAL_MINUTES:-20}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-http://localhost:8000}
+      PYTHONPATH: /app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-noreply@example.com}
+      BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Email Blaster}
+      APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+      HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      IMAP_POLL_INTERVAL_MINUTES: ${IMAP_POLL_INTERVAL_MINUTES:-20}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-http://localhost:8000}
+      PYTHONPATH: /app
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      REDIS_URL: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      IMAP_POLL_INTERVAL_MINUTES: ${IMAP_POLL_INTERVAL_MINUTES:-20}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      PYTHONPATH: /app
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:

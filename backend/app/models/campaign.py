@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import enum
+import uuid
+from datetime import datetime, time
+from typing import TYPE_CHECKING
+
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, Time, func
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.connected_account import ConnectedAccount
+    from app.models.email_event import EmailEvent
+    from app.models.lead import Lead
+    from app.models.style_correction import StyleCorrection
+
+
+class ResearchMode(str, enum.Enum):
+    FAST = "fast"
+    DEEP = "deep"
+
+
+class CampaignStatus(str, enum.Enum):
+    DRAFT = "draft"
+    PREVIEWING = "previewing"
+    APPROVED = "approved"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETE = "complete"
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    goal: Mapped[str] = mapped_column(Text, nullable=False)
+    tone: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_name: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_email: Mapped[str] = mapped_column(Text, nullable=False)
+    research_mode: Mapped[ResearchMode] = mapped_column(
+        Enum(ResearchMode, name="research_mode", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=ResearchMode.FAST,
+        server_default=ResearchMode.FAST.value,
+    )
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    connected_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("connected_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    schedule_days: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list, server_default="{}")
+    schedule_time_start: Mapped[time] = mapped_column(Time, nullable=False)
+    schedule_time_end: Mapped[time] = mapped_column(Time, nullable=False)
+    schedule_timezone: Mapped[str] = mapped_column(String, nullable=False, default="UTC", server_default="UTC")
+    max_per_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    min_delay_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60, server_default="60")
+    status: Mapped[CampaignStatus] = mapped_column(
+        Enum(CampaignStatus, name="campaign_status", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=CampaignStatus.DRAFT,
+        server_default=CampaignStatus.DRAFT.value,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    connected_account: Mapped["ConnectedAccount | None"] = relationship(back_populates="campaigns")
+    leads: Mapped[list["Lead"]] = relationship(
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    events: Mapped[list["EmailEvent"]] = relationship(
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    style_corrections: Mapped[list["StyleCorrection"]] = relationship(
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
