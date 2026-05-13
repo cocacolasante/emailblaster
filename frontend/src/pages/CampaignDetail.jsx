@@ -11,7 +11,9 @@ import {
   pauseCampaign,
   reEnrollHalted,
   resumeCampaign,
+  updateCampaign,
 } from '../api/campaigns.js';
+import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
 import LeadTable from '../components/LeadTable.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import { useToast } from '../components/Toast.jsx';
@@ -117,7 +119,58 @@ function PipelineCard({ progress, status, onLaunch, launchLoading }) {
   );
 }
 
-function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch, launchLoading }) {
+function LinkedInAccountCard({ campaign, linkedinAccounts, onSave, saving }) {
+  const current = linkedinAccounts.find((a) => a.id === campaign.linkedin_account_id);
+  const [selected, setSelected] = useState(campaign.linkedin_account_id || '');
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+      <h2 className="text-base font-semibold text-slate-900 mb-3">LinkedIn account</h2>
+      {linkedinAccounts.length === 0 ? (
+        <p className="text-sm text-slate-500">
+          No LinkedIn accounts connected.{' '}
+          <a href="/settings" className="text-blue-600 hover:underline">Add one in Settings.</a>
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {current && selected === campaign.linkedin_account_id && (
+            <p className="text-sm text-slate-700">
+              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium mr-2 ${current.status === 'ok' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                {current.status}
+              </span>
+              <strong>{current.label}</strong>{' '}
+              <span className="text-slate-500">({current.linkedin_email})</span>
+            </p>
+          )}
+          <div className="flex gap-2 items-center">
+            <select
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            >
+              <option value="">— none —</option>
+              {linkedinAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label} ({a.linkedin_email}) — {a.status}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => onSave(selected || null)}
+              disabled={saving || selected === (campaign.linkedin_account_id || '')}
+              className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch, launchLoading, linkedinAccounts, onSaveLinkedIn, savingLinkedIn }) {
   const total = campaign.lead_counts?.total ?? 0;
   const sent = campaign.lead_counts?.sent ?? 0;
   const sendProgress = total > 0 ? Math.min(100, (sent / total) * 100) : 0;
@@ -210,6 +263,13 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
             </p>
           )}
         </div>
+
+        <LinkedInAccountCard
+          campaign={campaign}
+          linkedinAccounts={linkedinAccounts}
+          onSave={onSaveLinkedIn}
+          saving={savingLinkedIn}
+        />
 
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 className="text-base font-semibold text-slate-900 mb-4">Campaign config</h2>
@@ -767,6 +827,20 @@ export default function CampaignDetail() {
     refetchInterval: campaign?.status === 'previewing' ? 5000 : campaign?.status === 'running' ? 8000 : false,
   });
 
+  const { data: linkedinAccounts = [] } = useQuery({
+    queryKey: ['linkedin-accounts'],
+    queryFn: listLinkedInAccounts,
+  });
+
+  const linkedinAssignMutation = useMutation({
+    mutationFn: (accountId) => updateCampaign(id, { linkedin_account_id: accountId }),
+    onSuccess: () => {
+      toast.success('LinkedIn account updated');
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] });
+    },
+    onError: (e) => toast.error(e?.response?.data?.detail || e.message || 'Update failed'),
+  });
+
   const pauseMutation = useMutation({
     mutationFn: () => pauseCampaign(id),
     onSuccess: () => {
@@ -891,6 +965,9 @@ export default function CampaignDetail() {
           pauseLoading={pauseMutation.isPending || resumeMutation.isPending}
           onLaunch={() => navigate(`/campaigns/${id}/preview`)}
           launchLoading={launchMutation.isPending}
+          linkedinAccounts={linkedinAccounts}
+          onSaveLinkedIn={(accountId) => linkedinAssignMutation.mutate(accountId)}
+          savingLinkedIn={linkedinAssignMutation.isPending}
         />
       )}
       {tab === 'activity' && (

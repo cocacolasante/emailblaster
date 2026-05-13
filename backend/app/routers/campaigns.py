@@ -197,13 +197,19 @@ async def update_campaign(
     db: AsyncSession = Depends(get_db),
 ) -> CampaignResponse:
     c = await _get_or_404(db, campaign_id)
-    if c.status not in {CampaignStatus.DRAFT, CampaignStatus.PREVIEWING}:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot edit campaign in status '{c.status.value}' (only draft or previewing)",
-        )
 
     updates = payload.model_dump(exclude_unset=True)
+
+    # Account assignments are safe to change on any active campaign.
+    # Only enforce the status guard when content fields are also being edited.
+    _account_only_fields = {"linkedin_account_id", "connected_account_id"}
+    if updates.keys() - _account_only_fields:
+        if c.status not in {CampaignStatus.DRAFT, CampaignStatus.PREVIEWING}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot edit campaign in status '{c.status.value}' (only draft or previewing)",
+            )
+
     if "connected_account_id" in updates:
         await _verify_account_exists(db, updates["connected_account_id"])
     if "linkedin_account_id" in updates:

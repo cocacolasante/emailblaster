@@ -37,10 +37,15 @@ class Settings(BaseSettings):
     IMAP_POLL_INTERVAL_MINUTES: int = 20
 
     # LinkedIn provider selection
-    # "hybrid"    (default) — HTTP for reads, Playwright for writes (best combo)
-    # "playwright"          — all actions via headless Chromium
-    # "http"                — all actions via linkedin-api HTTP (legacy/testing)
-    LINKEDIN_PROVIDER: str = "hybrid"
+    # "playwright" (default) — all actions via headless Chromium. Safe to use
+    #                          without a residential proxy because the session
+    #                          cookies are used inside a real browser session.
+    # "hybrid"               — Playwright writes + HTTP reads. Only safe with
+    #                          LINKEDIN_PROXY_URL set; otherwise the HTTP poll
+    #                          hits LinkedIn from the datacenter IP with a
+    #                          home-IP-bound li_at and gets the cookie flagged.
+    # "http"                 — all actions via linkedin-api HTTP (legacy).
+    LINKEDIN_PROVIDER: str = "playwright"
 
     # LinkedIn (DIY: linkedin-api library + optional residential proxy)
     LINKEDIN_PROXY_URL: str = ""  # e.g. http://user:pass@host:port; empty = direct

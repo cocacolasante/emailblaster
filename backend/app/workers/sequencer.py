@@ -107,10 +107,12 @@ async def _li_rate_check(
             last_ts = 0.0
         elapsed = time.time() - last_ts
         if elapsed < settings.LINKEDIN_MIN_ACTION_DELAY_SECONDS:
+            remaining = int(settings.LINKEDIN_MIN_ACTION_DELAY_SECONDS - elapsed) + 1
             return {
                 "ok": False,
                 "reason": "min_delay",
-                "error": f"under min delay ({int(settings.LINKEDIN_MIN_ACTION_DELAY_SECONDS - elapsed) + 1}s remaining)",
+                "remaining": remaining,
+                "error": f"under min delay ({remaining}s remaining)",
             }
 
     # 2. Overall daily cap on the account.
@@ -461,6 +463,9 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             rate_page_id = cfg.get("page_id") if kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE else None
             rate = await _li_rate_check(account, kind=kind, page_id=rate_page_id)
             if not rate.get("ok"):
+                if rate.get("reason") == "min_delay":
+                    # Signal the Celery task to reschedule rather than skip.
+                    return {"status": "min_delay_retry", "countdown": rate["remaining"]}
                 return {"status": "rate_limited", "error": rate.get("error")}
 
             profile = ProfileRef.from_url(lead.linkedin_url)
@@ -794,6 +799,15 @@ def send_linkedin_step(self, lead_id: str, node_id: str) -> dict[str, Any]:  # n
                 )
             )
             return {"status": "failed", "error": str(exc)}
+
+    # Min-delay: reschedule for the exact remaining window instead of writing
+    # a skipped execution row and advancing the cursor past the step.
+    if result.get("status") == "min_delay_retry":
+        send_linkedin_step.apply_async(
+            args=[lead_id, node_id],
+            countdown=result["countdown"],
+        )
+        return result
 
     asyncio.run(
         _record_execution_and_advance(

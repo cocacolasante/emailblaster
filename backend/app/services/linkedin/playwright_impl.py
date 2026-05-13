@@ -46,8 +46,14 @@ from app.services.linkedin.base import (
 
 logger = logging.getLogger(__name__)
 
+_LI_ROOT = "https://www.linkedin.com"
 _LI_FEED = "https://www.linkedin.com/feed/"
 _LI_LOGIN = "https://www.linkedin.com/login"
+
+# Ephemeral server-side cookies that must NOT be carried across browser sessions.
+# JSESSIONID is a ~30-min server-side token; injecting a stale one causes LinkedIn
+# to redirect-loop trying to re-issue a fresh one.
+_EPHEMERAL_COOKIES = {"JSESSIONID"}
 
 # Chromium args safe for Docker / root / single-process containers.
 _BROWSER_ARGS = [
@@ -126,13 +132,29 @@ async def _new_context(browser, state: dict | None = None):
 # --------------------------------------------------------------------------
 
 
+_SESSION_EXPIRED_MSG = (
+    "LinkedIn session expired — go to Settings → LinkedIn Accounts, "
+    "paste a fresh li_at cookie, and save."
+)
+
+
+async def _goto_safe(page, url: str, **kwargs) -> None:
+    """Navigate to *url*, converting redirect loops into a clear session-expiry error."""
+    try:
+        await page.goto(url, **kwargs)
+    except Exception as exc:
+        if "ERR_TOO_MANY_REDIRECTS" in str(exc):
+            raise ChallengeRequired(_SESSION_EXPIRED_MSG, challenge_url="https://www.linkedin.com")
+        raise
+
+
 async def _check_for_challenge(page) -> None:
     url = page.url
     blocked = ("/checkpoint", "/challenge", "/authwall", "/uas/login", "/uas/authenticate")
     if any(seg in url for seg in blocked):
         raise ChallengeRequired(
             "LinkedIn challenge detected — complete verification in your browser.",
-            challenge_url=url,
+            challenge_url="https://www.linkedin.com",
         )
 
 
@@ -177,12 +199,45 @@ async def _login_with_password(page, account: Any) -> None:
 
 
 async def _ensure_authenticated(page, account: Any) -> None:
-    """Navigate to /feed/; login with password if the session isn't valid."""
-    await page.goto(_LI_FEED, wait_until="domcontentloaded", timeout=30_000)
+    """Navigate to LinkedIn root then feed.  Raises ChallengeRequired if the
+    stored session is dead and no automatic recovery is safe.
+
+    We navigate to the root URL first so LinkedIn can issue a fresh JSESSIONID
+    + bcookie for this browser.  Going directly to /feed/ with only li_at can
+    trigger a redirect storm.
+
+    Recovery rules:
+    - If cookies are stored but we end up not-logged-in: those cookies are dead.
+      Password login from a headless server browser reliably trips LinkedIn's
+      bot-detection challenge, so we DO NOT retry — we raise ChallengeRequired
+      and ask the user to paste a fresh li_at.
+    - If no cookies are stored (first-time setup): password login is the only
+      option, so we try it once. It may still get challenged.
+    """
+    had_stored_session = bool(getattr(account, "session_cookies_encrypted", None))
+
+    # Step 1: root — lets LinkedIn issue bcookie + JSESSIONID for this browser.
+    await _goto_safe(page, _LI_ROOT, wait_until="domcontentloaded", timeout=30_000)
     await _check_for_challenge(page)
+
     if not await _is_logged_in(page):
+        if had_stored_session:
+            # Stored cookies didn't authenticate us — they're expired or LinkedIn
+            # has flagged them.  Don't burn an attempt on a server-side password
+            # login (which always triggers a challenge from headless browsers).
+            raise ChallengeRequired(
+                _SESSION_EXPIRED_MSG,
+                challenge_url="https://www.linkedin.com",
+            )
+        # First-time setup with no stored cookies → try password login.
         await _login_with_password(page, account)
-    # Human-like pause after the feed loads — mimics reading the page.
+        return
+
+    # Step 2: navigate to feed to confirm the session is active.
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+    await _goto_safe(page, _LI_FEED, wait_until="domcontentloaded", timeout=30_000)
+    await _check_for_challenge(page)
+    # Human-like pause after the feed loads.
     await asyncio.sleep(random.uniform(1.5, 4.0))
 
 
@@ -237,12 +292,90 @@ def _parse_json(text: str) -> dict | list:
 # --------------------------------------------------------------------------
 
 
+# JS that extracts a fsd_profile URN from the currently-loaded profile page.
+# Tries multiple sources because LinkedIn changes its DOM frequently:
+#   1. data-urn / data-entity-urn attributes (newer pages)
+#   2. <code id="bpr-guid-*"> JSON blobs embedded by the SPA
+#   3. Plain regex over the whole page source as last resort
+_URN_SCRAPE_JS = """
+() => {
+    // 1) Data attributes — most reliable when present.
+    for (const attr of ['data-urn', 'data-entity-urn', 'data-member-id']) {
+        const el = document.querySelector(`[${attr}*="fsd_profile:"]`);
+        if (el) {
+            const v = el.getAttribute(attr);
+            const m = v && v.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/);
+            if (m) return m[0];
+        }
+    }
+    // 2) Embedded JSON in <code> tags (used by LinkedIn's SPA bootstrap).
+    const codes = document.querySelectorAll('code');
+    for (const c of codes) {
+        const t = c.textContent || '';
+        if (t.indexOf('fsd_profile') === -1) continue;
+        const m = t.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/);
+        if (m) return m[0];
+    }
+    // 3) Whole-document regex fallback.
+    const html = document.documentElement.outerHTML;
+    const m = html.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/);
+    return m ? m[0] : null;
+}
+"""
+
+
+async def _scrape_urn_from_page(page, public_id: str) -> str | None:
+    """Navigate to the public profile page (if not already there) and extract
+    the FSD profile URN from the rendered DOM.  More reliable than the Voyager
+    API endpoint, which sometimes returns non-200 or a shape that doesn't
+    include the URN we need.
+    """
+    if f"/in/{public_id}" not in page.url:
+        try:
+            await _goto_safe(
+                page,
+                f"https://www.linkedin.com/in/{public_id}/",
+                wait_until="domcontentloaded",
+                timeout=20_000,
+            )
+            await _check_for_challenge(page)
+            # Let LinkedIn's SPA hydrate so embedded URNs land in the DOM.
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+        except ChallengeRequired:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("URN scrape: profile navigation failed for %s: %s", public_id, exc)
+            return None
+    try:
+        return await page.evaluate(_URN_SCRAPE_JS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("URN scrape: page.evaluate failed for %s: %s", public_id, exc)
+        return None
+
+
 async def _resolve_urn(page, public_id: str) -> str | None:
+    """Resolve a profile URN, preferring DOM scrape over the Voyager API.
+
+    Older code path: GET /voyager/api/identity/profiles/{public_id} — this is
+    flaky from a browser context (sometimes returns non-200, sometimes returns
+    a response shape without entityUrn).  Kept as a fallback only.
+    """
+    # Primary: DOM scrape of the profile page (works as long as the page loads).
+    urn = await _scrape_urn_from_page(page, public_id)
+    if urn:
+        return urn
+
+    # Fallback: legacy Voyager API.  Keeping in case scrape misses (e.g. page
+    # was blocked or the user is on a slow connection).
     status, body = await _voyager(
         page, "GET",
         f"https://www.linkedin.com/voyager/api/identity/profiles/{public_id}",
     )
     if status != 200:
+        logger.warning(
+            "URN fallback: voyager returned %s for %s (body=%s)",
+            status, public_id, body[:200],
+        )
         return None
     data = _parse_json(body)
     return (
@@ -272,41 +405,72 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
         from playwright.async_api import async_playwright
 
         stored = getattr(account, "session_cookies_encrypted", None)
-        pw_state: dict | None = None
-        li_at: str | None = None
+        # init_state is passed to new_context(storage_state=...) — preserves
+        # bcookie/bscookie (browser identity) so LinkedIn recognises the session.
+        # We strip only JSESSIONID, which is ephemeral server-side state (~30 min)
+        # that causes redirect loops when injected into a fresh browser session.
+        init_state: dict | None = None
+        # extra_cookies is used when we only have a bare li_at (no full state yet).
+        extra_cookies: list[dict] = []
 
         if stored:
             try:
                 blob = encryption.decrypt(stored)
-                if _is_playwright_state(blob):
-                    pw_state = json.loads(blob)
+                data = json.loads(blob)
+
+                if isinstance(data, dict) and "origins" in data:
+                    # Full Playwright storage_state — filter ephemeral cookies.
+                    cookies = [c for c in data.get("cookies", [])
+                               if c.get("name") not in _EPHEMERAL_COOKIES]
+                    init_state = {"cookies": cookies, "origins": data.get("origins", [])}
+                    logger.debug(
+                        "LinkedIn _run: loading full state for acct %s — %d cookies (%s)",
+                        account.id,
+                        len(cookies),
+                        ", ".join(c["name"] for c in cookies),
+                    )
                 else:
-                    li_at = _extract_li_at(blob)
+                    # Bare cookie list (HTTP provider / user-pasted li_at).
+                    raw = data.get("cookies", data) if isinstance(data, dict) else data
+                    li_at = next(
+                        (c.get("value") for c in (raw or []) if c.get("name") == "li_at"),
+                        None,
+                    )
+                    if li_at:
+                        extra_cookies = [{
+                            "name": "li_at", "value": li_at,
+                            "domain": ".linkedin.com", "path": "/",
+                            "secure": True, "httpOnly": True, "sameSite": "None",
+                        }]
+                        logger.debug("LinkedIn _run: bare li_at for acct %s", account.id)
             except Exception as exc:
                 logger.warning("LinkedIn session decrypt failed for %s: %s", account.id, exc)
 
         async with async_playwright() as pw:
             browser = await _launch_browser(pw)
             try:
-                context = await _new_context(browser, state=pw_state)
-
-                # Bootstrap from old li_at format if we have no Playwright state
-                if li_at and not pw_state:
-                    await context.add_cookies([{
-                        "name": "li_at",
-                        "value": li_at,
-                        "domain": ".linkedin.com",
-                        "path": "/",
-                        "secure": True,
-                        "httpOnly": True,
-                        "sameSite": "None",
-                    }])
-
+                context = await _new_context(browser, state=init_state)
+                if extra_cookies:
+                    await context.add_cookies(extra_cookies)
                 page = await context.new_page()
                 try:
                     result = await fn(page, account, *args, **kwargs)
                     state = await context.storage_state()
                     account.session_cookies_encrypted = encryption.encrypt(json.dumps(state))
+                    # Success → clear any stale challenge state. Status reset
+                    # is best-effort (avoids circular import on model enum).
+                    try:
+                        from app.models import LinkedInAccountStatus
+                        if account.status in (
+                            LinkedInAccountStatus.CHALLENGED,
+                            LinkedInAccountStatus.FAILED,
+                            LinkedInAccountStatus.UNTESTED,
+                        ):
+                            account.status = LinkedInAccountStatus.OK
+                    except Exception:  # noqa: BLE001
+                        pass
+                    account.pending_challenge_url = None
+                    account.last_error = None
                     return result
                 finally:
                     await page.close()
@@ -341,7 +505,8 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
 
         async def _fn(page, account):
             await _ensure_authenticated(page, account)
-            await page.goto(
+            await _goto_safe(
+                page,
                 f"https://www.linkedin.com/in/{profile.public_id}/",
                 wait_until="domcontentloaded",
                 timeout=20_000,
@@ -480,12 +645,20 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
         async def _fn(page, account):
             await _ensure_authenticated(page, account)
             await asyncio.sleep(random.uniform(1.0, 3.0))
-            raw_urn = profile.urn or await _resolve_urn(page, profile.public_id)
-            full_urn = _normalize_urn(raw_urn)
-            if not full_urn:
-                raise LinkedInProviderError("could not resolve profile URN for connect")
 
-            profile_id = full_urn.split(":")[-1]
+            # The growth/normInvitations endpoint accepts the public_id (URL slug)
+            # directly as `profileId` — this is what the linkedin-api package
+            # has used reliably for years.  Going through URN resolution is
+            # unnecessary and was the source of "could not resolve profile URN
+            # for connect" errors when the Voyager profiles API returned
+            # non-200 from a browser context.
+            profile_id = profile.public_id
+            if not profile_id and profile.urn:
+                # Best-effort fallback: extract the FSD ID from a URN.
+                profile_id = profile.urn.split(":")[-1]
+            if not profile_id:
+                raise LinkedInProviderError("send_connect_request requires a public_id")
+
             payload: dict = {
                 "invitee": {
                     "com.linkedin.voyager.growth.invitation.InviteeProfile": {
@@ -503,7 +676,7 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
             )
             if status not in (200, 201, 204):
                 raise LinkedInProviderError(f"send_connect returned {status}: {body[:200]}")
-            return {"urn": full_urn}
+            return {"profile_id": profile_id}
 
         try:
             result = await self._run(account, _fn)
@@ -512,7 +685,7 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
             raise
         except Exception as exc:
             return ActionResult(ok=False, error=str(exc))
-        return ActionResult(ok=True, external_id=result.get("urn"), meta=result)
+        return ActionResult(ok=True, external_id=result.get("profile_id"), meta=result)
 
     # ------------------------------------------------------------------ #
     # send_dm

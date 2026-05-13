@@ -22,11 +22,40 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Hybrid LinkedIn provider + anti-detection hardening.**
+- **Last completed:** **Stop HTTP poller from invalidating the li_at.**
+  - **Default provider switched from `hybrid` → `playwright`.** Confirmed
+    via logs (2026-05-13 19:17–19:19) that the hybrid HTTP poller hits
+    LinkedIn from the Docker host's datacenter IP every 5 min with the
+    user's home-IP-bound `li_at`. LinkedIn flags the cookie globally,
+    so the next Playwright action fails with "session expired" and the
+    user has to re-paste. Playwright-only sends everything through the
+    browser session so the cookie stays valid.
+  - **`_ensure_authenticated` no longer falls back to password login**
+    when stored cookies fail to authenticate. Headless password login
+    almost always trips LinkedIn's bot-detection challenge. Now raises
+    `ChallengeRequired` immediately when cookies are stored but invalid;
+    password login only runs on true first-time setup (no stored cookies).
+  - **`_run` now keeps the full Playwright `storage_state`** (minus
+    `JSESSIONID` only) across sessions. Previously stripped everything
+    except `li_at`, which meant LinkedIn saw a "new browser" every run
+    (no `bcookie`/`bscookie` continuity) and trip-redirected.
+  - **`_run` auto-clears `pending_challenge_url` and resets status**
+    from `CHALLENGED|FAILED|UNTESTED → OK` on a successful action.
+  - **`_ensure_authenticated` navigates to root → feed** in two hops
+    rather than straight to `/feed/` — lets LinkedIn issue a fresh
+    `JSESSIONID` + `bcookie` before we ask for protected content.
+  - Three provider impls remain behind `LinkedInProvider` ABC:
+    - `"playwright"` **(default)** — all actions via headless Chromium.
+      Safe without a residential proxy.
+    - `"hybrid"` — Playwright writes + HTTP reads. **Only safe with
+      `LINKEDIN_PROXY_URL` set;** otherwise the poller poisons the cookie.
+    - `"http"` — legacy `linkedin-api` HTTP (testing/fallback only).
+  Tests: **backend 365 passed**.
+
+- **Previously:** **Hybrid LinkedIn provider + anti-detection hardening.**
   - **Three provider impls**, all behind `LinkedInProvider` ABC, selectable
     via `LINKEDIN_PROVIDER` env var:
-    - `"hybrid"` **(default)** — HTTP for reads, Playwright for writes.
-      Best speed + fingerprint combo.
+    - `"hybrid"` (was default — see above) — HTTP for reads, Playwright for writes.
     - `"playwright"` — all actions via headless Chromium.
     - `"http"` — legacy `linkedin-api` HTTP (kept for testing/fallback).
   - **`hybrid_impl.py`** (`HybridLinkedInProvider`): all user-visible
@@ -347,4 +376,4 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-13 — Activity tab now shows LinkedIn/sequence data + re-enroll halted leads. Backend 365 / frontend 153._
+_Last updated: 2026-05-13 — Default LinkedIn provider switched to "playwright" so the HTTP poller stops poisoning the li_at. Backend 365._

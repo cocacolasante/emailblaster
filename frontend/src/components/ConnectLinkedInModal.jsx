@@ -179,9 +179,11 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
               </button>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              If 2FA is enabled on this LinkedIn account, the first test will
-              fail with a challenge — disable 2FA or be ready to solve it in
-              your browser.
+              Required — the app logs into LinkedIn on your behalf using a real
+              browser. It also uses this password to re-login automatically when
+              the session expires, so you don&apos;t need to update cookies manually.{' '}
+              <span className="text-amber-700 font-medium">Disable 2FA on this account</span>{' '}
+              so automated re-logins work without interruption.
             </p>
           </div>
 
@@ -210,7 +212,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
               onClick={() => setShowCookieSection((v) => !v)}
               className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 hover:bg-slate-100 text-sm font-medium text-slate-700 transition-colors"
             >
-              <span>Stuck in a verification loop? Use session cookie instead</span>
+              <span>Optional: seed with an existing session cookie</span>
               <svg
                 className={`w-4 h-4 text-slate-400 transition-transform ${showCookieSection ? 'rotate-180' : ''}`}
                 fill="none" viewBox="0 0 24 24" stroke="currentColor"
@@ -221,7 +223,8 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
             {showCookieSection && (
               <div className="px-4 pb-4 pt-3 space-y-2">
                 <label htmlFor="li-at" className="block text-sm font-medium text-slate-700">
-                  <code className="bg-slate-100 px-1 rounded text-xs">li_at</code> session cookie
+                  <code className="bg-slate-100 px-1 rounded text-xs">li_at</code> session cookie{' '}
+                  <span className="text-xs text-slate-400 font-normal">(optional)</span>
                 </label>
                 <input
                   id="li-at"
@@ -231,14 +234,19 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-mono"
                 />
                 <div className="text-xs text-slate-500 space-y-1">
-                  <p className="font-medium text-slate-600">How to get it:</p>
+                  <p>
+                    If you&apos;re already logged into LinkedIn in your browser, pasting
+                    your <code className="bg-slate-100 px-1 rounded">li_at</code> cookie lets
+                    the app skip the login form on the first test. The password is still used
+                    to re-login automatically when the session later expires.
+                  </p>
+                  <p className="font-medium text-slate-600 mt-1">How to get it:</p>
                   <ol className="list-decimal list-inside space-y-0.5">
                     <li>Open LinkedIn in your browser and log in normally</li>
                     <li>Open DevTools (F12) → Application → Cookies → https://www.linkedin.com</li>
                     <li>Find the cookie named <code className="bg-slate-100 px-1 rounded">li_at</code></li>
                     <li>Copy its value and paste it above, then Save</li>
                   </ol>
-                  <p className="text-amber-700 mt-1">This bypasses the password login entirely, so LinkedIn won&apos;t challenge it.</p>
                 </div>
               </div>
             )}
@@ -257,17 +265,25 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
 
           {challenged && (
             <div className="p-3 rounded-lg bg-yellow-50 border border-yellow-200 text-sm text-yellow-900 space-y-2">
-              <div className="font-medium">LinkedIn is blocking the automated login.</div>
-              <div className="text-xs space-y-1">
-                <p>
-                  The best fix is to paste your <code className="bg-yellow-100 px-1 rounded">li_at</code> cookie
-                  instead — expand <strong>"Stuck in a verification loop?"</strong> above, follow the steps,
-                  and Save.
-                </p>
-                <p className="text-yellow-800">
-                  The password login will keep triggering challenges because LinkedIn detects
-                  it as automated. The session cookie bypasses that entirely.
-                </p>
+              <div className="font-medium">LinkedIn requires verification before the app can log in.</div>
+              <div className="text-xs space-y-2">
+                <p className="font-medium text-yellow-800">Step 1 — log into LinkedIn in your real browser and complete any verification it shows:</p>
+                <a
+                  href="https://www.linkedin.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-yellow-100 hover:bg-yellow-200 border border-yellow-300 rounded-md font-medium text-yellow-900"
+                >
+                  <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                  Open LinkedIn
+                </a>
+                <p className="font-medium text-yellow-800 pt-1">Step 2 — after completing verification, do one of:</p>
+                <ol className="list-decimal list-inside space-y-1 text-yellow-800">
+                  <li>Grab your fresh <code className="bg-yellow-100 px-1 rounded">li_at</code> cookie from DevTools → expand <strong>&ldquo;Optional: seed with an existing session cookie&rdquo;</strong> above, paste it, and Save.</li>
+                  <li>Or click <strong>Clear challenge state</strong> below then <strong>Test connection</strong> — the app will re-login with your password.</li>
+                </ol>
               </div>
               <button
                 type="button"
