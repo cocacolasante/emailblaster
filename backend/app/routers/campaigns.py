@@ -18,9 +18,14 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
+    LeadSequenceState,
+    LeadSequenceStatus,
+    LeadStepExecution,
     LinkedInAccount,
     ResearchStatus,
     SendStatus,
+    Sequence,
+    SequenceNode,
 )
 from app.workers.send import compute_next_send_window
 from app.schemas.campaign import (
@@ -34,6 +39,8 @@ from app.schemas.campaign import (
     LeadCounts,
     RecentLeadEvent,
     RetryFailedResponse,
+    SequenceLeadStateInfo,
+    SequenceStepEvent,
     campaign_to_dict,
 )
 from app.schemas.lead import LeadResponse, LeadSummary, PaginatedLeads
@@ -326,6 +333,7 @@ async def get_campaign_activity(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignActivity:
+    from datetime import timezone
     campaign = await _get_or_404(db, campaign_id)
 
     # Status counts across the full pipeline
@@ -362,11 +370,8 @@ async def get_campaign_activity(
     # Estimated minutes: pending leads / throughput (1 per min_delay_seconds within window)
     queue_depth = pending_send + scheduled_send
     if queue_depth > 0 and campaign.min_delay_seconds > 0:
-        # Pessimistic: all pending leads go out sequentially at min_delay
         raw_minutes = math.ceil((queue_depth * campaign.min_delay_seconds) / 60)
-        # If outside the window, add the gap until the window opens
         if next_window_at is not None:
-            from datetime import timezone
             gap_minutes = max(0, int((next_window_at - datetime.now(timezone.utc)).total_seconds() / 60))
             estimated_minutes_remaining: int | None = raw_minutes + gap_minutes
         else:
@@ -374,7 +379,7 @@ async def get_campaign_activity(
     else:
         estimated_minutes_remaining = None
 
-    # 20 most recently updated leads for the activity feed
+    # 20 most recently updated leads for the email pipeline activity feed
     recent_rows = (await db.execute(
         select(Lead)
         .where(Lead.campaign_id == campaign_id)
@@ -398,6 +403,101 @@ async def get_campaign_activity(
         for lead in recent_rows
     ]
 
+    # Sequence state counts
+    seq_state_q = await db.execute(
+        select(LeadSequenceState.status, func.count())
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(Lead.campaign_id == campaign_id)
+        .group_by(LeadSequenceState.status)
+    )
+    seq_by_status: dict[LeadSequenceStatus, int] = {row[0]: row[1] for row in seq_state_q.all()}
+    sequence_active = seq_by_status.get(LeadSequenceStatus.ACTIVE, 0)
+    sequence_halted = seq_by_status.get(LeadSequenceStatus.HALTED, 0)
+    sequence_completed = seq_by_status.get(LeadSequenceStatus.COMPLETED, 0)
+    sequence_pending = seq_by_status.get(LeadSequenceStatus.PENDING, 0)
+
+    # Recent sequence step executions (includes LinkedIn + follow-up emails)
+    step_exec_rows = (await db.execute(
+        select(LeadStepExecution, Lead, SequenceNode)
+        .join(Lead, Lead.id == LeadStepExecution.lead_id)
+        .join(SequenceNode, SequenceNode.id == LeadStepExecution.node_id)
+        .where(Lead.campaign_id == campaign_id)
+        .order_by(LeadStepExecution.attempted_at.desc())
+        .limit(30)
+    )).all()
+
+    recent_sequence_steps = [
+        SequenceStepEvent(
+            lead_id=row[1].id,
+            email=row[1].email,
+            first_name=row[1].first_name,
+            last_name=row[1].last_name,
+            company=row[1].company,
+            node_kind=row[2].kind.value,
+            result=row[0].result.value,
+            error=row[0].error,
+            attempted_at=row[0].attempted_at,
+        )
+        for row in step_exec_rows
+    ]
+
+    # Halted leads (leads whose sequence cursor points at a deleted/blocked node)
+    halted_rows = (await db.execute(
+        select(LeadSequenceState, Lead, SequenceNode)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .outerjoin(SequenceNode, SequenceNode.id == LeadSequenceState.current_node_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadSequenceState.status == LeadSequenceStatus.HALTED,
+        )
+        .order_by(LeadSequenceState.updated_at.desc())
+        .limit(20)
+    )).all()
+
+    halted_leads = [
+        SequenceLeadStateInfo(
+            lead_id=row[1].id,
+            email=row[1].email,
+            first_name=row[1].first_name,
+            last_name=row[1].last_name,
+            company=row[1].company,
+            status=row[0].status.value,
+            current_node_kind=row[2].kind.value if row[2] else None,
+            next_run_at=row[0].next_run_at,
+            halt_reason=row[0].halt_reason,
+        )
+        for row in halted_rows
+    ]
+
+    # Upcoming scheduled sequence steps (active leads sorted by next_run_at)
+    upcoming_rows = (await db.execute(
+        select(LeadSequenceState, Lead, SequenceNode)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .outerjoin(SequenceNode, SequenceNode.id == LeadSequenceState.current_node_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadSequenceState.status == LeadSequenceStatus.ACTIVE,
+            LeadSequenceState.next_run_at.is_not(None),
+        )
+        .order_by(LeadSequenceState.next_run_at.asc())
+        .limit(10)
+    )).all()
+
+    upcoming_steps = [
+        SequenceLeadStateInfo(
+            lead_id=row[1].id,
+            email=row[1].email,
+            first_name=row[1].first_name,
+            last_name=row[1].last_name,
+            company=row[1].company,
+            status=row[0].status.value,
+            current_node_kind=row[2].kind.value if row[2] else None,
+            next_run_at=row[0].next_run_at,
+            halt_reason=row[0].halt_reason,
+        )
+        for row in upcoming_rows
+    ]
+
     return CampaignActivity(
         researching=researching,
         composing=composing,
@@ -405,10 +505,74 @@ async def get_campaign_activity(
         scheduled_send=scheduled_send,
         sent=sent,
         failed=failed,
+        sequence_active=sequence_active,
+        sequence_halted=sequence_halted,
+        sequence_completed=sequence_completed,
+        sequence_pending=sequence_pending,
         next_window_at=next_window_at,
         estimated_minutes_remaining=estimated_minutes_remaining,
         recent_events=recent_events,
+        recent_sequence_steps=recent_sequence_steps,
+        halted_leads=halted_leads,
+        upcoming_steps=upcoming_steps,
     )
+
+
+# --------------------------------------------------------------------------
+# Re-enroll halted leads
+# --------------------------------------------------------------------------
+
+
+@router.post("/{campaign_id}/re-enroll-halted")
+async def re_enroll_halted_leads(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    """Reset all halted sequence states back to the entry node so the
+    sequencer picks them up on the next beat tick."""
+    from datetime import timezone
+    await _get_or_404(db, campaign_id)
+
+    halted_states = (await db.execute(
+        select(LeadSequenceState)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadSequenceState.status == LeadSequenceStatus.HALTED,
+        )
+    )).scalars().all()
+
+    if not halted_states:
+        return {"re_enrolled": 0}
+
+    seq = (await db.execute(
+        select(Sequence).where(Sequence.campaign_id == campaign_id)
+    )).scalar_one_or_none()
+    if seq is None:
+        raise HTTPException(status_code=404, detail="No sequence found for campaign")
+
+    entry_node = (await db.execute(
+        select(SequenceNode).where(
+            and_(
+                SequenceNode.sequence_id == seq.id,
+                SequenceNode.is_entry.is_(True),
+                SequenceNode.deleted_at.is_(None),
+            )
+        )
+    )).scalar_one_or_none()
+    if entry_node is None:
+        raise HTTPException(status_code=409, detail="No live entry node found in sequence")
+
+    now = datetime.now(timezone.utc)
+    for state in halted_states:
+        state.status = LeadSequenceStatus.ACTIVE
+        state.current_node_id = entry_node.id
+        state.halt_reason = None
+        state.next_run_at = now
+        state.entered_current_at = now
+
+    await db.commit()
+    return {"re_enrolled": len(halted_states)}
 
 
 # --------------------------------------------------------------------------

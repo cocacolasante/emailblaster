@@ -152,8 +152,8 @@ async def test_increment_sets_ttl_only_on_first_call(db_session, fake_redis):
 
 
 def _patch_send_pipeline(fake_redis, message_id: str = "msg-1"):
-    """Mock _get_redis to return fake_redis AND brevo.send_email to return msg_id."""
-    redis_patch = patch.object(send_mod, "_get_redis", return_value=fake_redis)
+    """Mock _new_redis to return fake_redis AND brevo.send_email to return msg_id."""
+    redis_patch = patch.object(send_mod, "_new_redis", return_value=fake_redis)
     brevo_patch = patch.object(
         send_mod.brevo, "send_email", AsyncMock(return_value=message_id)
     )

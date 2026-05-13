@@ -108,6 +108,11 @@ export async function getCampaignActivity(id) {
   return data;
 }
 
+export async function reEnrollHalted(campaignId) {
+  const { data } = await client.post(`/campaigns/${campaignId}/re-enroll-halted`);
+  return data;
+}
+
 // ---------- Analytics ----------
 
 export async function getAnalytics(id) {

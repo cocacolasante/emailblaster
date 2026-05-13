@@ -161,6 +161,30 @@ class RecentLeadEvent(BaseModel):
     updated_at: datetime
 
 
+class SequenceStepEvent(BaseModel):
+    lead_id: uuid.UUID
+    email: str
+    first_name: str | None
+    last_name: str | None
+    company: str | None
+    node_kind: str
+    result: str
+    error: str | None
+    attempted_at: datetime
+
+
+class SequenceLeadStateInfo(BaseModel):
+    lead_id: uuid.UUID
+    email: str
+    first_name: str | None
+    last_name: str | None
+    company: str | None
+    status: str
+    current_node_kind: str | None
+    next_run_at: datetime | None
+    halt_reason: str | None
+
+
 class CampaignActivity(BaseModel):
     """Live snapshot of what the campaign is doing right now."""
     researching: int
@@ -169,11 +193,18 @@ class CampaignActivity(BaseModel):
     scheduled_send: int
     sent: int
     failed: int
+    sequence_active: int
+    sequence_halted: int
+    sequence_completed: int
+    sequence_pending: int
     # When the send window next opens (None = open right now)
     next_window_at: datetime | None
     # Estimated minutes until all pending leads are sent (None = unknown)
     estimated_minutes_remaining: int | None
     recent_events: list[RecentLeadEvent]
+    recent_sequence_steps: list[SequenceStepEvent]
+    halted_leads: list[SequenceLeadStateInfo]
+    upcoming_steps: list[SequenceLeadStateInfo]
 
 
 # --------------------------------------------------------------------------

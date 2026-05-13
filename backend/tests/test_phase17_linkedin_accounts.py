@@ -92,17 +92,20 @@ async def test_test_endpoint_success(client, db_session, monkeypatch):
     r = await client.post("/linkedin-accounts/", json=_payload())
     aid = r.json()["id"]
 
-    from app.services.linkedin import linkedin_api_impl
+    # Patch at the router's get_provider call-site so this works regardless
+    # of which concrete provider is configured (Playwright or HTTP).
+    async def fake_test_connection(account):
+        account.session_cookies_encrypted = encryption.encrypt(
+            '{"cookies":[{"name":"li_at","value":"x"}],"origins":[]}'
+        )
+        return ActionResult(ok=True)
 
-    def fake_build(account):
-        # Simulate a successful login by writing cookies onto the account
-        # via the same path the real code uses.
-        account.session_cookies_encrypted = encryption.encrypt('[{"name":"li_at","value":"x"}]')
-        return {"ok": True, "did_relogin": True, "cookies": '[{"name":"li_at","value":"x"}]'}
+    from unittest.mock import MagicMock
+    mock_prov = MagicMock()
+    mock_prov.test_connection = fake_test_connection
 
-    monkeypatch.setattr(
-        linkedin_api_impl, "_build_client_sync_wrapper", fake_build,
-    )
+    import app.routers.linkedin_accounts as _router
+    monkeypatch.setattr(_router, "get_provider", lambda: mock_prov)
 
     rt = await client.post(f"/linkedin-accounts/{aid}/test")
     assert rt.status_code == 200, rt.text
@@ -119,16 +122,17 @@ async def test_test_endpoint_challenged(client, db_session, monkeypatch):
     r = await client.post("/linkedin-accounts/", json=_payload())
     aid = r.json()["id"]
 
-    from app.services.linkedin import linkedin_api_impl
-
-    def fake_build(account):
+    async def fake_test_connection(account):
         raise ChallengeRequired(
             "captcha required", challenge_url="https://www.linkedin.com/checkpoint/x",
         )
 
-    monkeypatch.setattr(
-        linkedin_api_impl, "_build_client_sync_wrapper", fake_build,
-    )
+    from unittest.mock import MagicMock
+    mock_prov = MagicMock()
+    mock_prov.test_connection = fake_test_connection
+
+    import app.routers.linkedin_accounts as _router
+    monkeypatch.setattr(_router, "get_provider", lambda: mock_prov)
 
     rt = await client.post(f"/linkedin-accounts/{aid}/test")
     body = rt.json()

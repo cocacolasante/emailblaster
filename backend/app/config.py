@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # IMAP polling
     IMAP_POLL_INTERVAL_MINUTES: int = 20
 
+    # LinkedIn provider selection
+    # "hybrid"    (default) — HTTP for reads, Playwright for writes (best combo)
+    # "playwright"          — all actions via headless Chromium
+    # "http"                — all actions via linkedin-api HTTP (legacy/testing)
+    LINKEDIN_PROVIDER: str = "hybrid"
+
     # LinkedIn (DIY: linkedin-api library + optional residential proxy)
     LINKEDIN_PROXY_URL: str = ""  # e.g. http://user:pass@host:port; empty = direct
     LINKEDIN_DAILY_ACTION_CAP: int = 20  # per-account TOTAL actions per day
@@ -43,7 +49,10 @@ class Settings(BaseSettings):
     LINKEDIN_POLL_INTERVAL_MINUTES: int = 5  # inbox poll frequency
     # Per-kind subcaps for write actions (M3). These are stricter than the
     # overall daily cap because connects/DMs are what get accounts flagged.
-    LINKEDIN_DAILY_CONNECT_CAP: int = 15        # per-account connect requests / day
+    # Per-kind subcaps. LinkedIn's real enforcement: ~100 connects/week for
+    # established accounts (~14/day).  20/day is conservative and safe.
+    # DMs require 1st-degree — 30/day is the practical ceiling before risk.
+    LINKEDIN_DAILY_CONNECT_CAP: int = 20        # per-account connect requests / day
     LINKEDIN_DAILY_DM_CAP: int = 30             # per-account DMs / day
     LINKEDIN_MONTHLY_PAGE_INVITE_CAP: int = 250 # per-PAGE invites / month
 

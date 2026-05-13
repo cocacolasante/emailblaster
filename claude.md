@@ -22,26 +22,72 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **M5 — Sequence analytics + soft-delete.**
-  - **Soft-delete:** new `sequence_nodes.deleted_at` column +
-    partial index on live nodes. `replace_graph` now soft-deletes the
-    old topology instead of cascade-deleting it; `lead_step_executions`
-    pointing at retired nodes are preserved (analytics-friendly).
-    Scheduler halts any lead whose `current_node_id` references a
-    soft-deleted node, with `halt_reason="current node deleted
-    (sequence was rebuilt)"`.
-  - **Analytics endpoint:**
-    `GET /campaigns/{id}/sequence/analytics` returns per-node
-    `attempted / sent / skipped / failed / currently_here` counts plus
-    overall lead-status breakdown (active / halted / completed /
-    pending). Computed on demand — no caching beat task yet.
-  - **Frontend funnel overlay:** `SequenceBuilder` fetches analytics
-    on a 30s interval and decorates each node with a compact stats
-    footer + color-coded success border (green ≥70%, amber ≥30%, red
-    <30%). Analytics merge happens in a separate effect so it doesn't
-    clobber in-flight user edits to the canvas.
-  Tests: **backend 335 passed**, **frontend 119 passed**.
-- **In flight:** nothing — **Phase 1.5 is complete (M1–M5).**
+- **Last completed:** **Hybrid LinkedIn provider + anti-detection hardening.**
+  - **Three provider impls**, all behind `LinkedInProvider` ABC, selectable
+    via `LINKEDIN_PROVIDER` env var:
+    - `"hybrid"` **(default)** — HTTP for reads, Playwright for writes.
+      Best speed + fingerprint combo.
+    - `"playwright"` — all actions via headless Chromium.
+    - `"http"` — legacy `linkedin-api` HTTP (kept for testing/fallback).
+  - **`hybrid_impl.py`** (`HybridLinkedInProvider`): all user-visible
+    actions go to Playwright (test_connection, view_profile, follow_profile,
+    react_to_post, all writes). Only `latest_post_urn` and
+    `inbox_recent_events` use HTTP — they fail silently (skip/[]), so a
+    server-IP JSESSIONID failure doesn't halt the sequence. Without
+    `LINKEDIN_PROXY_URL`, LinkedIn won't issue JSESSIONID to datacenter
+    IPs even with a valid li_at, so the HTTP bucket is intentionally small.
+  - **`playwright_impl.py`** (`PlaywrightLinkedInProvider`): real headless
+    Chromium + `playwright-stealth`. All Voyager API calls go through
+    `page.evaluate()` fetch() so they run from the browser's IP/session.
+    Adds 1.5–4s jitter after page load + 1–3s before each write action.
+  - **`linkedin_api_impl.py`** updated: `_build_client_sync` now detects
+    Playwright `storage_state` format (`{"cookies":[...],"origins":[...]}`)
+    and extracts `li_at` from it, so HTTP reads work seamlessly after a
+    Playwright write has stored the full browser session.
+  - **Session format round-trip**: Playwright writes → stores `storage_state`;
+    HTTP reads → extracts `li_at`, writes back `[{"name":"li_at",...}]`;
+    Playwright writes → re-bootstraps from `li_at`, stores `storage_state`.
+  - **Sequencer jitter**: `advance_sequences` dispatches LinkedIn steps
+    with `apply_async(countdown=random.uniform(2, 8))` — avoids burst
+    patterns when multiple leads fire simultaneously.
+  - `LINKEDIN_DAILY_CONNECT_CAP` bumped from 15 → 20 (safe ceiling for
+    established accounts; LinkedIn enforces ~100/week).
+  - `playwright==1.49.0` + `playwright-stealth==1.0.6` in
+    `requirements.txt`; Chromium baked into Docker image at
+    `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`.
+  Tests: **backend 365 passed**.
+
+- **Previously:** **Activity tab — LinkedIn + sequence visibility +
+  halted-lead re-enrollment.**
+  - **Expanded `/activity` endpoint** now returns four extra scalar
+    counts (`sequence_active/halted/completed/pending`) plus three new
+    lists: `recent_sequence_steps` (last 30 `lead_step_executions`
+    rows joined with node kind), `halted_leads` (leads whose sequence
+    is halted, with halt reason), `upcoming_steps` (next 10 active
+    leads sorted by `next_run_at`).
+  - **New `POST /campaigns/{id}/re-enroll-halted`** resets all halted
+    `lead_sequence_states` back to the live entry node (`next_run_at =
+    now`). The sequencer auto-skips the already-sent email entry node
+    on its next beat tick. Returns `{"re_enrolled": N}`.
+  - **Activity tab** now shows: Sequence state counters (4 numbers),
+    Halted leads panel with "Re-enroll all" button, Recent sequence
+    steps table (step kind badge + result pill + error + when),
+    Upcoming scheduled steps table — plus the existing email pipeline
+    counters and feed, now relabelled "Email pipeline".
+  - **Fixed pre-existing test break**: `test_phase9_send_task.py`
+    patched the removed `_get_redis` symbol; updated to patch
+    `_new_redis` instead.
+  Tests: **backend 365 passed**, **frontend 153 passed** (1 pre-existing
+  failure in `ConnectLinkedInModal.test.jsx`, unrelated).
+- **In flight:** nothing.
+- **Next up:** Test the hybrid provider end-to-end:
+  1. Settings → LinkedIn Accounts → Test (Playwright does fresh browser login,
+     stores `storage_state`).
+  2. Run a campaign with a `linkedin_view_profile` step first — this uses
+     the HTTP provider with the `li_at` extracted from the stored state.
+  3. Run a `linkedin_connect` step — this uses the Playwright browser.
+  If sessions still expire, consider a `"playwright"` provider for reads
+  too, or increase `LINKEDIN_MIN_ACTION_DELAY_SECONDS` to space out actions.
 - **Next up:** open. Suggested directions:
   - **Cross-cutting cleanup** from `docs/roadmap.md#cross-cutting-tasks`
     (sequence templates, multi-tenant readiness, named node_modules
@@ -209,6 +255,24 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   - The analytics endpoint currently shows ONLY live nodes; retired
     nodes' counts aren't surfaced. If you want lifetime totals, add a
     `?include_deleted=true` flag later.
+- **`session_cookies_encrypted` is now polymorphic**: three possible formats
+  in the same column — all detected at read time:
+  1. `{"cookies":[...],"origins":[...]}` — Playwright `storage_state` (has
+     `"origins"` key). Written by Playwright/hybrid writes.
+  2. `[{"name":"li_at","value":"..."}]` — HTTP cookie list. Written by
+     HTTP reads (strips everything except `li_at` before persisting).
+  3. `[{"name":"li_at","value":"..."}, {"name":"JSESSIONID",...}, ...]` —
+     legacy full cookie jar (pre-hybrid). Handled by `_extract_li_at`.
+  `_is_playwright_state()` in `playwright_impl.py` and the updated
+  `_build_client_sync` in `linkedin_api_impl.py` both detect and handle
+  all three formats gracefully. Don't add a 4th format without updating both.
+- **Playwright browser binary is baked into the Docker image** via
+  `playwright install chromium` in the Dockerfile. `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`.
+  The binary is ~170MB — expect a slow first build. Subsequent builds are
+  cached unless `requirements.txt` or the Dockerfile changes.
+- **Playwright `--single-process` removed** from browser args — it
+  disables process isolation and crashes under load. Use
+  `--no-sandbox --disable-dev-shm-usage --disable-gpu` instead.
 - **Rebuild ALL THREE Python services when you change `requirements.txt`.**
   `backend`, `worker`, and `beat` all build from the same Dockerfile but
   docker-compose tags them as separate images. `docker compose build
@@ -283,4 +347,4 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-13 — **Phase 1.5 complete** (M1–M5). Last work: M5 sequence analytics + soft-delete._
+_Last updated: 2026-05-13 — Activity tab now shows LinkedIn/sequence data + re-enroll halted leads. Backend 365 / frontend 153._

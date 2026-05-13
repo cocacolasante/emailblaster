@@ -9,6 +9,7 @@ import {
   getLeadDetail,
   getPreviewProgress,
   pauseCampaign,
+  reEnrollHalted,
   resumeCampaign,
 } from '../api/campaigns.js';
 import LeadTable from '../components/LeadTable.jsx';
@@ -274,11 +275,74 @@ function MiniPill({ value }) {
   );
 }
 
+const NODE_KIND_LABELS = {
+  email: 'Email',
+  wait: 'Wait',
+  linkedin_view_profile: 'View profile',
+  linkedin_follow_profile: 'Follow',
+  linkedin_react_post: 'React to post',
+  linkedin_comment_post: 'Comment on post',
+  linkedin_connect: 'Connect',
+  linkedin_dm: 'DM',
+  linkedin_inmail: 'InMail',
+  linkedin_invite_to_page: 'Page invite',
+};
+
+const NODE_KIND_COLORS = {
+  email: 'bg-blue-100 text-blue-700',
+  wait: 'bg-slate-100 text-slate-500',
+  linkedin_view_profile: 'bg-sky-100 text-sky-700',
+  linkedin_follow_profile: 'bg-sky-100 text-sky-700',
+  linkedin_react_post: 'bg-sky-100 text-sky-700',
+  linkedin_comment_post: 'bg-indigo-100 text-indigo-700',
+  linkedin_connect: 'bg-indigo-100 text-indigo-700',
+  linkedin_dm: 'bg-purple-100 text-purple-700',
+  linkedin_inmail: 'bg-purple-100 text-purple-700',
+  linkedin_invite_to_page: 'bg-indigo-100 text-indigo-700',
+};
+
+function NodeKindBadge({ kind }) {
+  const label = NODE_KIND_LABELS[kind] ?? kind;
+  const cls = NODE_KIND_COLORS[kind] ?? 'bg-slate-100 text-slate-600';
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+function LeadName({ ev }) {
+  const name = (ev.first_name || ev.last_name)
+    ? `${ev.first_name || ''} ${ev.last_name || ''}`.trim()
+    : ev.email;
+  return (
+    <div>
+      <div className="font-medium text-slate-800 text-xs">{name}</div>
+      {(ev.first_name || ev.last_name) && (
+        <div className="text-[11px] text-slate-400">{ev.email}</div>
+      )}
+      {ev.company && <div className="text-[11px] text-slate-400">{ev.company}</div>}
+    </div>
+  );
+}
+
 function ActivityTab({ campaignId, campaign }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
   const { data: activity, isLoading } = useQuery({
     queryKey: ['campaign-activity', campaignId],
     queryFn: () => getCampaignActivity(campaignId),
     refetchInterval: ['running', 'previewing'].includes(campaign?.status) ? 6000 : 15000,
+  });
+
+  const reEnrollMutation = useMutation({
+    mutationFn: () => reEnrollHalted(campaignId),
+    onSuccess: (data) => {
+      toast.success(`Re-enrolled ${data.re_enrolled} lead${data.re_enrolled !== 1 ? 's' : ''}`);
+      queryClient.invalidateQueries({ queryKey: ['campaign-activity', campaignId] });
+    },
+    onError: (e) => toast.error(e?.response?.data?.detail || e.message || 'Re-enroll failed'),
   });
 
   const days = campaign?.schedule_days?.length
@@ -293,6 +357,13 @@ function ActivityTab({ campaignId, campaign }) {
     : 'no delay between sends';
 
   const inWindow = !activity?.next_window_at;
+  const hasSequenceActivity = activity && (
+    activity.sequence_active + activity.sequence_halted +
+    activity.sequence_completed + activity.sequence_pending > 0
+  );
+  const hasSteps = (activity?.recent_sequence_steps?.length ?? 0) > 0;
+  const hasHalted = (activity?.halted_leads?.length ?? 0) > 0;
+  const hasUpcoming = (activity?.upcoming_steps?.length ?? 0) > 0;
 
   return (
     <div className="space-y-4">
@@ -364,10 +435,10 @@ function ActivityTab({ campaignId, campaign }) {
         </div>
       </div>
 
-      {/* Queue counters */}
+      {/* Email pipeline queue counters */}
       {activity && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h3 className="text-sm font-semibold text-slate-900 mb-3">Queue</h3>
+          <h3 className="text-sm font-semibold text-slate-900 mb-3">Email pipeline</h3>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
             {[
               { label: 'Researching', value: activity.researching, color: 'text-blue-700' },
@@ -386,10 +457,140 @@ function ActivityTab({ campaignId, campaign }) {
         </div>
       )}
 
-      {/* Recent activity feed */}
+      {/* Sequence state counters */}
+      {hasSequenceActivity && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h3 className="text-sm font-semibold text-slate-900 mb-3">Sequence state</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: 'Active', value: activity.sequence_active, color: 'text-emerald-700' },
+              { label: 'Pending', value: activity.sequence_pending, color: 'text-amber-600' },
+              { label: 'Completed', value: activity.sequence_completed, color: 'text-blue-700' },
+              { label: 'Halted', value: activity.sequence_halted, color: 'text-red-600' },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="text-center">
+                <div className={`text-2xl font-bold ${color}`}>{value}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Halted leads */}
+      {hasHalted && (
+        <div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-red-100 bg-red-50 flex justify-between items-center">
+            <div>
+              <h3 className="text-sm font-semibold text-red-800">Halted leads</h3>
+              <p className="text-xs text-red-600 mt-0.5">
+                These leads stopped because the sequence was rebuilt after they enrolled.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => reEnrollMutation.mutate()}
+              disabled={reEnrollMutation.isPending}
+              className="shrink-0 px-3 py-1.5 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {reEnrollMutation.isPending ? 'Re-enrolling…' : 'Re-enroll all'}
+            </button>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Lead</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">At node</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activity.halted_leads.map((s) => (
+                <tr key={s.lead_id} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-2.5"><LeadName ev={s} /></td>
+                  <td className="px-4 py-2.5">
+                    {s.current_node_kind
+                      ? <NodeKindBadge kind={s.current_node_kind} />
+                      : <span className="text-xs text-slate-400">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-red-600">{s.halt_reason || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Recent sequence steps */}
+      {hasSteps && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="text-sm font-semibold text-slate-900">Recent sequence steps</h3>
+            <span className="text-xs text-slate-400">Last 30 executions</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Lead</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Step</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Result</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Error</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activity.recent_sequence_steps.map((s, i) => (
+                <tr key={`${s.lead_id}-${s.attempted_at}-${i}`} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-2.5"><LeadName ev={s} /></td>
+                  <td className="px-4 py-2.5"><NodeKindBadge kind={s.node_kind} /></td>
+                  <td className="px-4 py-2.5"><MiniPill value={s.result} /></td>
+                  <td className="px-4 py-2.5 text-xs text-red-500 max-w-[200px] truncate" title={s.error || ''}>
+                    {s.error || '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-slate-400">{fmtRelative(s.attempted_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Upcoming scheduled steps */}
+      {hasUpcoming && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="text-sm font-semibold text-slate-900">Upcoming steps</h3>
+            <span className="text-xs text-slate-400">Next 10 scheduled</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Lead</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Next step</th>
+                <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Scheduled for</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activity.upcoming_steps.map((s) => (
+                <tr key={s.lead_id} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-2.5"><LeadName ev={s} /></td>
+                  <td className="px-4 py-2.5">
+                    {s.current_node_kind
+                      ? <NodeKindBadge kind={s.current_node_kind} />
+                      : <span className="text-xs text-slate-400">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-slate-600">{fmtDatetime(s.next_run_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Recent email pipeline activity feed */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-200 flex justify-between items-center">
-          <h3 className="text-sm font-semibold text-slate-900">Recent activity</h3>
+          <h3 className="text-sm font-semibold text-slate-900">Email pipeline activity</h3>
           <span className="text-xs text-slate-400">Last 20 leads by activity</span>
         </div>
         {isLoading ? (
@@ -412,14 +613,7 @@ function ActivityTab({ campaignId, campaign }) {
               {activity.recent_events.map((ev) => (
                 <tr key={ev.lead_id} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="px-4 py-2.5">
-                    <div className="font-medium text-slate-800 text-xs">
-                      {ev.first_name || ev.last_name
-                        ? `${ev.first_name || ''} ${ev.last_name || ''}`.trim()
-                        : ev.email}
-                    </div>
-                    {(ev.first_name || ev.last_name) && (
-                      <div className="text-[11px] text-slate-400">{ev.email}</div>
-                    )}
+                    <LeadName ev={ev} />
                   </td>
                   <td className="px-4 py-2.5"><MiniPill value={ev.research_status} /></td>
                   <td className="px-4 py-2.5"><MiniPill value={ev.compose_status} /></td>

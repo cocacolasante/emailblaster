@@ -188,6 +188,11 @@ async def resolve_challenge(
     acc.pending_challenge_url = None
     acc.status = LinkedInAccountStatus.UNTESTED
     acc.last_error = None
+    # Clear stale cookies so re-test does a fresh password login from a clean
+    # state — required because the old cookies triggered the challenge and are
+    # now invalid. The fresh password login will succeed once the user has
+    # completed any verification in their own browser.
+    acc.session_cookies_encrypted = None
     await db.commit()
     await db.refresh(acc)
     return acc

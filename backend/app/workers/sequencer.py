@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -723,7 +724,12 @@ async def _advance_sequences_async() -> dict[str, int]:
         for lead_id, node_id in email_dispatch:
             send_email_step.delay(lead_id, node_id)
         for lead_id, node_id in linkedin_dispatch:
-            send_linkedin_step.delay(lead_id, node_id)
+            # Random 2-8 s countdown makes action timing less predictable
+            # and avoids simultaneous bursts when multiple leads fire together.
+            send_linkedin_step.apply_async(
+                args=[lead_id, node_id],
+                countdown=random.uniform(2, 8),
+            )
     finally:
         await engine.dispose()
     return counts
