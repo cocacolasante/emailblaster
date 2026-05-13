@@ -38,6 +38,14 @@ class SendStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class LinkedInConnectionStatus(str, enum.Enum):
+    UNKNOWN = "unknown"
+    INVITED = "invited"
+    CONNECTED = "connected"
+    DECLINED = "declined"
+    WITHDRAWN = "withdrawn"
+
+
 class Lead(Base):
     __tablename__ = "leads"
 
@@ -83,6 +91,17 @@ class Lead(Base):
     style_correction: Mapped[str | None] = mapped_column(Text, nullable=True)
     brevo_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     scheduled_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    linkedin_connection_status: Mapped[LinkedInConnectionStatus] = mapped_column(
+        Enum(
+            LinkedInConnectionStatus,
+            name="linkedin_connection_status",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=False,
+        default=LinkedInConnectionStatus.UNKNOWN,
+        server_default=LinkedInConnectionStatus.UNKNOWN.value,
+    )
+    linkedin_last_reply_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

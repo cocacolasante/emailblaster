@@ -2,7 +2,18 @@
 from app.models.campaign import Campaign, CampaignStatus, ResearchMode
 from app.models.connected_account import ConnectedAccount, ConnectedAccountTestStatus
 from app.models.email_event import EmailEvent, EmailEventType
-from app.models.lead import ComposeStatus, Lead, ResearchStatus, SendStatus
+from app.models.lead import ComposeStatus, Lead, LinkedInConnectionStatus, ResearchStatus, SendStatus
+from app.models.linkedin_account import LinkedInAccount, LinkedInAccountStatus
+from app.models.sequence import (
+    LeadSequenceState,
+    LeadSequenceStatus,
+    LeadStepExecution,
+    LeadStepResult,
+    Sequence,
+    SequenceEdge,
+    SequenceNode,
+    SequenceNodeKind,
+)
 from app.models.style_correction import StyleCorrection
 from app.models.suppression import Suppression, SuppressionReason
 
@@ -15,9 +26,20 @@ __all__ = [
     "EmailEvent",
     "EmailEventType",
     "Lead",
+    "LinkedInAccount",
+    "LinkedInAccountStatus",
+    "LinkedInConnectionStatus",
     "ResearchStatus",
     "ComposeStatus",
     "SendStatus",
+    "Sequence",
+    "SequenceNode",
+    "SequenceNodeKind",
+    "SequenceEdge",
+    "LeadSequenceState",
+    "LeadSequenceStatus",
+    "LeadStepExecution",
+    "LeadStepResult",
     "StyleCorrection",
     "Suppression",
     "SuppressionReason",

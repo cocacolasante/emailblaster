@@ -36,6 +36,17 @@ class Settings(BaseSettings):
     # IMAP polling
     IMAP_POLL_INTERVAL_MINUTES: int = 20
 
+    # LinkedIn (DIY: linkedin-api library + optional residential proxy)
+    LINKEDIN_PROXY_URL: str = ""  # e.g. http://user:pass@host:port; empty = direct
+    LINKEDIN_DAILY_ACTION_CAP: int = 20  # per-account TOTAL actions per day
+    LINKEDIN_MIN_ACTION_DELAY_SECONDS: int = 90  # min gap between actions per account
+    LINKEDIN_POLL_INTERVAL_MINUTES: int = 5  # inbox poll frequency
+    # Per-kind subcaps for write actions (M3). These are stricter than the
+    # overall daily cap because connects/DMs are what get accounts flagged.
+    LINKEDIN_DAILY_CONNECT_CAP: int = 15        # per-account connect requests / day
+    LINKEDIN_DAILY_DM_CAP: int = 30             # per-account DMs / day
+    LINKEDIN_MONTHLY_PAGE_INVITE_CAP: int = 250 # per-PAGE invites / month
+
     # App
     SECRET_KEY: str = "dev-secret-change-me"
     FRONTEND_URL: str = "http://localhost:5173"

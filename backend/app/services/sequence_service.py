@@ -1,0 +1,349 @@
+"""Sequence creation + lead enrollment helpers.
+
+Used by:
+  - campaigns router: auto-create a default sequence when a campaign is born
+  - leads router (confirm_upload): enroll new leads into their campaign's sequence
+  - sequences router: replace the graph wholesale on PUT
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import (
+    Campaign,
+    Lead,
+    LeadSequenceState,
+    LeadSequenceStatus,
+    Sequence,
+    SequenceEdge,
+    SequenceNode,
+    SequenceNodeKind,
+)
+from app.services.sequence_conditions import detect_cycle, validate
+
+
+def live_nodes_filter():
+    """Reused filter expression for "not soft-deleted" nodes."""
+    return SequenceNode.deleted_at.is_(None)
+
+
+# --------------------------------------------------------------------------
+# Default sequence
+# --------------------------------------------------------------------------
+
+
+DEFAULT_ENTRY_NODE_CONFIG: dict[str, Any] = {"use_campaign_compose": True}
+
+
+async def ensure_default_sequence(db: AsyncSession, campaign: Campaign) -> Sequence:
+    """Return the campaign's sequence, creating a default 1-node version if
+    none exists. Idempotent.
+    """
+    existing = await db.scalar(
+        select(Sequence).where(Sequence.campaign_id == campaign.id)
+    )
+    if existing is not None:
+        # If the only nodes are soft-deleted (sequence stripped earlier),
+        # re-seed an entry node so the campaign has a working default.
+        live_entry = await db.scalar(
+            select(SequenceNode).where(
+                SequenceNode.sequence_id == existing.id,
+                SequenceNode.is_entry.is_(True),
+                live_nodes_filter(),
+            )
+        )
+        if live_entry is None:
+            db.add(SequenceNode(
+                sequence_id=existing.id,
+                kind=SequenceNodeKind.EMAIL,
+                config=DEFAULT_ENTRY_NODE_CONFIG,
+                position_x=0,
+                position_y=0,
+                is_entry=True,
+            ))
+            await db.flush()
+        return existing
+
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db.add(seq)
+    await db.flush()  # so seq.id is populated
+
+    entry = SequenceNode(
+        sequence_id=seq.id,
+        kind=SequenceNodeKind.EMAIL,
+        config=DEFAULT_ENTRY_NODE_CONFIG,
+        position_x=0,
+        position_y=0,
+        is_entry=True,
+    )
+    db.add(entry)
+    await db.flush()
+    return seq
+
+
+# --------------------------------------------------------------------------
+# Lead enrollment
+# --------------------------------------------------------------------------
+
+
+async def enroll_leads(
+    db: AsyncSession, campaign_id: uuid.UUID, lead_ids: list[uuid.UUID]
+) -> int:
+    """Create lead_sequence_states for the given leads, pointing at the
+    campaign's published entry node. Skips leads that already have a state row.
+    Returns the number of states created.
+    """
+    if not lead_ids:
+        return 0
+
+    seq = await db.scalar(
+        select(Sequence).where(Sequence.campaign_id == campaign_id)
+    )
+    if seq is None:
+        return 0
+    entry = await db.scalar(
+        select(SequenceNode)
+        .where(
+            SequenceNode.sequence_id == seq.id,
+            SequenceNode.is_entry.is_(True),
+            live_nodes_filter(),
+        )
+    )
+    if entry is None:
+        return 0
+
+    existing_ids = set(
+        r[0] for r in (await db.execute(
+            select(LeadSequenceState.lead_id)
+            .where(LeadSequenceState.lead_id.in_(lead_ids))
+        )).all()
+    )
+    now = datetime.now(timezone.utc)
+    created = 0
+    for lid in lead_ids:
+        if lid in existing_ids:
+            continue
+        db.add(LeadSequenceState(
+            lead_id=lid,
+            sequence_id=seq.id,
+            current_node_id=entry.id,
+            status=LeadSequenceStatus.ACTIVE,
+            next_run_at=now,
+            entered_current_at=now,
+        ))
+        created += 1
+    return created
+
+
+# --------------------------------------------------------------------------
+# Whole-graph replace + publish validation
+# --------------------------------------------------------------------------
+
+
+# Kinds the current milestone allows in published sequences.
+#   M1 — email + wait
+#   M2 — added read-only LinkedIn warm-ups (view, follow, react)
+#   M3 — added LinkedIn write actions (connect, dm, invite_to_page)
+#   M4 — added inmail + comment_post
+# The constant name stuck as PUBLISHABLE_KINDS_M1 for backwards-compat with
+# imports + tests; treat it as PUBLISHABLE_KINDS_CURRENT.
+PUBLISHABLE_KINDS_M1 = {
+    SequenceNodeKind.EMAIL,
+    SequenceNodeKind.WAIT,
+    SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
+    SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
+    SequenceNodeKind.LINKEDIN_REACT_POST,
+    SequenceNodeKind.LINKEDIN_CONNECT,
+    SequenceNodeKind.LINKEDIN_DM,
+    SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE,
+    SequenceNodeKind.LINKEDIN_INMAIL,
+    SequenceNodeKind.LINKEDIN_COMMENT_POST,
+}
+
+
+def validate_graph(
+    nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+) -> list[str]:
+    """Structural + semantic validation, used by /validate and /publish.
+
+    Returns [] on success or a list of human-readable error messages.
+
+    Checks:
+      - exactly one entry node
+      - each edge's condition is a valid expression
+      - graph is a DAG (no cycles)
+      - all nodes are reachable from the entry
+      - every non-`email` first node is rejected (entry must be email in M1)
+      - kinds outside PUBLISHABLE_KINDS_M1 are rejected
+    """
+    errors: list[str] = []
+
+    entries = [n for n in nodes if n.get("is_entry")]
+    if len(entries) != 1:
+        errors.append(f"sequence must have exactly one entry node (found {len(entries)})")
+        return errors
+    entry = entries[0]
+
+    if entry.get("kind") != SequenceNodeKind.EMAIL.value:
+        errors.append("entry node must be an email node")
+
+    for i, n in enumerate(nodes):
+        kind = n.get("kind")
+        try:
+            kind_enum = SequenceNodeKind(kind)
+        except ValueError:
+            errors.append(f"node has unknown kind: {kind}")
+            continue
+        if kind_enum not in PUBLISHABLE_KINDS_M1:
+            errors.append(
+                f"node kind '{kind}' is not yet enabled "
+                "(InMail + comment_post ship in M4)"
+            )
+            continue
+
+        # Per-kind config checks. These mirror runtime checks but catch
+        # mistakes BEFORE the campaign goes live.
+        cfg = n.get("config") or {}
+        label = f"nodes[{i}] ({kind})"
+        if kind_enum == SequenceNodeKind.WAIT:
+            duration = cfg.get("duration_minutes")
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                errors.append(f"{label}: duration_minutes must be a positive number")
+        elif kind_enum == SequenceNodeKind.EMAIL and not n.get("is_entry"):
+            if not cfg.get("subject_template") or not cfg.get("body_template"):
+                errors.append(
+                    f"{label}: follow-up email needs subject_template + body_template"
+                )
+        elif kind_enum == SequenceNodeKind.LINKEDIN_CONNECT:
+            if not cfg.get("no_note"):
+                note = cfg.get("note_template", "")
+                if not isinstance(note, str):
+                    errors.append(f"{label}: note_template must be a string")
+                elif len(note) > 300:
+                    errors.append(
+                        f"{label}: note_template is {len(note)} chars "
+                        "(LinkedIn caps connect notes at 300)"
+                    )
+        elif kind_enum == SequenceNodeKind.LINKEDIN_DM:
+            if not cfg.get("text_template"):
+                errors.append(f"{label}: text_template is required")
+        elif kind_enum == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE:
+            page_id = cfg.get("page_id")
+            if not page_id:
+                errors.append(f"{label}: page_id is required")
+            elif not str(page_id).strip().isdigit():
+                errors.append(f"{label}: page_id must be a numeric company ID")
+        elif kind_enum == SequenceNodeKind.LINKEDIN_INMAIL:
+            if not cfg.get("subject_template"):
+                errors.append(f"{label}: subject_template is required")
+            if not cfg.get("body_template"):
+                errors.append(f"{label}: body_template is required")
+        elif kind_enum == SequenceNodeKind.LINKEDIN_COMMENT_POST:
+            if not cfg.get("comment_template"):
+                errors.append(f"{label}: comment_template is required")
+            target = cfg.get("target", "latest")
+            if target not in {"latest", "most_engaged"}:
+                errors.append(f"{label}: target must be 'latest' or 'most_engaged'")
+
+    for i, e in enumerate(edges):
+        cond_errs = validate(e.get("condition", {"op": "always"}), f"edges[{i}].condition")
+        errors.extend(cond_errs)
+
+    node_ids = [n["client_id"] for n in nodes]
+    edge_pairs = [(e["from_client_id"], e.get("to_client_id")) for e in edges]
+    cycle = detect_cycle(node_ids, edge_pairs)
+    if cycle:
+        errors.append(f"graph contains a cycle: {' -> '.join(cycle + [cycle[0]])}")
+
+    # Reachability from entry
+    reachable: set[str] = set()
+    stack = [entry["client_id"]]
+    adj: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    for src, dst in edge_pairs:
+        if dst is not None and src in adj and dst in adj:
+            adj[src].append(dst)
+    while stack:
+        cur = stack.pop()
+        if cur in reachable:
+            continue
+        reachable.add(cur)
+        stack.extend(adj.get(cur, []))
+    unreachable = set(node_ids) - reachable
+    if unreachable:
+        errors.append(f"{len(unreachable)} node(s) are unreachable from the entry")
+
+    return errors
+
+
+async def replace_graph(
+    db: AsyncSession,
+    sequence: Sequence,
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, uuid.UUID]:
+    """Soft-delete the live topology and insert the new one. Returns a
+    mapping of client_id → persisted node UUID so the caller can build the
+    response.
+
+    Also clears ``is_published`` since the graph just changed.
+
+    **Soft-delete trade-offs:**
+    - ``lead_step_executions`` rows pointing at retired nodes are preserved
+      → analytics still work after re-edits.
+    - ``lead_sequence_states.current_node_id`` may now point at a soft-
+      deleted node. The scheduler detects that and halts those leads with
+      ``halt_reason="current node deleted"`` so they don't crash silently.
+    - Edges to/from retired nodes are still hard-deleted; only nodes carry
+      historical value for analytics.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Hard-delete edges — they're cheap and have no analytics value.
+    existing_edges = (await db.execute(
+        select(SequenceEdge).where(SequenceEdge.sequence_id == sequence.id)
+    )).scalars().all()
+    for e in existing_edges:
+        await db.delete(e)
+
+    # Soft-delete LIVE nodes; leave already-retired ones alone.
+    existing_nodes = (await db.execute(
+        select(SequenceNode).where(
+            SequenceNode.sequence_id == sequence.id,
+            live_nodes_filter(),
+        )
+    )).scalars().all()
+    for n in existing_nodes:
+        n.deleted_at = now
+    await db.flush()
+
+    sequence.is_published = False
+
+    client_to_db: dict[str, uuid.UUID] = {}
+    for n in nodes:
+        node = SequenceNode(
+            sequence_id=sequence.id,
+            kind=SequenceNodeKind(n["kind"]),
+            config=n.get("config") or {},
+            position_x=int(n.get("position_x", 0)),
+            position_y=int(n.get("position_y", 0)),
+            is_entry=bool(n.get("is_entry", False)),
+        )
+        db.add(node)
+        await db.flush()
+        client_to_db[n["client_id"]] = node.id
+
+    for e in edges:
+        db.add(SequenceEdge(
+            sequence_id=sequence.id,
+            from_node_id=client_to_db[e["from_client_id"]],
+            to_node_id=client_to_db[e["to_client_id"]] if e.get("to_client_id") else None,
+            condition=e.get("condition") or {"op": "always"},
+            priority=int(e.get("priority", 0)),
+        ))
+
+    return client_to_db

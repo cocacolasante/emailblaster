@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { listAccounts } from '../api/connectedAccounts.js';
+import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
 import { createCampaign, getPreview, getPreviewProgress } from '../api/campaigns.js';
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import ScheduleConfig from '../components/ScheduleConfig.jsx';
+import { EmbeddedSequenceBuilder } from './SequenceBuilder.jsx';
 
 const TONES = ['Professional', 'Friendly', 'Direct', 'Conversational', 'Formal'];
 
@@ -19,6 +21,7 @@ const DEFAULT_FORM = {
   research_mode: 'fast',
   sample_count: 5,
   connected_account_id: '',
+  linkedin_account_id: '',
   schedule_days: [0, 1, 2, 3, 4],
   schedule_time_start: '09:00',
   schedule_time_end: '17:00',
@@ -51,7 +54,7 @@ function StatusBadge({ status }) {
 // Step 1: campaign details
 // --------------------------------------------------------------------------
 
-function Step1({ form, setForm, onSubmit, submitting, error, accounts, onConnectInbox }) {
+function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinAccounts, onConnectInbox }) {
   function update(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
   }
@@ -210,6 +213,36 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, onConnect
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <h2 className="text-base font-semibold text-slate-900 mb-1">
+          LinkedIn account{' '}
+          <span className="text-slate-400 font-normal text-sm">(optional)</span>
+        </h2>
+        <p className="text-sm text-slate-500 mb-4">
+          Required only if this campaign's sequence includes LinkedIn nodes.
+        </p>
+        {linkedinAccounts.length === 0 ? (
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-600">
+            No LinkedIn accounts connected. Add one in{' '}
+            <a className="underline text-blue-600" href="/settings">Settings → LinkedIn accounts</a>.
+          </div>
+        ) : (
+          <select
+            aria-label="LinkedIn account"
+            value={form.linkedin_account_id}
+            onChange={(e) => update('linkedin_account_id', e.target.value)}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+          >
+            <option value="">No LinkedIn actions</option>
+            {linkedinAccounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label} ({a.linkedin_email}) — {a.status}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
         <h2 className="text-base font-semibold text-slate-900 mb-4">Schedule</h2>
         <ScheduleConfig value={form} onChange={(next) => setForm(next)} />
       </div>
@@ -300,12 +333,16 @@ export default function CampaignCreate() {
     queryKey: ['connected-accounts'],
     queryFn: listAccounts,
   });
+  const { data: linkedinAccounts = [] } = useQuery({
+    queryKey: ['linkedin-accounts'],
+    queryFn: listLinkedInAccounts,
+  });
 
   const createMutation = useMutation({
     mutationFn: createCampaign,
     onSuccess: (data) => {
       setCampaignId(data.id);
-      setStep(2);
+      setStep(2);  // → Sequence
     },
     onError: (err) => {
       const detail = err?.response?.data?.detail || err.message || 'Failed to create campaign';
@@ -317,6 +354,7 @@ export default function CampaignCreate() {
     return {
       ...form,
       connected_account_id: form.connected_account_id || null,
+      linkedin_account_id: form.linkedin_account_id || null,
       max_per_hour: form.max_per_hour || null,
       max_per_day: form.max_per_day || null,
       schedule_time_start:
@@ -335,22 +373,30 @@ export default function CampaignCreate() {
     createMutation.mutate(buildPayload());
   }
 
-  function onUploadComplete() {
-    setStep(3);
+  function onSequenceDone() {
+    setStep(3);  // → Upload leads
   }
 
-  function onStep3Complete() {
+  function onUploadComplete() {
+    setStep(4);  // → Research
+  }
+
+  function onResearchComplete() {
     if (campaignId) navigate(`/campaigns/${campaignId}/preview`);
   }
 
-  const STEP_LABELS = ['Details', 'Upload leads', 'Research'];
+  const STEP_LABELS = ['Details', 'Sequence', 'Upload leads', 'Research'];
+
+  // The Sequence step needs the full viewport for the canvas; every other
+  // step uses the standard narrow wizard width.
+  const wide = step === 2;
 
   return (
-    <div className="p-8 max-w-2xl mx-auto">
+    <div className={wide ? 'p-6 w-full' : 'p-8 max-w-2xl mx-auto'}>
       <h1 className="text-2xl font-bold text-slate-900 mb-6">New campaign</h1>
 
       {/* Step indicator */}
-      <div role="list" aria-label="Steps" className="flex items-center gap-2 mb-8">
+      <div role="list" aria-label="Steps" className="flex items-center gap-2 mb-8 flex-wrap">
         {STEP_LABELS.map((label, i) => {
           const idx = i + 1;
           const active = idx === step;
@@ -390,16 +436,26 @@ export default function CampaignCreate() {
           submitting={createMutation.isPending}
           error={error}
           accounts={accounts}
+          linkedinAccounts={linkedinAccounts}
           onConnectInbox={() => setShowInboxModal(true)}
         />
       )}
       {step === 2 && campaignId && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <EmbeddedSequenceBuilder
+            campaignId={campaignId}
+            onContinue={onSequenceDone}
+            onSkip={onSequenceDone}
+          />
+        </div>
+      )}
+      {step === 3 && campaignId && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <LeadUpload campaignId={campaignId} onComplete={onUploadComplete} />
         </div>
       )}
-      {step === 3 && campaignId && (
-        <Step3 campaignId={campaignId} onComplete={onStep3Complete} />
+      {step === 4 && campaignId && (
+        <Step3 campaignId={campaignId} onComplete={onResearchComplete} />
       )}
 
       {showInboxModal && (

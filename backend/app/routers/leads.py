@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models import Campaign, CampaignStatus, Lead, Suppression
 from app.schemas.lead import ConfirmUploadResponse, UploadPreviewResponse
 from app.services.csv_parser import parse_csv_content, select_sample_indices, suggest_mapping
+from app.services.sequence_service import enroll_leads, ensure_default_sequence
 from app.workers import ingest as ingest_tasks
 
 router = APIRouter(tags=["leads"])
@@ -144,6 +145,12 @@ async def confirm_upload(
 
     db.add_all(leads_to_insert)
     campaign.status = CampaignStatus.PREVIEWING
+    await db.flush()
+    # Make sure the campaign has a sequence + enroll the new leads onto its
+    # entry node. Idempotent — ensure_default_sequence no-ops if a sequence
+    # already exists (e.g. created via POST /campaigns/{id}/sequence).
+    await ensure_default_sequence(db, campaign)
+    await enroll_leads(db, campaign_id, [l.id for l in leads_to_insert])
     await db.commit()
 
     if leads_to_insert:

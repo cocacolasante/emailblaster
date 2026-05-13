@@ -94,6 +94,7 @@ class CampaignCreate(BaseModel):
     research_mode: ResearchMode = ResearchMode.FAST
     sample_count: int = Field(default=5, ge=1)
     connected_account_id: uuid.UUID | None = None
+    linkedin_account_id: uuid.UUID | None = None
     schedule_days: list[int] = Field(default_factory=list)
     schedule_time_start: time
     schedule_time_end: time
@@ -120,6 +121,7 @@ class CampaignUpdate(BaseModel):
     research_mode: ResearchMode | None = None
     sample_count: int | None = Field(default=None, ge=1)
     connected_account_id: uuid.UUID | None = None
+    linkedin_account_id: uuid.UUID | None = None
     schedule_days: list[int] | None = None
     schedule_time_start: time | None = None
     schedule_time_end: time | None = None
@@ -160,6 +162,8 @@ class CampaignResponse(BaseModel):
     connected_account_id: uuid.UUID | None
     connected_account: ConnectedAccountInfo | None
     connected_account_configured: bool
+    linkedin_account_id: uuid.UUID | None
+    linkedin_account_configured: bool
     schedule_days: list[int]
     schedule_time_start: time
     schedule_time_end: time
@@ -186,6 +190,7 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "research_mode": c.research_mode,
         "sample_count": c.sample_count,
         "connected_account_id": c.connected_account_id,
+        "linkedin_account_id": c.linkedin_account_id,
         "schedule_days": c.schedule_days,
         "schedule_time_start": c.schedule_time_start,
         "schedule_time_end": c.schedule_time_end,

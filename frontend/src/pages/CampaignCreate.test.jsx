@@ -12,12 +12,30 @@ vi.mock('../api/connectedAccounts.js', () => ({
   deleteAccount: vi.fn(),
   testAccount: vi.fn(),
 }));
+vi.mock('../api/linkedinAccounts.js', () => ({
+  listLinkedInAccounts: vi.fn().mockResolvedValue([]),
+}));
 vi.mock('../api/campaigns.js', () => ({
   createCampaign: vi.fn(),
   getPreview: vi.fn(),
   getPreviewProgress: vi.fn(),
   uploadLeadsPreview: vi.fn(),
   confirmLeadsUpload: vi.fn(),
+}));
+// EmbeddedSequenceBuilder pulls in @xyflow/react which requires ResizeObserver
+// (not in jsdom). Mock it as a lightweight stub that just exposes the wizard
+// callbacks — the actual builder is exercised in its own tests.
+vi.mock('./SequenceBuilder.jsx', () => ({
+  EmbeddedSequenceBuilder: ({ onSkip, onContinue }) => (
+    <div data-testid="embedded-sequence-builder">
+      <button type="button" data-testid="sequence-skip" onClick={onSkip}>
+        Skip — use default
+      </button>
+      <button type="button" data-testid="sequence-continue" onClick={onContinue}>
+        Continue to upload
+      </button>
+    </div>
+  ),
 }));
 
 import * as accountsApi from '../api/connectedAccounts.js';
@@ -130,8 +148,8 @@ describe('Submitting step 1', () => {
     expect(payload.schedule_time_end).toBe('17:00:00');
     expect(payload.connected_account_id).toBeNull();
 
-    // Step 2 mounts the LeadUpload component
-    await waitFor(() => expect(screen.getByTestId('lead-upload')).toBeInTheDocument());
+    // Step 2 mounts the sequence builder; step 3 mounts the LeadUpload.
+    await waitFor(() => expect(screen.getByTestId('embedded-sequence-builder')).toBeInTheDocument());
   });
 
   it('shows error on create failure', async () => {
@@ -149,7 +167,7 @@ describe('Submitting step 1', () => {
 });
 
 
-describe('Step 3 — progress polling', () => {
+describe('Step 4 — progress polling', () => {
   it('renders progress UI and shows composed/researched counts', async () => {
     const user = userEvent.setup();
     campaignsApi.createCampaign.mockResolvedValue({ id: 'c1' });
@@ -172,14 +190,18 @@ describe('Step 3 — progress polling', () => {
     await user.type(screen.getByLabelText(/sender email/i), 's@x.com');
     fireEvent.click(screen.getByTestId('step1-submit'));
 
-    // Step 2: upload
+    // Step 2: sequence — skip with the default
+    await screen.findByTestId('embedded-sequence-builder');
+    fireEvent.click(screen.getByTestId('sequence-skip'));
+
+    // Step 3: upload
     await screen.findByTestId('lead-upload');
     const file = new File(['Email\na@x.com\n'], 'leads.csv', { type: 'text/csv' });
     fireEvent.change(screen.getByTestId('file-input'), { target: { files: [file] } });
     await screen.findByTestId('mapping-table');
     fireEvent.click(screen.getByRole('button', { name: /import 1 leads/i }));
 
-    // Step 3: progress
+    // Step 4: progress
     await screen.findByTestId('step3');
     await waitFor(() => {
       expect(screen.getByText(/2 of 10 composed/i)).toBeInTheDocument();

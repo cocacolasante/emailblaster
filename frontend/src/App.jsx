@@ -4,6 +4,7 @@ import CampaignCreate from './pages/CampaignCreate.jsx';
 import CampaignDetail from './pages/CampaignDetail.jsx';
 import Preview from './pages/Preview.jsx';
 import Analytics from './pages/Analytics.jsx';
+import SequenceBuilder from './pages/SequenceBuilder.jsx';
 import Settings from './pages/Settings.jsx';
 import Nav from './components/Nav.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
@@ -21,6 +22,7 @@ export default function App() {
               <Route path="/campaigns/new" element={<CampaignCreate />} />
               <Route path="/campaigns/:id" element={<CampaignDetail />} />
               <Route path="/campaigns/:id/preview" element={<Preview />} />
+              <Route path="/campaigns/:id/sequence" element={<SequenceBuilder />} />
               <Route path="/campaigns/:id/analytics" element={<Analytics />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>

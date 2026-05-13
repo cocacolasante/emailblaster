@@ -11,7 +11,9 @@ from app.routers import (
     campaigns,
     connected_accounts,
     leads,
+    linkedin_accounts,
     preview,
+    sequences,
     settings as settings_router,
     webhooks,
 )
@@ -67,9 +69,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     propagates past those.
     """
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    # Starlette's ServerErrorMiddleware wraps this handler OUTSIDE CORSMiddleware,
+    # so responses from here would otherwise lack CORS headers — making 500s
+    # surface in the browser as opaque CORS errors instead of real failures.
+    headers: dict[str, str] = {}
+    origin = request.headers.get("origin")
+    if origin and origin == settings.FRONTEND_URL:
+        headers["access-control-allow-origin"] = origin
+        headers["access-control-allow-credentials"] = "true"
+        headers["vary"] = "Origin"
     return JSONResponse(
         status_code=500,
         content={"error": "internal_error", "detail": "An internal error occurred"},
+        headers=headers,
     )
 
 
@@ -84,4 +96,6 @@ app.include_router(preview.router)
 app.include_router(analytics.router)
 app.include_router(webhooks.router)
 app.include_router(connected_accounts.router)
+app.include_router(linkedin_accounts.router)
 app.include_router(settings_router.router)
+app.include_router(sequences.router)

@@ -268,21 +268,27 @@ def test_fetch_unseen_with_account_raises_on_bad_token():
 
 def test_no_decrypt_calls_outside_imap_client():
     """Smoke check: searching the codebase for stray ``encryption.decrypt``
-    calls outside ``imap_client.py`` should turn up nothing.  Catches the
-    'someone added a decrypt call somewhere else' regression."""
+    calls outside the allowlisted modules should turn up nothing. Catches
+    the 'someone added a decrypt call somewhere else' regression.
+
+    Allowlist:
+      - imap_client.py — original encrypted-credential consumer
+      - linkedin/linkedin_api_impl.py — DIY LinkedIn provider (M2). Same
+        invariant: decrypted plaintext lives only in local scope and is
+        deleted before the wrapper returns.
+    """
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent / "app"
+    allowed = {"imap_client.py", "encryption.py", "linkedin_api_impl.py"}
     offenders = []
     for path in root.rglob("*.py"):
-        if path.name == "imap_client.py":
-            continue
-        if path.name == "encryption.py":
+        if path.name in allowed:
             continue
         text = path.read_text(encoding="utf-8")
         if "encryption.decrypt(" in text:
             offenders.append(str(path.relative_to(root)))
     assert not offenders, (
-        f"encryption.decrypt() must only be called inside imap_client.py "
-        f"but was found in: {offenders}"
+        f"encryption.decrypt() must only be called inside the allowlisted "
+        f"modules ({sorted(allowed)}) but was found in: {offenders}"
     )

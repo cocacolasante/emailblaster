@@ -72,8 +72,11 @@ async def _engine():
     engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE TABLE email_events, leads, style_corrections, "
-            "suppression_list, campaigns, connected_accounts "
+            "TRUNCATE TABLE lead_step_executions, lead_sequence_states, "
+            "sequence_edges, sequence_nodes, sequences, "
+            "email_events, leads, style_corrections, "
+            "suppression_list, campaigns, connected_accounts, "
+            "linkedin_accounts "
             "RESTART IDENTITY CASCADE"
         ))
     try:

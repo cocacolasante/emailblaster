@@ -15,6 +15,8 @@ if TYPE_CHECKING:
     from app.models.connected_account import ConnectedAccount
     from app.models.email_event import EmailEvent
     from app.models.lead import Lead
+    from app.models.linkedin_account import LinkedInAccount
+    from app.models.sequence import Sequence
     from app.models.style_correction import StyleCorrection
 
 
@@ -53,6 +55,11 @@ class Campaign(Base):
         ForeignKey("connected_accounts.id", ondelete="SET NULL"),
         nullable=True,
     )
+    linkedin_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("linkedin_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     schedule_days: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list, server_default="{}")
     schedule_time_start: Mapped[time] = mapped_column(Time, nullable=False)
     schedule_time_end: Mapped[time] = mapped_column(Time, nullable=False)
@@ -75,6 +82,7 @@ class Campaign(Base):
     )
 
     connected_account: Mapped["ConnectedAccount | None"] = relationship(back_populates="campaigns")
+    linkedin_account: Mapped["LinkedInAccount | None"] = relationship(back_populates="campaigns")
     leads: Mapped[list["Lead"]] = relationship(
         back_populates="campaign",
         cascade="all, delete-orphan",
@@ -87,6 +95,12 @@ class Campaign(Base):
     )
     style_corrections: Mapped[list["StyleCorrection"]] = relationship(
         back_populates="campaign",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    sequence: Mapped["Sequence | None"] = relationship(
+        back_populates="campaign",
+        uselist=False,
         cascade="all, delete-orphan",
         passive_deletes=True,
     )

@@ -17,6 +17,7 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
+    LinkedInAccount,
     ResearchStatus,
     SendStatus,
 )
@@ -32,6 +33,7 @@ from app.schemas.campaign import (
     campaign_to_dict,
 )
 from app.schemas.lead import LeadSummary, PaginatedLeads
+from app.services.sequence_service import ensure_default_sequence
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -123,6 +125,7 @@ async def _build_response(db: AsyncSession, campaign: Campaign) -> CampaignRespo
     payload: dict[str, Any] = campaign_to_dict(campaign)
     payload["connected_account"] = account_info
     payload["connected_account_configured"] = campaign.connected_account_id is not None
+    payload["linkedin_account_configured"] = campaign.linkedin_account_id is not None
     payload["lead_counts"] = counts
     payload["stats"] = stats
     return CampaignResponse.model_validate(payload)
@@ -135,6 +138,13 @@ async def _verify_account_exists(db: AsyncSession, account_id: uuid.UUID | None)
         raise HTTPException(status_code=422, detail="connected_account_id does not exist")
 
 
+async def _verify_linkedin_account_exists(db: AsyncSession, account_id: uuid.UUID | None) -> None:
+    if account_id is None:
+        return
+    if (await db.get(LinkedInAccount, account_id)) is None:
+        raise HTTPException(status_code=422, detail="linkedin_account_id does not exist")
+
+
 # --------------------------------------------------------------------------
 # CRUD
 # --------------------------------------------------------------------------
@@ -145,8 +155,11 @@ async def create_campaign(
     payload: CampaignCreate, db: AsyncSession = Depends(get_db)
 ) -> CampaignResponse:
     await _verify_account_exists(db, payload.connected_account_id)
+    await _verify_linkedin_account_exists(db, payload.linkedin_account_id)
     campaign = Campaign(**payload.model_dump())
     db.add(campaign)
+    await db.flush()
+    await ensure_default_sequence(db, campaign)
     await db.commit()
     await db.refresh(campaign)
     return await _build_response(db, campaign)
@@ -182,6 +195,8 @@ async def update_campaign(
     updates = payload.model_dump(exclude_unset=True)
     if "connected_account_id" in updates:
         await _verify_account_exists(db, updates["connected_account_id"])
+    if "linkedin_account_id" in updates:
+        await _verify_linkedin_account_exists(db, updates["linkedin_account_id"])
 
     for key, value in updates.items():
         setattr(c, key, value)

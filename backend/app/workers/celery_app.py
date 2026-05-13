@@ -12,6 +12,8 @@ celery_app = Celery(
         "app.workers.compose",
         "app.workers.send",
         "app.workers.reply_poller",
+        "app.workers.sequencer",
+        "app.workers.linkedin_poller",
     ],
 )
 
@@ -30,5 +32,13 @@ celery_app.conf.beat_schedule = {
     "poll-all-replies": {
         "task": "reply_poller.poll_all_replies",
         "schedule": float(settings.IMAP_POLL_INTERVAL_MINUTES * 60),
+    },
+    "advance-sequences": {
+        "task": "sequencer.advance_sequences",
+        "schedule": 60.0,
+    },
+    "linkedin-poll": {
+        "task": "linkedin_poller.poll_all",
+        "schedule": float(settings.LINKEDIN_POLL_INTERVAL_MINUTES * 60),
     },
 }

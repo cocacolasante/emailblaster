@@ -12,6 +12,59 @@ const LEAD_FIELDS = [
   { value: 'phone', label: 'phone' },
 ];
 
+// Template columns in the order users typically expect them. Keep `email`
+// first since it's the only required field. Matches _ALLOWED_LEAD_FIELDS in
+// backend/app/routers/leads.py.
+const TEMPLATE_COLUMNS = [
+  'email',
+  'first_name',
+  'last_name',
+  'company',
+  'job_title',
+  'linkedin_url',
+  'phone',
+];
+
+const TEMPLATE_SAMPLE_ROW = [
+  'jane.doe@example.com',
+  'Jane',
+  'Doe',
+  'Acme Inc',
+  'VP Marketing',
+  'https://www.linkedin.com/in/janedoe/',
+  '+1-555-0100',
+];
+
+
+function escapeCsvCell(value) {
+  // Quote when the cell contains a comma, quote, or newline. Double any
+  // embedded quotes per RFC 4180.
+  const s = String(value ?? '');
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+
+function downloadLeadsTemplate() {
+  const lines = [
+    TEMPLATE_COLUMNS.join(','),
+    TEMPLATE_SAMPLE_ROW.map(escapeCsvCell).join(','),
+  ];
+  // BOM so Excel detects UTF-8 cleanly.
+  const blob = new Blob(['﻿', lines.join('\n')], {
+    type: 'text/csv;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'leads-template.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Give the browser a tick before revoking, otherwise some browsers cancel
+  // the download.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /**
  * Two-stage uploader.  After file selection, hits /upload to preview rows +
  * suggested mapping, lets the user adjust per-column mapping, then calls
@@ -76,9 +129,40 @@ export default function LeadUpload({ campaignId, onComplete }) {
 
       {!preview && (
         <div>
-          <p className="text-slate-600 text-sm mb-6">
+          <p className="text-slate-600 text-sm mb-4">
             Upload a CSV of your leads. We'll suggest column mappings on the next step.
           </p>
+
+          <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div className="text-sm text-slate-700">
+                <div className="font-medium text-slate-900 mb-1">Need a template?</div>
+                <div className="text-xs text-slate-600">
+                  Supported columns:{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">email *</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">first_name</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">last_name</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">company</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">job_title</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">linkedin_url</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">phone</code>
+                  <span className="ml-1">— only <strong>email</strong> is required; extras are kept on the lead's raw row but not used in composition.</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={downloadLeadsTemplate}
+                data-testid="download-template"
+                className="inline-flex items-center gap-1.5 shrink-0 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-lg transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+                </svg>
+                Download template
+              </button>
+            </div>
+          </div>
+
           <label className="inline-flex flex-col items-center justify-center w-full border-2 border-dashed border-slate-300 rounded-xl p-10 text-center hover:border-blue-400 cursor-pointer transition-colors">
             <svg className="w-10 h-10 text-slate-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />

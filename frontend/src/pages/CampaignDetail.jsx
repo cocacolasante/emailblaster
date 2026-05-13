@@ -211,7 +211,17 @@ export default function CampaignDetail() {
       </div>
       <div className="flex justify-between items-center gap-3 mb-2">
         <h1 className="text-2xl font-bold text-slate-900 m-0" data-testid="campaign-name">{campaign.name}</h1>
-        <StatusBadge status={campaign.status} />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => navigate(`/campaigns/${id}/sequence`)}
+            className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+            data-testid="open-sequence-builder"
+          >
+            Edit sequence
+          </button>
+          <StatusBadge status={campaign.status} />
+        </div>
       </div>
 
       <div role="tablist" className="flex border-b border-slate-200 mb-6 mt-4">
