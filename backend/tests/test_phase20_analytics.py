@@ -269,3 +269,98 @@ async def test_analytics_excludes_soft_deleted_nodes(client, db_session):
     body = a.json()
     # Only the live (new) entry node shows up — not the retired one.
     assert len(body["per_node"]) == 1
+
+
+# --------------------------------------------------------------------------
+# Additional analytics edge cases
+# --------------------------------------------------------------------------
+
+
+async def test_sequence_analytics_empty_campaign_all_zeros(db_session, client):
+    """Fresh campaign with no leads should return zeroed status counts."""
+    campaign = await _make_campaign(db_session)
+    r = await client.get(f"/campaigns/{campaign.id}/sequence/analytics")
+    assert r.status_code == 200
+    body = r.json()
+    # No leads enrolled yet → all counters are 0.
+    assert body.get("active", 0) == 0
+    assert body.get("halted", 0) == 0
+    assert body.get("completed", 0) == 0
+    assert body.get("total_leads", 0) == 0
+
+
+async def test_sequence_analytics_per_node_counts_correct(db_session, client):
+    """After running a lead through a node, counts appear in analytics."""
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+    await db_session.commit()
+
+    # Enroll one lead and record a step execution.
+    lead = Lead(
+        campaign_id=campaign.id,
+        email="test@example.com",
+        send_status=SendStatus.SENT,
+    )
+    db_session.add(lead)
+    await db_session.commit()
+    await db_session.refresh(lead)
+
+    await enroll_leads(db_session, campaign.id, [lead.id])
+    await db_session.commit()
+
+    # Find the entry node.
+    entry_node = await db_session.scalar(
+        select(SequenceNode).where(
+            SequenceNode.sequence_id == seq.id,
+            SequenceNode.is_entry.is_(True),
+            SequenceNode.deleted_at.is_(None),
+        )
+    )
+    assert entry_node is not None
+
+    exec_row = LeadStepExecution(
+        lead_id=lead.id,
+        node_id=entry_node.id,
+        result=LeadStepResult.SENT,
+    )
+    db_session.add(exec_row)
+    await db_session.commit()
+
+    r = await client.get(f"/campaigns/{campaign.id}/sequence/analytics")
+    body = r.json()
+    node_stats = {s["node_id"]: s for s in body["per_node"]}
+    stats = node_stats.get(str(entry_node.id))
+    assert stats is not None
+    assert stats["sent"] >= 1
+
+
+async def test_sequence_analytics_halted_lead_counted(db_session, client):
+    """A halted lead_sequence_state contributes to the 'halted' count."""
+    campaign = await _make_campaign(db_session)
+    await ensure_default_sequence(db_session, campaign)
+    await db_session.commit()
+
+    lead = Lead(
+        campaign_id=campaign.id,
+        email="halted@example.com",
+        send_status=SendStatus.PENDING,
+    )
+    db_session.add(lead)
+    await db_session.commit()
+    await db_session.refresh(lead)
+
+    await enroll_leads(db_session, campaign.id, [lead.id])
+    await db_session.commit()
+
+    # Manually set the state to halted.
+    state = await db_session.scalar(
+        select(LeadSequenceState).where(LeadSequenceState.lead_id == lead.id)
+    )
+    assert state is not None
+    state.status = LeadSequenceStatus.HALTED
+    state.halt_reason = "test halt"
+    await db_session.commit()
+
+    r = await client.get(f"/campaigns/{campaign.id}/sequence/analytics")
+    body = r.json()
+    assert body.get("halted", 0) >= 1

@@ -23,6 +23,14 @@ from app.services.linkedin.base import ChallengeRequired, AccountRestricted
 router = APIRouter(prefix="/linkedin-accounts", tags=["linkedin-accounts"])
 
 
+def _li_at_to_cookie_blob(li_at: str) -> str:
+    """Wrap a bare li_at token into the JSON format used by session_cookies_encrypted."""
+    import json
+    return json.dumps([
+        {"name": "li_at", "value": li_at, "domain": ".linkedin.com", "path": "/"},
+    ])
+
+
 async def _get_or_404(db: AsyncSession, account_id: uuid.UUID) -> LinkedInAccount:
     acc = await db.get(LinkedInAccount, account_id)
     if acc is None:
@@ -42,6 +50,10 @@ async def create_account(
         password_encrypted=encryption.encrypt(payload.password),
         proxy_url=payload.proxy_url or None,
     )
+    if payload.li_at_cookie and payload.li_at_cookie.strip():
+        acc.session_cookies_encrypted = encryption.encrypt(
+            _li_at_to_cookie_blob(payload.li_at_cookie.strip())
+        )
     db.add(acc)
     await db.commit()
     await db.refresh(acc)
@@ -71,11 +83,20 @@ async def update_account(
 ) -> LinkedInAccount:
     acc = await _get_or_404(db, account_id)
     updates = payload.model_dump(exclude_unset=True)
+    li_at = updates.pop("li_at_cookie", None)
+    if li_at and li_at.strip():
+        acc.session_cookies_encrypted = encryption.encrypt(
+            _li_at_to_cookie_blob(li_at.strip())
+        )
+        acc.status = LinkedInAccountStatus.UNTESTED
+        acc.pending_challenge_url = None
+        acc.last_error = None
     if "password" in updates and updates["password"]:
         acc.password_encrypted = encryption.encrypt(updates.pop("password"))
-        # Wipe cookies so the next test forces a fresh login with the new
-        # password.
-        acc.session_cookies_encrypted = None
+        if not li_at:
+            # Wipe cookies so the next test forces a fresh login with the
+            # new password — but only if we didn't just set them via li_at.
+            acc.session_cookies_encrypted = None
         acc.status = LinkedInAccountStatus.UNTESTED
     else:
         updates.pop("password", None)

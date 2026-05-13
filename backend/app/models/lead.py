@@ -62,6 +62,7 @@ class Lead(Base):
     first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     company: Mapped[str | None] = mapped_column(Text, nullable=True)
+    company_website: Mapped[str | None] = mapped_column(Text, nullable=True)
     job_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_csv_row: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     research_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

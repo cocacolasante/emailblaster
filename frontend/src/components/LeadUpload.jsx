@@ -7,6 +7,7 @@ const LEAD_FIELDS = [
   { value: 'first_name', label: 'first_name' },
   { value: 'last_name', label: 'last_name' },
   { value: 'company', label: 'company' },
+  { value: 'company_website', label: 'company_website' },
   { value: 'job_title', label: 'job_title' },
   { value: 'linkedin_url', label: 'linkedin_url' },
   { value: 'phone', label: 'phone' },
@@ -20,6 +21,7 @@ const TEMPLATE_COLUMNS = [
   'first_name',
   'last_name',
   'company',
+  'company_website',
   'job_title',
   'linkedin_url',
   'phone',
@@ -30,6 +32,7 @@ const TEMPLATE_SAMPLE_ROW = [
   'Jane',
   'Doe',
   'Acme Inc',
+  'https://www.acme.com',
   'VP Marketing',
   'https://www.linkedin.com/in/janedoe/',
   '+1-555-0100',
@@ -143,10 +146,11 @@ export default function LeadUpload({ campaignId, onComplete }) {
                   <code className="bg-white px-1 py-0.5 rounded border border-slate-200">first_name</code>{' '}
                   <code className="bg-white px-1 py-0.5 rounded border border-slate-200">last_name</code>{' '}
                   <code className="bg-white px-1 py-0.5 rounded border border-slate-200">company</code>{' '}
+                  <code className="bg-white px-1 py-0.5 rounded border border-slate-200">company_website</code>{' '}
                   <code className="bg-white px-1 py-0.5 rounded border border-slate-200">job_title</code>{' '}
                   <code className="bg-white px-1 py-0.5 rounded border border-slate-200">linkedin_url</code>{' '}
                   <code className="bg-white px-1 py-0.5 rounded border border-slate-200">phone</code>
-                  <span className="ml-1">— only <strong>email</strong> is required; extras are kept on the lead's raw row but not used in composition.</span>
+                  <span className="ml-1">— only <strong>email</strong> is required; <strong>company_website</strong> improves AI research quality.</span>
                 </div>
               </div>
               <button

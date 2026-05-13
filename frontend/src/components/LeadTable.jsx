@@ -4,13 +4,31 @@ import { listCampaignLeads } from '../api/campaigns.js';
 
 const SEND_STATUSES = ['', 'pending', 'scheduled', 'sent', 'failed'];
 
+const PILL = {
+  pending:   'bg-slate-100 text-slate-500',
+  running:   'bg-blue-100 text-blue-700',
+  done:      'bg-emerald-100 text-emerald-700',
+  sent:      'bg-emerald-100 text-emerald-700',
+  failed:    'bg-red-100 text-red-600',
+  skipped:   'bg-slate-100 text-slate-500',
+  scheduled: 'bg-amber-100 text-amber-700',
+};
+
+function StatusPill({ value }) {
+  const cls = PILL[value] || 'bg-slate-100 text-slate-500';
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}>
+      {value}
+    </span>
+  );
+}
+
 function toCsv(rows) {
-  const headers = ['email', 'first_name', 'last_name', 'company', 'job_title', 'send_status', 'created_at'];
+  const headers = ['email', 'first_name', 'last_name', 'company', 'job_title', 'research_status', 'compose_status', 'send_status', 'created_at'];
   const lines = [headers.join(',')];
   for (const r of rows) {
     const cells = headers.map((h) => {
       const v = r[h] == null ? '' : String(r[h]);
-      // RFC 4180 escaping
       return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
     });
     lines.push(cells.join(','));
@@ -18,7 +36,7 @@ function toCsv(rows) {
   return lines.join('\n');
 }
 
-export default function LeadTable({ campaignId, replyTrackingEnabled }) {
+export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead }) {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(50);
   const [search, setSearch] = useState('');
@@ -89,16 +107,17 @@ export default function LeadTable({ campaignId, replyTrackingEnabled }) {
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Name</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Email</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Company</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Send status</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Replied</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Created</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Research</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Compose</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Send</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200"></th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={6} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
+              <tr><td colSpan={7} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
             ) : data?.items?.length === 0 ? (
-              <tr><td colSpan={6} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
             ) : (
               data?.items?.map((lead) => (
                 <tr key={lead.id} className="hover:bg-slate-50">
@@ -109,17 +128,27 @@ export default function LeadTable({ campaignId, replyTrackingEnabled }) {
                   </td>
                   <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{lead.email}</td>
                   <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{lead.company || '—'}</td>
-                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">
-                    <span data-testid="row-send-status">{lead.send_status}</span>
+                  <td className="px-4 py-3 border-b border-slate-100">
+                    <StatusPill value={lead.research_status} />
                   </td>
-                  <td
-                    className="px-4 py-3 text-slate-700 border-b border-slate-100"
-                    title={replyTrackingEnabled ? '' : 'Connect an inbox to track replies'}
-                  >
-                    {replyTrackingEnabled ? '—' : '—'}
+                  <td className="px-4 py-3 border-b border-slate-100">
+                    <StatusPill value={lead.compose_status} />
                   </td>
-                  <td className="px-4 py-3 text-slate-700 border-b border-slate-100">
-                    {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '—'}
+                  <td className="px-4 py-3 border-b border-slate-100">
+                    <span data-testid="row-send-status">
+                      <StatusPill value={lead.send_status} />
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 border-b border-slate-100 text-right">
+                    {lead.compose_status === 'done' && onViewLead && (
+                      <button
+                        type="button"
+                        onClick={() => onViewLead(lead)}
+                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                      >
+                        View email
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))

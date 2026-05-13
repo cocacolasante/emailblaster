@@ -34,6 +34,14 @@ async def create_account(
     payload: ConnectedAccountCreate,
     db: AsyncSession = Depends(get_db),
 ) -> ConnectedAccount:
+    existing = await db.execute(
+        select(ConnectedAccount).where(ConnectedAccount.email_address == payload.email_address)
+    )
+    if existing.scalars().first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An inbox for {payload.email_address} is already connected.",
+        )
     acc = ConnectedAccount(
         label=payload.label,
         email_address=payload.email_address,

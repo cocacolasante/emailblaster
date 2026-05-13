@@ -267,3 +267,46 @@ async def test_status_endpoint_returns_summary_without_password(client):
     assert "password" not in body
     assert "password_encrypted" not in body
     assert "imap_host" not in body  # status endpoint returns a lean summary
+
+
+# ---------- Duplicate email enforcement ----------
+
+
+async def test_create_duplicate_email_returns_409(client):
+    """Two accounts with the same email_address must be rejected."""
+    payload = _account_payload(email_address="dup@example.com")
+    r1 = await client.post("/connected-accounts/", json=payload)
+    assert r1.status_code == 201
+
+    r2 = await client.post("/connected-accounts/", json=payload)
+    assert r2.status_code == 409
+    assert "dup@example.com" in r2.json()["detail"]
+
+
+async def test_create_different_emails_both_succeed(client):
+    r1 = await client.post("/connected-accounts/", json=_account_payload(email_address="a@x.com"))
+    r2 = await client.post("/connected-accounts/", json=_account_payload(email_address="b@x.com"))
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+
+
+async def test_update_does_not_block_same_account_email(client):
+    """PATCH should be able to update fields without conflicting with its own email."""
+    r = await client.post("/connected-accounts/", json=_account_payload(email_address="patch@x.com"))
+    acc_id = r.json()["id"]
+    # Update the label — email stays the same — should not 409.
+    patch_r = await client.patch(f"/connected-accounts/{acc_id}", json={"label": "New label"})
+    assert patch_r.status_code == 200
+    assert patch_r.json()["label"] == "New label"
+
+
+async def test_delete_frees_email_for_reuse(client):
+    """After deleting an account, its email can be re-registered."""
+    payload = _account_payload(email_address="reuse@x.com")
+    r1 = await client.post("/connected-accounts/", json=payload)
+    acc_id = r1.json()["id"]
+
+    await client.delete(f"/connected-accounts/{acc_id}")
+
+    r2 = await client.post("/connected-accounts/", json=payload)
+    assert r2.status_code == 201

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -21,7 +22,9 @@ from app.models import (
     ResearchStatus,
     SendStatus,
 )
+from app.workers.send import compute_next_send_window
 from app.schemas.campaign import (
+    CampaignActivity,
     CampaignCreate,
     CampaignResponse,
     CampaignStats,
@@ -29,10 +32,11 @@ from app.schemas.campaign import (
     ConnectedAccountInfo,
     FailedLeadInfo,
     LeadCounts,
+    RecentLeadEvent,
     RetryFailedResponse,
     campaign_to_dict,
 )
-from app.schemas.lead import LeadSummary, PaginatedLeads
+from app.schemas.lead import LeadResponse, LeadSummary, PaginatedLeads
 from app.services.sequence_service import ensure_default_sequence
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -263,6 +267,7 @@ async def list_campaign_leads(
     page_size: int = Query(default=50, ge=1, le=500),
     send_status: SendStatus | None = None,
     search: str | None = None,
+    sort_by: str = Query(default="created_at", pattern="^(created_at|updated_at)$"),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedLeads:
     await _get_or_404(db, campaign_id)
@@ -276,13 +281,14 @@ async def list_campaign_leads(
             or_(Lead.email.ilike(s), Lead.first_name.ilike(s), Lead.last_name.ilike(s))
         )
 
+    order_col = Lead.updated_at if sort_by == "updated_at" else Lead.created_at
     count_q = select(func.count()).select_from(Lead).where(*filters)
     total = (await db.execute(count_q)).scalar_one()
 
     rows_q = (
         select(Lead)
         .where(*filters)
-        .order_by(Lead.created_at.desc())
+        .order_by(order_col.desc())
         .limit(page_size)
         .offset((page - 1) * page_size)
     )
@@ -294,6 +300,114 @@ async def list_campaign_leads(
         page=page,
         page_size=page_size,
         total_pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
+
+
+@router.get("/{campaign_id}/leads/{lead_id}", response_model=LeadResponse)
+async def get_campaign_lead(
+    campaign_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> LeadResponse:
+    await _get_or_404(db, campaign_id)
+    lead = await db.get(Lead, lead_id)
+    if lead is None or lead.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return LeadResponse.model_validate(lead)
+
+
+# --------------------------------------------------------------------------
+# Activity
+# --------------------------------------------------------------------------
+
+
+@router.get("/{campaign_id}/activity", response_model=CampaignActivity)
+async def get_campaign_activity(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignActivity:
+    campaign = await _get_or_404(db, campaign_id)
+
+    # Status counts across the full pipeline
+    pipeline_q = await db.execute(
+        select(
+            Lead.research_status,
+            Lead.compose_status,
+            Lead.send_status,
+            func.count(),
+        )
+        .where(Lead.campaign_id == campaign_id)
+        .group_by(Lead.research_status, Lead.compose_status, Lead.send_status)
+    )
+    rows = pipeline_q.all()
+
+    researching = composing = pending_send = scheduled_send = sent = failed = 0
+    for r_status, c_status, s_status, cnt in rows:
+        if r_status == ResearchStatus.RUNNING:
+            researching += cnt
+        if c_status == ComposeStatus.RUNNING:
+            composing += cnt
+        if s_status == SendStatus.PENDING:
+            pending_send += cnt
+        if s_status == SendStatus.SCHEDULED:
+            scheduled_send += cnt
+        if s_status == SendStatus.SENT:
+            sent += cnt
+        if s_status == SendStatus.FAILED or r_status == ResearchStatus.FAILED or c_status == ComposeStatus.FAILED:
+            failed += cnt
+
+    # Next send window
+    next_window_at = compute_next_send_window(campaign)
+
+    # Estimated minutes: pending leads / throughput (1 per min_delay_seconds within window)
+    queue_depth = pending_send + scheduled_send
+    if queue_depth > 0 and campaign.min_delay_seconds > 0:
+        # Pessimistic: all pending leads go out sequentially at min_delay
+        raw_minutes = math.ceil((queue_depth * campaign.min_delay_seconds) / 60)
+        # If outside the window, add the gap until the window opens
+        if next_window_at is not None:
+            from datetime import timezone
+            gap_minutes = max(0, int((next_window_at - datetime.now(timezone.utc)).total_seconds() / 60))
+            estimated_minutes_remaining: int | None = raw_minutes + gap_minutes
+        else:
+            estimated_minutes_remaining = raw_minutes
+    else:
+        estimated_minutes_remaining = None
+
+    # 20 most recently updated leads for the activity feed
+    recent_rows = (await db.execute(
+        select(Lead)
+        .where(Lead.campaign_id == campaign_id)
+        .order_by(Lead.updated_at.desc())
+        .limit(20)
+    )).scalars().all()
+
+    recent_events = [
+        RecentLeadEvent(
+            lead_id=lead.id,
+            email=lead.email,
+            first_name=lead.first_name,
+            last_name=lead.last_name,
+            company=lead.company,
+            research_status=lead.research_status.value,
+            compose_status=lead.compose_status.value,
+            send_status=lead.send_status.value,
+            scheduled_send_at=lead.scheduled_send_at,
+            updated_at=lead.updated_at,
+        )
+        for lead in recent_rows
+    ]
+
+    return CampaignActivity(
+        researching=researching,
+        composing=composing,
+        pending_send=pending_send,
+        scheduled_send=scheduled_send,
+        sent=sent,
+        failed=failed,
+        next_window_at=next_window_at,
+        estimated_minutes_remaining=estimated_minutes_remaining,
+        recent_events=recent_events,
     )
 
 

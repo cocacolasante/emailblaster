@@ -77,6 +77,47 @@ def _proxies_for(account: Any) -> dict[str, str]:
     return {"http": url, "https": url} if url else {}
 
 
+# linkedin-api uses these mobile app headers — match them so our warm-up
+# looks identical to the library's own requests.
+_LI_API_HEADERS = {
+    "X-Li-User-Agent": "LIAuthLibrary:0.0.3 com.linkedin.LinkedIn:8.8.1 iPhone:8.3",
+    "User-Agent": "LinkedIn/8.8.1 CFNetwork/711.3.18 Darwin/14.0.0",
+    "X-RestLi-Protocol-Version": "2.0.0",
+    "x-li-lang": "en_US",
+}
+
+
+def _warmup_session_sync(li_at: str, proxies: dict) -> RequestsCookieJar:
+    """Obtain a JSESSIONID to pair with a user-supplied li_at token.
+
+    linkedin-api needs JSESSIONID to set the Csrf-Token request header before
+    any Voyager API call.  GET /uas/authenticate is the same endpoint the
+    library hits to bootstrap a new session — it always returns a fresh
+    JSESSIONID regardless of auth state.  We then inject the user's li_at so
+    the combined jar has both.
+
+    CSRF check: LinkedIn only verifies ``Csrf-Token header == JSESSIONID
+    cookie`` — it does not require JSESSIONID and li_at to have been issued
+    together, so this cross-session approach is valid.
+    """
+    import requests
+    session = requests.Session()
+    session.headers.update(_LI_API_HEADERS)
+    try:
+        session.get(
+            "https://www.linkedin.com/uas/authenticate",
+            params={"prompt": "false"},
+            proxies=proxies or {},
+            timeout=10,
+            allow_redirects=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LinkedIn /uas/authenticate warm-up failed: %s", exc)
+    # Inject the user's token on top of whatever cookies we received.
+    session.cookies.set("li_at", li_at, domain=".linkedin.com", path="/")
+    return session.cookies
+
+
 # --------------------------------------------------------------------------
 # Sync core — runs inside `to_thread`. All plaintext lives here.
 # --------------------------------------------------------------------------
@@ -91,41 +132,65 @@ def _build_client_sync(account: Any) -> tuple[Any, bool]:
     Raises ``ChallengeRequired`` / ``AccountRestricted`` on the obvious
     failure modes.
     """
-    # Late import so missing dep doesn't break the whole package at module-load.
     from linkedin_api import Linkedin
     from linkedin_api.client import ChallengeException
 
     proxies = _proxies_for(account)
     stored_cookies = getattr(account, "session_cookies_encrypted", None)
 
-    # Try cookies-only path first.
     if stored_cookies:
         try:
             cookie_jar = _cookies_from_json(encryption.decrypt(stored_cookies))
-        except Exception as exc:  # noqa: BLE001 — corrupt/wrong key
+        except Exception as exc:  # noqa: BLE001
             logger.warning("LinkedIn cookie decrypt failed for %s: %s", account.id, exc)
             cookie_jar = None
         else:
+            li_at_val = next((c.value for c in cookie_jar if c.name == "li_at"), None)
+            has_jsessionid = any(c.name == "JSESSIONID" for c in cookie_jar)
+            did_warmup = False
+
+            if li_at_val and not has_jsessionid:
+                # User pasted just a li_at token. Use the same bootstrap request
+                # the library makes during normal auth to get a fresh JSESSIONID,
+                # then inject li_at. _set_session_cookies (called below) will
+                # read JSESSIONID to set the csrf-token header.
+                cookie_jar = _warmup_session_sync(li_at_val, proxies)
+                did_warmup = True
+                if not any(c.name == "JSESSIONID" for c in cookie_jar):
+                    raise LinkedInProviderError(
+                        "Could not obtain a LinkedIn session token (JSESSIONID). "
+                        "Check that your li_at cookie is valid and not expired, then try again."
+                    )
+
             try:
+                # authenticate=True + cookies= → calls _set_session_cookies which
+                # loads the jar AND sets csrf-token from JSESSIONID. Using
+                # authenticate=False silently ignores the cookies parameter.
                 client = Linkedin(
                     account.linkedin_email, "",
-                    authenticate=False,
+                    authenticate=True,
                     proxies=proxies,
                     cookies=cookie_jar,
                 )
-                # Cheap sanity request — this raises on bad session.
                 client.get_user_profile(use_cache=False)
-                return client, False
+                return client, did_warmup
             except ChallengeException as ce:
                 raise ChallengeRequired(str(ce)) from ce
-            except Exception as exc:  # noqa: BLE001 — fall through to fresh login
+            except LinkedInProviderError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if did_warmup:
+                    raise LinkedInProviderError(
+                        f"Session cookie authentication failed — your li_at cookie may be "
+                        f"expired. Please copy a fresh one from your browser. ({exc})"
+                    ) from exc
                 logger.info(
                     "LinkedIn cookie auth failed for account %s, will re-login: %s",
                     account.id, exc,
                 )
 
-    # Fresh login. Password is decrypted here, lives in `password`, and is
-    # deleted at the end of this function regardless of outcome.
+    # Fresh login with password. Plaintext lives in `password` only and is
+    # deleted in the finally block regardless of outcome.
     password = encryption.decrypt(account.password_encrypted)
     try:
         try:

@@ -60,6 +60,7 @@ from app.services.linkedin.base import (
 )
 from app.services.sequence_conditions import ConditionContext, evaluate
 from app.workers.celery_app import celery_app
+from app.workers.compose import generate_linkedin_dm_text
 
 logger = logging.getLogger(__name__)
 
@@ -490,10 +491,26 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                         # to CONNECTED once the lead accepts.
                         lead.linkedin_connection_status = LinkedInConnectionStatus.INVITED
                 elif kind == SequenceNodeKind.LINKEDIN_DM:
-                    text_tpl = cfg.get("text_template") or ""
-                    if not text_tpl:
-                        return {"status": "misconfigured", "error": "text_template missing"}
-                    body = _substitute(text_tpl, lead)
+                    if cfg.get("ai_compose"):
+                        try:
+                            body = await generate_linkedin_dm_text(
+                                goal=campaign.goal,
+                                tone=campaign.tone,
+                                sender_name=campaign.sender_name,
+                                first_name=lead.first_name or "",
+                                last_name=lead.last_name or "",
+                                company=lead.company or "",
+                                job_title=lead.job_title or "",
+                                research_data=lead.research_data or {},
+                                company_website=lead.company_website or "",
+                            )
+                        except ValueError as e:
+                            return {"status": "failed", "error": f"AI DM compose failed: {e}"}
+                    else:
+                        text_tpl = cfg.get("text_template") or ""
+                        if not text_tpl:
+                            return {"status": "misconfigured", "error": "text_template missing (or enable ai_compose)"}
+                        body = _substitute(text_tpl, lead)
                     result = await provider.send_dm(account, profile, body)
                 elif kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE:
                     result = await provider.invite_to_page(
@@ -752,6 +769,8 @@ def send_email_step(self, lead_id: str, node_id: str) -> dict[str, Any]:  # noqa
 
 @celery_app.task(bind=True, name="sequencer.send_linkedin_step", max_retries=2)
 def send_linkedin_step(self, lead_id: str, node_id: str) -> dict[str, Any]:  # noqa: D401
+    global _LI_REDIS_CLIENT
+    _LI_REDIS_CLIENT = None  # force fresh client for this event loop
     try:
         result = asyncio.run(_send_linkedin_step_async(lead_id, node_id))
     except Exception as exc:  # noqa: BLE001

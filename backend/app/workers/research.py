@@ -71,6 +71,7 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             first_name = lead.first_name or ""
             last_name = lead.last_name or ""
             company = lead.company or ""
+            company_website = lead.company_website or ""
             job_title = lead.job_title or ""
             email = lead.email
             mode = campaign.research_mode
@@ -79,7 +80,9 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             asyncio.ensure_future(
                 web_research.research_person_web(first_name, last_name, company, job_title)
             ),
-            asyncio.ensure_future(site_scraper.scrape_company_site(company)),
+            asyncio.ensure_future(
+                site_scraper.scrape_company_site(company, company_website or None)
+            ),
             asyncio.ensure_future(hunter.verify_email_hunter(email)),
         ]
         run_apollo = mode == ResearchMode.DEEP and bool(settings.APOLLO_API_KEY)

@@ -94,6 +94,20 @@ export async function confirmLeadsUpload(campaignId, file, mapping) {
   return data;
 }
 
+// ---------- Lead detail ----------
+
+export async function getLeadDetail(campaignId, leadId) {
+  const { data } = await client.get(`/campaigns/${campaignId}/leads/${leadId}`);
+  return data;
+}
+
+// ---------- Activity ----------
+
+export async function getCampaignActivity(id) {
+  const { data } = await client.get(`/campaigns/${id}/activity`);
+  return data;
+}
+
 // ---------- Analytics ----------
 
 export async function getAnalytics(id) {

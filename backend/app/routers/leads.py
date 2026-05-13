@@ -19,7 +19,7 @@ router = APIRouter(tags=["leads"])
 # Lead-model fields the user is allowed to populate from a CSV column.
 _ALLOWED_LEAD_FIELDS = {
     "email", "phone", "linkedin_url",
-    "first_name", "last_name", "company", "job_title",
+    "first_name", "last_name", "company", "company_website", "job_title",
 }
 
 

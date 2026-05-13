@@ -230,8 +230,8 @@ def validate_graph(
                         "(LinkedIn caps connect notes at 300)"
                     )
         elif kind_enum == SequenceNodeKind.LINKEDIN_DM:
-            if not cfg.get("text_template"):
-                errors.append(f"{label}: text_template is required")
+            if not cfg.get("ai_compose") and not cfg.get("text_template"):
+                errors.append(f"{label}: text_template is required (or enable ai_compose)")
         elif kind_enum == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE:
             page_id = cfg.get("page_id")
             if not page_id:

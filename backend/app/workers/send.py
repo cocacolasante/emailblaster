@@ -36,14 +36,14 @@ from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_redis_client: aioredis.Redis | None = None
+def _new_redis() -> aioredis.Redis:
+    """Create a fresh Redis client for one asyncio.run() call.
 
-
-def _get_redis() -> aioredis.Redis:
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-    return _redis_client
+    A module-level singleton breaks here: each asyncio.run() creates then
+    closes its own event loop, leaving any client bound to the old loop
+    unusable in the next invocation.
+    """
+    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
 
 
 # --------------------------------------------------------------------------
@@ -177,6 +177,7 @@ async def _mark_send_failed(lead_id: str) -> None:
 async def send_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
     engine = create_async_engine(settings.DATABASE_URL)
+    redis_client = _new_redis()
 
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -228,7 +229,6 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             campaign_snap = campaign  # safe to use outside session for read-only attrs
 
         # 4. Rate limits
-        redis_client = _get_redis()
         rate = await check_rate_limits(campaign_snap, redis_client)
         if not rate.get("ok"):
             return {"status": "rate_limited", **rate}
@@ -263,6 +263,7 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
         await increment_rate_counters(campaign_snap, redis_client)
     finally:
         await engine.dispose()
+        await redis_client.aclose()
 
     return {"status": "sent", "message_id": message_id}
 

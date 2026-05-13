@@ -34,7 +34,7 @@ const PALETTE = [
   { kind: 'linkedin_follow_profile', label: 'LI: Follow profile', hint: 'Follow the lead. They get a notification.' },
   { kind: 'linkedin_react_post', label: 'LI: React to post', hint: 'Like the lead’s most recent post.' },
   { kind: 'linkedin_connect', label: 'LI: Connect', hint: 'Send a connection request, optionally with a 300-char note.' },
-  { kind: 'linkedin_dm', label: 'LI: DM', hint: 'Send a direct message. Only fires for accepted (1st-degree) connections.' },
+  { kind: 'linkedin_dm', label: 'LI: DM', hint: 'Send a direct message — AI-composed or from a template. Only fires for accepted (1st-degree) connections.' },
   { kind: 'linkedin_invite_to_page', label: 'LI: Invite to page', hint: 'Invite a 1st-degree connection to follow a company page.' },
   { kind: 'linkedin_inmail', label: 'LI: InMail', hint: 'Send a paid InMail to a 2nd/3rd-degree prospect. Requires Premium / Sales Nav.' },
   { kind: 'linkedin_comment_post', label: 'LI: Comment on post', hint: 'Comment on the lead’s post — publicly visible. Use sparingly.' },
@@ -84,8 +84,8 @@ function defaultsForKind(kind) {
       };
     case 'linkedin_dm':
       return {
-        config: { text_template: 'Hi {{first_name}}, thanks for connecting!' },
-        title: 'Send DM',
+        config: { ai_compose: true, text_template: '' },
+        title: 'Send AI DM',
       };
     case 'linkedin_invite_to_page':
       return { config: { page_id: '' }, title: 'Invite to page' };
@@ -418,21 +418,41 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
       {node.data.kind === 'linkedin_dm' && (
         <>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Message template</label>
-            <textarea
-              value={cfg.text_template || ''}
-              onChange={(e) => setCfg({ text_template: e.target.value })}
-              rows={6}
-              placeholder="Hi {{first_name}}, thanks for connecting!"
-              className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded font-mono"
-            />
-            <p className="mt-1 text-[11px] text-slate-500">
-              Only fires when the lead is a 1st-degree connection — others
-              are skipped automatically. Variables:{' '}
-              <code>{'{{first_name}}'}</code>, <code>{'{{last_name}}'}</code>,{' '}
-              <code>{'{{company}}'}</code>, <code>{'{{job_title}}'}</code>.
-            </p>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={!!cfg.ai_compose}
+                onChange={(e) => setCfg({ ai_compose: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-xs font-medium text-slate-700">AI-compose (uses lead research data)</span>
+            </label>
           </div>
+          {cfg.ai_compose ? (
+            <div className="p-3 bg-blue-50 border border-blue-100 rounded text-xs text-blue-800 leading-relaxed">
+              Claude will write a personalized DM for each lead using the research data collected
+              during ingest (LinkedIn headline, news, company context). Generated at send time —
+              no preview until it fires.
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Message template</label>
+              <textarea
+                value={cfg.text_template || ''}
+                onChange={(e) => setCfg({ text_template: e.target.value })}
+                rows={6}
+                placeholder="Hi {{first_name}}, thanks for connecting!"
+                className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded font-mono"
+              />
+              <p className="mt-1 text-[11px] text-slate-500">
+                Variables: <code>{'{{first_name}}'}</code>, <code>{'{{last_name}}'}</code>,{' '}
+                <code>{'{{company}}'}</code>, <code>{'{{job_title}}'}</code>.
+              </p>
+            </div>
+          )}
+          <p className="text-[11px] text-slate-500">
+            Only fires when the lead is a 1st-degree connection — others are skipped automatically.
+          </p>
         </>
       )}
 
@@ -965,10 +985,11 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
       e.preventDefault();
       const kind = e.dataTransfer.getData('application/sequence-kind');
       if (!kind) return;
-      const bounds = wrapperRef.current.getBoundingClientRect();
+      // screenToFlowPosition expects absolute page coordinates — do NOT
+      // subtract the container offset, that double-shifts the position.
       const position = flow.screenToFlowPosition({
-        x: e.clientX - bounds.left,
-        y: e.clientY - bounds.top,
+        x: e.clientX,
+        y: e.clientY,
       });
       const id = `n_${Math.random().toString(36).slice(2, 10)}`;
       const defaults = defaultsForKind(kind);

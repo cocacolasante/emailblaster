@@ -135,8 +135,12 @@ def validate(condition: Any, path: str = "$") -> list[str]:
             errors.append(f"{path}.within_days: must be a number")
         return errors
     if op in {"opened", "clicked"}:
-        if "within_days" in condition and not isinstance(condition["within_days"], (int, float)):
-            errors.append(f"{path}.within_days: must be a number")
+        if "within_days" in condition:
+            wd = condition["within_days"]
+            if not isinstance(wd, (int, float)):
+                errors.append(f"{path}.within_days: must be a number")
+            elif wd < 0:
+                errors.append(f"{path}.within_days: must be a non-negative number")
         return errors
     if op == "bounced":
         return errors
@@ -184,7 +188,8 @@ def _eval(condition: Any, ctx: ConditionContext) -> bool:
         return any(_eval(c, ctx) for c in children)
 
     if op == "replied":
-        channels = set(condition.get("channels") or ["email", "linkedin"])
+        raw_channels = condition.get("channels")
+        channels = set(raw_channels) if raw_channels is not None else {"email", "linkedin"}
         within_days = condition.get("within_days")
         for ch in channels:
             if ch == "email" and ctx.has_replied_email and _within_days(ctx.last_reply_email_at, within_days, ctx.now):

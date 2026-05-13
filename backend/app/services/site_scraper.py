@@ -21,13 +21,23 @@ _DEFAULT: dict[str, Any] = {
 }
 
 
-async def scrape_company_site(company_name: str) -> dict[str, Any]:
+async def scrape_company_site(
+    company_name: str,
+    company_website: str | None = None,
+) -> dict[str, Any]:
     if not settings.ANTHROPIC_API_KEY or not company_name:
         return dict(_DEFAULT)
 
+    if company_website:
+        target = (
+            f'Visit the company website at {company_website} (About, Blog, News/Press pages)'
+        )
+    else:
+        target = f'Search for the official website of "{company_name}" and visit it (About, Blog, News/Press pages)'
+
     prompt = (
         f'Research the company "{company_name}" for context to use in an outreach email.\n'
-        "Use web search on their official website (About page, Blog, News/Press) to gather:\n"
+        f"{target} to gather:\n"
         "1. A short description of what the company does (1-2 sentences).\n"
         "2. Recent product launches, announcements, or news (1-3 items).\n"
         "3. Their industry / sector.\n"

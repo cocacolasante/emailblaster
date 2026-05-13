@@ -258,7 +258,7 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
           className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="step1-submit"
         >
-          {submitting ? 'Creating…' : 'Next: upload leads'}
+          {submitting ? 'Creating…' : 'Next: build sequence →'}
         </button>
       </div>
     </form>

@@ -144,6 +144,39 @@ class CampaignUpdate(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Activity
+# --------------------------------------------------------------------------
+
+
+class RecentLeadEvent(BaseModel):
+    lead_id: uuid.UUID
+    email: str
+    first_name: str | None
+    last_name: str | None
+    company: str | None
+    research_status: str
+    compose_status: str
+    send_status: str
+    scheduled_send_at: datetime | None
+    updated_at: datetime
+
+
+class CampaignActivity(BaseModel):
+    """Live snapshot of what the campaign is doing right now."""
+    researching: int
+    composing: int
+    pending_send: int
+    scheduled_send: int
+    sent: int
+    failed: int
+    # When the send window next opens (None = open right now)
+    next_window_at: datetime | None
+    # Estimated minutes until all pending leads are sent (None = unknown)
+    estimated_minutes_remaining: int | None
+    recent_events: list[RecentLeadEvent]
+
+
+# --------------------------------------------------------------------------
 # Response
 # --------------------------------------------------------------------------
 

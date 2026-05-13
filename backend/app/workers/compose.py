@@ -48,7 +48,9 @@ def _get_client() -> AsyncAnthropic:
 def _build_generic_prompt(
     goal: str, tone: str, sender_name: str,
     first_name: str, last_name: str, company: str,
+    company_website: str = "",
 ) -> str:
+    website_line = f"Website: {company_website}\n" if company_website else ""
     return (
         "You are an expert cold email copywriter.\n"
         f"Campaign goal: {goal}\n"
@@ -56,8 +58,9 @@ def _build_generic_prompt(
         f"Sender: {sender_name}\n\n"
         "Recipient:\n"
         f"Name: {first_name} {last_name}\n"
-        f"Company: {company}\n\n"
-        "Research on this person was limited — use only their name and company.\n"
+        f"Company: {company}\n"
+        f"{website_line}"
+        "\nResearch on this person was limited — use only their name and company.\n"
         "Write a compelling subject line and email body under 150 words. Focus on "
         "value, not flattery.\n\n"
         'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
@@ -68,12 +71,14 @@ def _build_personalized_prompt(
     goal: str, tone: str, sender_name: str,
     first_name: str, last_name: str, company: str, job_title: str,
     research_data: dict[str, Any], corrected_examples: list[str],
+    company_website: str = "",
 ) -> str:
     person_news = "; ".join(research_data.get("person_news") or []) or "(none)"
     company_news = "; ".join(research_data.get("company_news") or []) or "(none)"
     recent_updates = "; ".join(research_data.get("recent_updates") or []) or "(none)"
     company_desc = research_data.get("company_description") or "(unknown)"
     linkedin_headline = research_data.get("linkedin_headline") or "(unknown)"
+    website_line = f"Website: {company_website}\n" if company_website else ""
 
     if corrected_examples:
         style_block = (
@@ -90,6 +95,7 @@ def _build_personalized_prompt(
         f"Sender: {sender_name}\n\n"
         "Recipient:\n"
         f"Name: {first_name} {last_name}, {job_title} at {company}\n"
+        f"{website_line}"
         f"LinkedIn headline: {linkedin_headline}\n"
         f"Recent person news: {person_news}\n"
         f"Recent company news: {company_news}\n"
@@ -120,15 +126,12 @@ def _validate_email_json(parsed: Any) -> dict[str, str] | None:
     return {"subject": subject.strip(), "body": body.strip()}
 
 
-async def _call_anthropic(system_prompt: str) -> str:
+async def _call_anthropic(system_prompt: str, user_msg: str = "Write it now. Respond ONLY with the JSON object.") -> str:
     message = await _get_client().messages.create(
         model=settings.ANTHROPIC_MODEL,
         max_tokens=1000,
         system=system_prompt,
-        messages=[{
-            "role": "user",
-            "content": "Write the email now. Respond ONLY with the JSON object.",
-        }],
+        messages=[{"role": "user", "content": user_msg}],
     )
     return _extract_text(message)
 
@@ -151,6 +154,87 @@ async def _generate_email(system_prompt: str) -> dict[str, str]:
     if parsed is None:
         raise ValueError("Anthropic returned unparseable JSON after retry")
     return parsed
+
+
+# --------------------------------------------------------------------------
+# LinkedIn DM composition
+# --------------------------------------------------------------------------
+
+
+def _build_linkedin_dm_prompt(
+    goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str, job_title: str,
+    research_data: dict[str, Any],
+    company_website: str = "",
+) -> str:
+    quality = (research_data or {}).get("quality", "low")
+    website_line = f"Website: {company_website}\n" if company_website else ""
+    if quality == "low":
+        return (
+            "You are writing a short LinkedIn direct message for a cold outreach campaign.\n"
+            f"Campaign goal: {goal}\n"
+            f"Tone: {tone}\n"
+            f"Sender: {sender_name}\n\n"
+            "Recipient:\n"
+            f"Name: {first_name} {last_name}\n"
+            f"Company: {company}\n"
+            f"{website_line}"
+            "\nWrite a brief, natural LinkedIn DM under 100 words. "
+            "Conversational — this is a direct message, not a formal email. "
+            "No sycophancy. No hollow flattery.\n\n"
+            'Respond ONLY with JSON: {"body": "..."}'
+        )
+    person_news = "; ".join(research_data.get("person_news") or []) or "(none)"
+    company_news = "; ".join(research_data.get("company_news") or []) or "(none)"
+    company_desc = research_data.get("company_description") or "(unknown)"
+    linkedin_headline = research_data.get("linkedin_headline") or "(unknown)"
+    return (
+        "You are writing a short LinkedIn direct message for a cold outreach campaign.\n"
+        f"Campaign goal: {goal}\n"
+        f"Tone: {tone}\n"
+        f"Sender: {sender_name}\n\n"
+        "Recipient:\n"
+        f"Name: {first_name} {last_name}, {job_title} at {company}\n"
+        f"{website_line}"
+        f"LinkedIn headline: {linkedin_headline}\n"
+        f"Recent person news: {person_news}\n"
+        f"Recent company news: {company_news}\n"
+        f"Company: {company_desc}\n\n"
+        "Write a personalized LinkedIn DM under 100 words. "
+        "Reference something specific and real from the research. "
+        "Conversational — this is a direct message on LinkedIn, not a formal email. "
+        "No sycophancy. Do not mention doing research.\n\n"
+        'Respond ONLY with JSON: {"body": "..."}'
+    )
+
+
+async def generate_linkedin_dm_text(
+    goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str, job_title: str,
+    research_data: dict[str, Any],
+    company_website: str = "",
+) -> str:
+    """Call Anthropic to compose a personalized LinkedIn DM; retry once on parse failure."""
+    system_prompt = _build_linkedin_dm_prompt(
+        goal=goal, tone=tone, sender_name=sender_name,
+        first_name=first_name, last_name=last_name,
+        company=company, job_title=job_title,
+        research_data=research_data, company_website=company_website,
+    )
+    text = await _call_anthropic(system_prompt, "Write the LinkedIn DM now. Respond ONLY with the JSON object.")
+    parsed = _parse_json(text)
+    if isinstance(parsed, dict) and isinstance(parsed.get("body"), str) and parsed["body"].strip():
+        return parsed["body"].strip()
+
+    stricter = (
+        system_prompt
+        + '\n\nCRITICAL: Respond ONLY with {"body": "..."} — no markdown, no preamble, no trailing text.'
+    )
+    text = await _call_anthropic(stricter, "Write the LinkedIn DM now. Respond ONLY with the JSON object.")
+    parsed = _parse_json(text)
+    if isinstance(parsed, dict) and isinstance(parsed.get("body"), str) and parsed["body"].strip():
+        return parsed["body"].strip()
+    raise ValueError("Anthropic returned unparseable response for LinkedIn DM after retry")
 
 
 # --------------------------------------------------------------------------
@@ -197,6 +281,7 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
                 "first_name": lead.first_name or "",
                 "last_name": lead.last_name or "",
                 "company": lead.company or "",
+                "company_website": lead.company_website or "",
                 "job_title": lead.job_title or "",
                 "research_data": lead.research_data or {},
                 "goal": campaign.goal,
@@ -214,12 +299,14 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             system_prompt = _build_generic_prompt(
                 ctx["goal"], ctx["tone"], ctx["sender_name"],
                 ctx["first_name"], ctx["last_name"], ctx["company"],
+                ctx["company_website"],
             )
         else:
             system_prompt = _build_personalized_prompt(
                 ctx["goal"], ctx["tone"], ctx["sender_name"],
                 ctx["first_name"], ctx["last_name"], ctx["company"], ctx["job_title"],
                 ctx["research_data"], corrected_examples,
+                ctx["company_website"],
             )
 
         try:

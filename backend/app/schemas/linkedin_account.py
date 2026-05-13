@@ -14,6 +14,7 @@ class LinkedInAccountCreate(BaseModel):
     linkedin_email: str = Field(min_length=1)
     password: str = Field(min_length=1)
     proxy_url: str | None = None
+    li_at_cookie: str | None = None
 
 
 class LinkedInAccountUpdate(BaseModel):
@@ -21,6 +22,7 @@ class LinkedInAccountUpdate(BaseModel):
     linkedin_email: str | None = Field(default=None, min_length=1)
     password: str | None = Field(default=None, min_length=1)
     proxy_url: str | None = None
+    li_at_cookie: str | None = None
 
 
 class LinkedInAccountResponse(BaseModel):
