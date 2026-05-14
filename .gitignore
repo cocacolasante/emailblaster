@@ -38,3 +38,12 @@ redis_data/
 
 # OS
 Thumbs.db
+
+# LinkedIn — persistent Chrome profiles per account.  Each subdir is a full
+# Chromium user-data-dir (cookies, cache, localStorage, fingerprint state)
+# bound to one LinkedInAccount UUID.  NEVER commit: it contains the user's
+# active li_at cookie + browser state.  Path mirrors LINKEDIN_PROFILES_DIR.
+backend/_linkedin_profiles/
+_linkedin_profiles/
+celerybeat-schedule
+backend/celerybeat-schedule
