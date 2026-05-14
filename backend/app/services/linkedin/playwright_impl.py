@@ -29,13 +29,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
+import secrets
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+import redis.asyncio as aioredis
+
+from app.config import settings
 from app.services import encryption
 from app.services.linkedin.base import (
+    AccountLockBusy,
     ActionResult,
     ChallengeRequired,
     InboundEvent,
@@ -270,14 +278,40 @@ async (args) => {
     const res = await fetch(url, opts);
     let text = '';
     try { text = await res.text(); } catch(e) {}
-    return { status: res.status, body: text };
+    // Surface response headers — especially Location on 30x — so the
+    // Python layer can react when LinkedIn moves an endpoint.
+    const headers = {};
+    try {
+        res.headers.forEach((v, k) => { headers[k] = v; });
+    } catch(e) {}
+    return {
+        status: res.status,
+        body: text,
+        headers,
+        type: res.type,    // 'basic' | 'opaqueredirect' | 'error' | etc.
+        url: res.url || '',
+    };
 }
 """
 
 
 async def _voyager(page, method: str, url: str, body=None) -> tuple[int, str]:
+    """Run a Voyager API call from the browser page.
+
+    Returns ``(status, body)``. On non-2xx responses, also logs response
+    headers + type so we can catch endpoint moves (LinkedIn signals these
+    with 301 / opaqueredirect + a Location header pointing at the new
+    endpoint).
+    """
     result = await page.evaluate(_VOYAGER_JS, [method, url, body])
-    return result["status"], result["body"]
+    status, body_text = result["status"], result["body"]
+    if status < 200 or status >= 300:
+        logger.warning(
+            "Voyager %s %s -> status=%s type=%s body=%r headers=%r",
+            method, url, status, result.get("type"),
+            body_text[:200], result.get("headers"),
+        )
+    return status, body_text
 
 
 def _parse_json(text: str) -> dict | list:
@@ -393,6 +427,194 @@ def _normalize_urn(urn: str | None) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# Per-account serialization lock (Redis)
+# --------------------------------------------------------------------------
+#
+# Two playwright browser instances hitting LinkedIn for the same account
+# within a few seconds — e.g. the inbox poller and the sequencer firing on
+# adjacent beat ticks — look to LinkedIn like the same ``li_at`` being used
+# from two different browser sessions (each fresh Chromium launch has a
+# slightly different canvas/WebGL fingerprint despite playwright-stealth).
+# LinkedIn treats that as a bot signal and invalidates the cookie.
+#
+# This Redis lock serializes ALL playwright operations for a single
+# LinkedIn account so only one browser is live at a time. The lock TTL is
+# long enough to cover the slowest expected action; the acquire timeout is
+# generous enough that the poller can sit and wait for the sequencer rather
+# than failing.
+
+_LOCK_TTL_SECONDS = 180        # max time any single playwright op should take
+_LOCK_ACQUIRE_TIMEOUT = 90     # how long callers will wait for the lock
+_LOCK_POLL_INTERVAL = 0.5      # busy-wait interval
+
+
+def _new_redis() -> aioredis.Redis:
+    """Return a FRESH redis client bound to the current event loop.
+
+    Celery prefork tasks each call ``asyncio.run(...)`` which spawns a new
+    event loop; a module-level cached client carries connections bound to
+    whichever loop first created it and explodes with "Event loop is
+    closed" on the second task. So we don't cache — building a redis
+    client is cheap (no eager TCP connect; connection pool is internal
+    and lazy).
+    """
+    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+
+# CAS release script: only delete if the value still matches our token.
+# Prevents accidental release of someone else's lock if ours timed out.
+_RELEASE_LUA = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+"""
+
+
+class _AccountLock:
+    """Async context manager for the per-account Redis lock."""
+
+    def __init__(self, account_id: Any):
+        self.key = f"linkedin-acct-lock:{account_id}"
+        self.token = secrets.token_hex(8)
+        self._held = False
+
+    async def __aenter__(self) -> "_AccountLock":
+        rc = _new_redis()
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + _LOCK_ACQUIRE_TIMEOUT
+        first = True
+        try:
+            while True:
+                got = await rc.set(self.key, self.token, nx=True, ex=_LOCK_TTL_SECONDS)
+                if got:
+                    self._held = True
+                    return self
+                if first:
+                    logger.info(
+                        "LinkedIn account %s busy; waiting up to %ds for the lock",
+                        self.key, _LOCK_ACQUIRE_TIMEOUT,
+                    )
+                    first = False
+                if loop.time() >= deadline:
+                    raise AccountLockBusy(
+                        f"timed out waiting {_LOCK_ACQUIRE_TIMEOUT}s for "
+                        f"LinkedIn account lock {self.key}"
+                    )
+                await asyncio.sleep(_LOCK_POLL_INTERVAL)
+        finally:
+            await _safe_close(rc)
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if not self._held:
+            return
+        rc = _new_redis()
+        try:
+            await rc.eval(_RELEASE_LUA, 1, self.key, self.token)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "LinkedIn account lock release failed (%s): %s", self.key, exc,
+            )
+        finally:
+            await _safe_close(rc)
+
+
+async def _safe_close(rc: aioredis.Redis) -> None:
+    try:
+        await rc.aclose()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --------------------------------------------------------------------------
+# Per-account persistent Chrome profile
+# --------------------------------------------------------------------------
+#
+# launch_persistent_context keeps cookies, localStorage, fonts cache, and
+# Chrome's internal fingerprint state on disk between runs. Without this,
+# every playwright launch drifts the canvas/WebGL/etc. fingerprint a little
+# bit, and LinkedIn flags the same `li_at` being reused from "different
+# browsers" within a short window. With a persistent profile, the same
+# Chrome user-data-dir is reopened each run — same fingerprint, same
+# stored state, no drift.
+
+
+def _profile_dir_for(account_id: Any) -> Path:
+    return Path(settings.LINKEDIN_PROFILES_DIR) / str(account_id)
+
+
+def _profile_is_seeded(profile_dir: Path) -> bool:
+    """A persistent profile is 'seeded' once Chrome has written its
+    initial files into the user-data-dir. We use the presence of either
+    the Default subdir or Local State file as the signal — both are written
+    on first launch.
+    """
+    if not profile_dir.exists():
+        return False
+    return any(profile_dir.iterdir())
+
+
+def clear_profile(account_id: Any) -> None:
+    """Wipe an account's persistent profile dir. Called by the LinkedIn-
+    accounts router when the user pastes a fresh li_at cookie — the next
+    playwright launch will reseed from session_cookies_encrypted.
+    """
+    profile_dir = _profile_dir_for(account_id)
+    if profile_dir.exists():
+        logger.info("Clearing persistent LinkedIn profile for acct %s", account_id)
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+def _extract_seed_cookies(account: Any) -> list[dict]:
+    """Read the encrypted session blob and return cookies suitable for
+    ``context.add_cookies()``. Handles all three on-disk formats:
+      1. Full Playwright storage_state (``{"cookies":[...],"origins":[...]}``)
+      2. Bare cookie list ``[{name, value, ...}, ...]``
+      3. The user-pasted bare li_at (wrapped by the router as
+         ``[{name: "li_at", value: ...}]``)
+    Strips ``JSESSIONID`` — LinkedIn issues a fresh one when the browser hits
+    the root URL; injecting a stale one trips redirect loops.
+    """
+    stored = getattr(account, "session_cookies_encrypted", None)
+    if not stored:
+        return []
+    try:
+        blob = encryption.decrypt(stored)
+        data = json.loads(blob)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LinkedIn seed decrypt failed for %s: %s", account.id, exc)
+        return []
+
+    if isinstance(data, dict) and "origins" in data:
+        raw = data.get("cookies", []) or []
+    elif isinstance(data, dict):
+        raw = data.get("cookies", []) or []
+    elif isinstance(data, list):
+        raw = data
+    else:
+        return []
+
+    out: list[dict] = []
+    for c in raw:
+        name = c.get("name")
+        value = c.get("value")
+        if not name or value is None:
+            continue
+        if name in _EPHEMERAL_COOKIES:
+            continue
+        out.append({
+            "name": name,
+            "value": value,
+            "domain": c.get("domain") or ".linkedin.com",
+            "path": c.get("path") or "/",
+            "secure": c.get("secure", True),
+            "httpOnly": c.get("httpOnly", True),
+            "sameSite": c.get("sameSite", "None"),
+        })
+    return out
+
+
+# --------------------------------------------------------------------------
 # Provider class
 # --------------------------------------------------------------------------
 
@@ -401,64 +623,93 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
     """LinkedIn provider that drives a real headless Chromium browser."""
 
     async def _run(self, account: Any, fn, *args, **kwargs) -> Any:
-        """Launch browser, restore session, run fn(page, account, ...), persist session."""
+        """Launch browser, restore session, run fn(page, account, ...), persist session.
+
+        Wrapped in a per-account Redis lock so only one playwright browser is
+        ever live per LinkedIn account. See ``_AccountLock`` for the reasoning.
+        """
+        async with _AccountLock(getattr(account, "id", "unknown")):
+            return await self._run_locked(account, fn, *args, **kwargs)
+
+    async def _run_locked(self, account: Any, fn, *args, **kwargs) -> Any:
+        """Run ``fn(page, account, ...)`` inside a persistent Chrome profile
+        so cookies + fingerprint stay stable across runs.
+
+        On first launch for an account (profile dir empty), inject ``li_at``
+        from ``account.session_cookies_encrypted`` as a one-time seed. After
+        that, the persistent profile is authoritative and we don't touch the
+        encrypted column. If the user re-pastes a cookie via the UI, the
+        router calls ``clear_profile()`` to wipe the dir and force a reseed.
+        """
         from playwright.async_api import async_playwright
 
-        stored = getattr(account, "session_cookies_encrypted", None)
-        # init_state is passed to new_context(storage_state=...) — preserves
-        # bcookie/bscookie (browser identity) so LinkedIn recognises the session.
-        # We strip only JSESSIONID, which is ephemeral server-side state (~30 min)
-        # that causes redirect loops when injected into a fresh browser session.
-        init_state: dict | None = None
-        # extra_cookies is used when we only have a bare li_at (no full state yet).
-        extra_cookies: list[dict] = []
+        profile_dir = _profile_dir_for(account.id)
+        is_fresh_profile = not _profile_is_seeded(profile_dir)
+        profile_dir.mkdir(parents=True, exist_ok=True)
 
-        if stored:
-            try:
-                blob = encryption.decrypt(stored)
-                data = json.loads(blob)
-
-                if isinstance(data, dict) and "origins" in data:
-                    # Full Playwright storage_state — filter ephemeral cookies.
-                    cookies = [c for c in data.get("cookies", [])
-                               if c.get("name") not in _EPHEMERAL_COOKIES]
-                    init_state = {"cookies": cookies, "origins": data.get("origins", [])}
-                    logger.debug(
-                        "LinkedIn _run: loading full state for acct %s — %d cookies (%s)",
-                        account.id,
-                        len(cookies),
-                        ", ".join(c["name"] for c in cookies),
-                    )
-                else:
-                    # Bare cookie list (HTTP provider / user-pasted li_at).
-                    raw = data.get("cookies", data) if isinstance(data, dict) else data
-                    li_at = next(
-                        (c.get("value") for c in (raw or []) if c.get("name") == "li_at"),
-                        None,
-                    )
-                    if li_at:
-                        extra_cookies = [{
-                            "name": "li_at", "value": li_at,
-                            "domain": ".linkedin.com", "path": "/",
-                            "secure": True, "httpOnly": True, "sameSite": "None",
-                        }]
-                        logger.debug("LinkedIn _run: bare li_at for acct %s", account.id)
-            except Exception as exc:
-                logger.warning("LinkedIn session decrypt failed for %s: %s", account.id, exc)
+        # Seed cookies for a fresh profile from the encrypted blob. After
+        # the first run, the profile owns the cookies and this is unused.
+        seed_cookies: list[dict] = []
+        if is_fresh_profile:
+            seed_cookies = _extract_seed_cookies(account)
+            if seed_cookies:
+                logger.info(
+                    "LinkedIn _run: seeding fresh profile for acct %s with %d cookies",
+                    account.id, len(seed_cookies),
+                )
+            else:
+                logger.info(
+                    "LinkedIn _run: fresh profile for acct %s with no seed cookies "
+                    "(will require password login)",
+                    account.id,
+                )
 
         async with async_playwright() as pw:
-            browser = await _launch_browser(pw)
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                headless=True,
+                args=_BROWSER_ARGS,
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+                timezone_id="America/New_York",
+            )
+            # Apply stealth patches to the context.
             try:
-                context = await _new_context(browser, state=init_state)
-                if extra_cookies:
-                    await context.add_cookies(extra_cookies)
+                from playwright_stealth import stealth_async
+                await stealth_async(context)
+            except ImportError:
+                logger.warning(
+                    "playwright-stealth not installed — running without stealth patches",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("stealth_async failed (non-fatal): %s", exc)
+
+            if seed_cookies:
+                await context.add_cookies(seed_cookies)
+
+            try:
                 page = await context.new_page()
                 try:
                     result = await fn(page, account, *args, **kwargs)
-                    state = await context.storage_state()
-                    account.session_cookies_encrypted = encryption.encrypt(json.dumps(state))
-                    # Success → clear any stale challenge state. Status reset
-                    # is best-effort (avoids circular import on model enum).
+
+                    # Mirror the post-run state into session_cookies_encrypted
+                    # as a backup. Persistent profile is source of truth;
+                    # this column lets us reseed if the profile is wiped.
+                    try:
+                        state = await context.storage_state()
+                        account.session_cookies_encrypted = encryption.encrypt(json.dumps(state))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "post-run storage_state mirror failed for %s: %s",
+                            account.id, exc,
+                        )
+
+                    # Success → clear any stale challenge state.
                     try:
                         from app.models import LinkedInAccountStatus
                         if account.status in (
@@ -475,7 +726,8 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 finally:
                     await page.close()
             finally:
-                await browser.close()
+                await context.close()
+
 
     # ------------------------------------------------------------------ #
     # test_connection
@@ -646,37 +898,42 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
             await _ensure_authenticated(page, account)
             await asyncio.sleep(random.uniform(1.0, 3.0))
 
-            # The growth/normInvitations endpoint accepts the public_id (URL slug)
-            # directly as `profileId` — this is what the linkedin-api package
-            # has used reliably for years.  Going through URN resolution is
-            # unnecessary and was the source of "could not resolve profile URN
-            # for connect" errors when the Voyager profiles API returned
-            # non-200 from a browser context.
-            profile_id = profile.public_id
-            if not profile_id and profile.urn:
-                # Best-effort fallback: extract the FSD ID from a URN.
-                profile_id = profile.urn.split(":")[-1]
-            if not profile_id:
-                raise LinkedInProviderError("send_connect_request requires a public_id")
+            # The growth/normInvitations endpoint's `profileId` field wants
+            # the FSD entity ID (e.g. "ACwAAA0v..."), NOT the URL slug.
+            # Sending the slug returns 422 unconditionally — verified
+            # against linkedin-api's source, which always resolves the
+            # public_id to an entity URN before posting. Use _resolve_urn
+            # (DOM scrape, fallback to /voyager/api/identity/profiles) to
+            # get the URN, then extract the ID suffix.
+            urn = profile.urn or await _resolve_urn(page, profile.public_id)
+            if not urn:
+                raise LinkedInProviderError(
+                    f"send_connect could not resolve profile URN for "
+                    f"{profile.public_id or '<unknown>'}"
+                )
+            profile_id = urn.split(":")[-1]  # urn:li:fsd_profile:ABC -> ABC
 
-            payload: dict = {
-                "invitee": {
-                    "com.linkedin.voyager.growth.invitation.InviteeProfile": {
-                        "profileId": profile_id,
-                    }
-                },
-            }
+            # LinkedIn deprecated /voyager/api/growth/normInvitations
+            # somewhere in 2024 (replies with {"data":{"status":301}}).
+            # Modern endpoint is voyagerRelationshipsDash with the
+            # ?action=verifyQuotaAndCreate query. Payload field name is
+            # ``inviteeProfileUrn`` (NOT bare ``invitee``) and the note
+            # field is ``customMessage``. Confirmed via response headers
+            # in earlier logs (x-restli-error-response: true, real prod
+            # fabric).
+            payload: dict = {"inviteeProfileUrn": urn}
             if note and note.strip():
-                payload["message"] = note.strip()[:300]
+                payload["customMessage"] = note.strip()[:300]
 
             status, body = await _voyager(
                 page, "POST",
-                "https://www.linkedin.com/voyager/api/growth/normInvitations",
+                "https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships"
+                "?action=verifyQuotaAndCreate",
                 payload,
             )
             if status not in (200, 201, 204):
                 raise LinkedInProviderError(f"send_connect returned {status}: {body[:200]}")
-            return {"profile_id": profile_id}
+            return {"profile_id": profile_id, "urn": urn}
 
         try:
             result = await self._run(account, _fn)

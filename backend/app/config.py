@@ -51,7 +51,16 @@ class Settings(BaseSettings):
     LINKEDIN_PROXY_URL: str = ""  # e.g. http://user:pass@host:port; empty = direct
     LINKEDIN_DAILY_ACTION_CAP: int = 20  # per-account TOTAL actions per day
     LINKEDIN_MIN_ACTION_DELAY_SECONDS: int = 90  # min gap between actions per account
-    LINKEDIN_POLL_INTERVAL_MINUTES: int = 5  # inbox poll frequency
+    # Inbox poll frequency. Every poll fires a fresh playwright Chromium
+    # launch against LinkedIn, and frequent launches drift the browser
+    # fingerprint enough that LinkedIn flags the `li_at` as bot-suspicious.
+    # 30 min strikes a balance between reply latency + cookie safety.
+    LINKEDIN_POLL_INTERVAL_MINUTES: int = 30
+    # Per-LinkedIn-account on-disk Chrome profile. Persistent context keeps
+    # cookies + localStorage + Chrome's fingerprint stable across launches,
+    # which keeps LinkedIn from invalidating the session every time we open
+    # a fresh browser. Each account gets a subdir named by its UUID.
+    LINKEDIN_PROFILES_DIR: str = "/app/_linkedin_profiles"
     # Per-kind subcaps for write actions (M3). These are stricter than the
     # overall daily cap because connects/DMs are what get accounts flagged.
     # Per-kind subcaps. LinkedIn's real enforcement: ~100 connects/week for

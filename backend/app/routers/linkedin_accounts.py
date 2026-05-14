@@ -19,6 +19,7 @@ from app.schemas.linkedin_account import (
 from app.services import encryption
 from app.services.linkedin import get_provider
 from app.services.linkedin.base import ChallengeRequired, AccountRestricted
+from app.services.linkedin.playwright_impl import clear_profile
 
 router = APIRouter(prefix="/linkedin-accounts", tags=["linkedin-accounts"])
 
@@ -84,6 +85,7 @@ async def update_account(
     acc = await _get_or_404(db, account_id)
     updates = payload.model_dump(exclude_unset=True)
     li_at = updates.pop("li_at_cookie", None)
+    profile_needs_wipe = False
     if li_at and li_at.strip():
         acc.session_cookies_encrypted = encryption.encrypt(
             _li_at_to_cookie_blob(li_at.strip())
@@ -91,6 +93,7 @@ async def update_account(
         acc.status = LinkedInAccountStatus.UNTESTED
         acc.pending_challenge_url = None
         acc.last_error = None
+        profile_needs_wipe = True
     if "password" in updates and updates["password"]:
         acc.password_encrypted = encryption.encrypt(updates.pop("password"))
         if not li_at:
@@ -98,12 +101,17 @@ async def update_account(
             # new password — but only if we didn't just set them via li_at.
             acc.session_cookies_encrypted = None
         acc.status = LinkedInAccountStatus.UNTESTED
+        profile_needs_wipe = True
     else:
         updates.pop("password", None)
     for k, v in updates.items():
         setattr(acc, k, v)
     await db.commit()
     await db.refresh(acc)
+    # Drop the persistent Chrome profile if cookies/password changed — next
+    # _run() reseeds from the encrypted blob the user just pasted.
+    if profile_needs_wipe:
+        clear_profile(acc.id)
     return acc
 
 
@@ -116,8 +124,12 @@ async def delete_account(
     acc = await _get_or_404(db, account_id)
     # campaigns.linkedin_account_id is ON DELETE SET NULL at DB level, so
     # campaigns pointing at this account just lose the reference.
+    aid = acc.id
     await db.delete(acc)
     await db.commit()
+    # Clean up the persistent Chrome profile dir for this account so we
+    # don't accumulate orphaned profiles on disk.
+    clear_profile(aid)
 
 
 @router.post("/{account_id}/test", response_model=LinkedInTestResponse)

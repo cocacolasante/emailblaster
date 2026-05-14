@@ -55,6 +55,7 @@ from app.services import brevo
 from app.services.email_template import render_html, render_text
 from app.services.linkedin import get_provider as get_linkedin_provider
 from app.services.linkedin.base import (
+    AccountLockBusy,
     AccountRestricted,
     ChallengeRequired,
     ProfileRef,
@@ -70,6 +71,21 @@ ADVANCE_INTERVAL_SECONDS = 60
 
 # How many state rows we process per beat tick. Keeps the tick bounded.
 ADVANCE_BATCH_SIZE = 200
+
+# Skip statuses we treat as TRANSIENT — the lead stays on the current node
+# and we push next_run_at out so the step retries when the underlying issue
+# (account challenge, rate-limit cooldown, restriction) is resolved.
+# Anything NOT in this set is permanent: the cursor advances like a sent step.
+TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited"}
+# How long to wait before retrying a transient skip. 5 min is short enough
+# to be responsive after a user fixes their account, long enough not to
+# spin every 60s while they're still working on it.
+TRANSIENT_RETRY_MINUTES = 5
+# Safety valve: if a node keeps transient-skipping during the current visit,
+# give up after this many tries and advance the cursor. Otherwise a
+# permanently-broken LinkedIn account would hold a lead forever.
+# 10 retries × 5 min ≈ 50 minutes of grace.
+MAX_TRANSIENT_RETRIES = 10
 
 _LI_REDIS_CLIENT: aioredis.Redis | None = None
 
@@ -423,16 +439,19 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                 return {"status": "not_found", "error": "linkedin account missing"}
 
             # Skip if account is in a bad state — don't burn the user's
-            # attempts when we know it'll fail.
-            if account.status in {
-                LinkedInAccountStatus.CHALLENGED,
-                LinkedInAccountStatus.RESTRICTED,
-                LinkedInAccountStatus.FAILED,
-            }:
-                return {
-                    "status": "skipped",
-                    "error": f"linkedin account status={account.status.value}",
-                }
+            # attempts when we know it'll fail. Use distinct status values
+            # so _record_execution_and_advance can apply transient-retry
+            # behavior for challenged/restricted (user can recover the
+            # account) vs. just skip for FAILED creds.
+            if account.status == LinkedInAccountStatus.CHALLENGED:
+                return {"status": "challenged",
+                        "error": f"linkedin account status={account.status.value}"}
+            if account.status == LinkedInAccountStatus.RESTRICTED:
+                return {"status": "restricted",
+                        "error": f"linkedin account status={account.status.value}"}
+            if account.status == LinkedInAccountStatus.FAILED:
+                return {"status": "skipped",
+                        "error": f"linkedin account status={account.status.value}"}
 
             if not lead.linkedin_url:
                 return {"status": "skipped", "error": "lead has no linkedin_url"}
@@ -562,6 +581,11 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     result = await provider.comment_on_post(account, post_urn, comment_text)
                 else:
                     return {"status": "misconfigured", "error": f"unsupported kind: {kind.value}"}
+            except AccountLockBusy as exc:
+                # Another playwright op is already in flight for this LI
+                # account. Treat as transient — sequencer keeps the lead
+                # parked on this node and tries again in 5 min.
+                return {"status": "rate_limited", "error": str(exc)}
             except ChallengeRequired as exc:
                 account.status = LinkedInAccountStatus.CHALLENGED
                 account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
@@ -588,7 +612,17 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
 async def _record_execution_and_advance(
     lead_id: uuid.UUID, node_id: uuid.UUID, result: dict[str, Any]
 ) -> None:
-    """Persist a lead_step_executions row + advance the state cursor."""
+    """Persist a lead_step_executions row + decide whether to advance the
+    state cursor or retry on the same node.
+
+    A transient skip (LinkedIn account challenged/restricted, rate-limited)
+    keeps the lead on the current node and pushes ``next_run_at`` out by
+    ``TRANSIENT_RETRY_MINUTES`` — so when the user fixes the underlying
+    issue the step runs without needing manual re-enrollment. After
+    ``MAX_TRANSIENT_RETRIES`` consecutive transient skips on the same
+    node-visit we give up and advance like a normal skip; that prevents a
+    permanently-broken account from holding a lead forever.
+    """
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -602,6 +636,7 @@ async def _record_execution_and_advance(
                 mapped = LeadStepResult.SKIPPED
             else:
                 mapped = LeadStepResult.FAILED
+
             # LinkedIn handlers return external_id; email handler returns
             # message_id. Either is fine here.
             external = result.get("external_id") or result.get("message_id")
@@ -614,6 +649,8 @@ async def _record_execution_and_advance(
                 error=result.get("error"),
             )
             session.add(exec_row)
+            # Flush so the count query below sees this row.
+            await session.flush()
 
             state = await session.scalar(
                 select(LeadSequenceState).where(LeadSequenceState.lead_id == lead_id)
@@ -621,7 +658,45 @@ async def _record_execution_and_advance(
             if state is not None:
                 node = await session.get(SequenceNode, node_id)
                 if node is not None and state.current_node_id == node_id:
-                    await _advance_cursor(session, state, node)
+                    if status in TRANSIENT_SKIP_STATUSES:
+                        # Count prior skips for THIS visit only (since we
+                        # entered the node). Re-enrollment resets
+                        # entered_current_at, giving the lead a fresh budget.
+                        attempt_filter = [
+                            LeadStepExecution.lead_id == lead_id,
+                            LeadStepExecution.node_id == node_id,
+                            LeadStepExecution.result == LeadStepResult.SKIPPED,
+                        ]
+                        if state.entered_current_at is not None:
+                            attempt_filter.append(
+                                LeadStepExecution.attempted_at >= state.entered_current_at,
+                            )
+                        retry_count = (await session.scalar(
+                            select(func.count())
+                            .select_from(LeadStepExecution)
+                            .where(*attempt_filter)
+                        )) or 0
+
+                        if retry_count < MAX_TRANSIENT_RETRIES:
+                            # Stay on this node; push next_run_at out.
+                            state.next_run_at = _now() + timedelta(
+                                minutes=TRANSIENT_RETRY_MINUTES,
+                            )
+                            state.halt_reason = None
+                            logger.info(
+                                "Transient skip on lead=%s node=%s (%s) — retry %d/%d in %dm",
+                                lead_id, node_id, status, retry_count,
+                                MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_MINUTES,
+                            )
+                        else:
+                            logger.warning(
+                                "Lead=%s exhausted %d transient retries on node=%s "
+                                "(last status=%s) — advancing past it",
+                                lead_id, MAX_TRANSIENT_RETRIES, node_id, status,
+                            )
+                            await _advance_cursor(session, state, node)
+                    else:
+                        await _advance_cursor(session, state, node)
             await session.commit()
     finally:
         await engine.dispose()

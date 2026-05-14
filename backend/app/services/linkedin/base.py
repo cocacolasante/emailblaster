@@ -41,6 +41,19 @@ class AccountRestricted(LinkedInProviderError):
     """
 
 
+class AccountLockBusy(LinkedInProviderError):
+    """Couldn't acquire the per-account serialization lock within the timeout.
+
+    Concurrent playwright browser launches against the same LinkedIn account
+    look like two different sessions reusing the same ``li_at`` and trip
+    LinkedIn's bot-detection. We hold a Redis lock around every browser run
+    so only one is in flight per account at a time; this exception is raised
+    when the wait exceeds ``_AccountLock.ACQUIRE_TIMEOUT_SECONDS``. Callers
+    should treat it as a transient skip (retry later), not a permanent
+    failure.
+    """
+
+
 # --------------------------------------------------------------------------
 # Shared dataclasses
 # --------------------------------------------------------------------------

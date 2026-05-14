@@ -34,6 +34,14 @@ from app.services.linkedin.base import ActionResult, ProfileRef
 from app.workers import sequencer
 
 
+@pytest.fixture(autouse=True)
+def _reset_module_redis_clients(monkeypatch):
+    """pytest-asyncio gives each test a fresh event loop, but our sequencer
+    redis singleton is module-level. Reset so we don't reuse a client bound
+    to a dead loop. (playwright_impl creates clients per call now.)"""
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -204,7 +212,9 @@ async def test_skips_when_account_challenged(db_session, monkeypatch):
 
     _stub_provider(monkeypatch)
     result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
-    assert result["status"] == "skipped"
+    # "challenged" is its own status (transient — drives retry-on-node);
+    # "skipped" is for permanent skips. See TRANSIENT_SKIP_STATUSES.
+    assert result["status"] == "challenged"
     assert "challenged" in result["error"]
 
 
@@ -241,3 +251,199 @@ async def test_daily_cap_triggers_rate_limited(db_session, monkeypatch):
     r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
     assert r2["status"] == "rate_limited"
     assert "daily cap" in r2["error"]
+
+
+# --------------------------------------------------------------------------
+# Transient-skip retry (M5-followup) — challenged/restricted/rate_limited
+# skips keep the lead on the current node so the step retries once the
+# underlying issue is fixed. Other skips still advance.
+# --------------------------------------------------------------------------
+
+
+async def test_challenged_skip_keeps_lead_on_node(db_session, monkeypatch):
+    acc = await _make_li_account(db_session, status=LinkedInAccountStatus.CHALLENGED)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=li_node.sequence_id,
+        current_node_id=li_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+    _stub_provider(monkeypatch)
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "challenged"
+
+    await sequencer._record_execution_and_advance(lead.id, li_node.id, result)
+    await db_session.refresh(state)
+
+    # Cursor did NOT advance — still pointing at the LinkedIn node.
+    assert state.current_node_id == li_node.id
+    assert state.status == LeadSequenceStatus.ACTIVE
+    # next_run_at pushed ~5 min into the future.
+    assert state.next_run_at is not None
+    assert state.next_run_at > _now() + timedelta(minutes=4)
+    # Execution row still written for analytics + history.
+    rows = (await db_session.execute(
+        select(LeadStepExecution).where(LeadStepExecution.lead_id == lead.id)
+    )).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].result == LeadStepResult.SKIPPED
+
+
+async def test_rate_limited_skip_keeps_lead_on_node(db_session, monkeypatch):
+    """rate_limited is also a transient skip — same retry behavior."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LINKEDIN_DAILY_ACTION_CAP", 0)  # cap=0 → instant skip
+    monkeypatch.setattr(settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 0)
+    import app.workers.sequencer as seq_mod
+    monkeypatch.setattr(seq_mod, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    _stub_provider(monkeypatch)
+
+    rc = seq_mod._li_redis()
+    await rc.delete(f"li-rate:{acc.id}:day", f"li-rate:{acc.id}:last")
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=li_node.sequence_id,
+        current_node_id=li_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "rate_limited"
+
+    await sequencer._record_execution_and_advance(lead.id, li_node.id, result)
+    await db_session.refresh(state)
+    assert state.current_node_id == li_node.id
+    assert state.next_run_at > _now() + timedelta(minutes=4)
+
+
+async def test_permanent_skip_advances_cursor(db_session, monkeypatch):
+    """A non-transient skip (lead has no linkedin_url) still advances."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign, linkedin_url=None)
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=li_node.sequence_id,
+        current_node_id=li_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+    _stub_provider(monkeypatch)
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "skipped"
+    assert "no linkedin_url" in result["error"]
+
+    await sequencer._record_execution_and_advance(lead.id, li_node.id, result)
+    await db_session.refresh(state)
+    # The sequence has only entry → li_node → terminate, so advancing past
+    # li_node completes the sequence.
+    assert state.status == LeadSequenceStatus.COMPLETED
+
+
+async def test_transient_retry_cap_eventually_advances(db_session, monkeypatch):
+    """After MAX_TRANSIENT_RETRIES skips on the same visit, give up + advance."""
+    acc = await _make_li_account(db_session, status=LinkedInAccountStatus.CHALLENGED)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=li_node.sequence_id,
+        current_node_id=li_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now() - timedelta(hours=1),
+    )
+    db_session.add(state)
+    await db_session.commit()
+    _stub_provider(monkeypatch)
+
+    # Burn through MAX_TRANSIENT_RETRIES − 1 skips; still on the node.
+    for _ in range(sequencer.MAX_TRANSIENT_RETRIES - 1):
+        result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+        await sequencer._record_execution_and_advance(lead.id, li_node.id, result)
+    await db_session.refresh(state)
+    assert state.current_node_id == li_node.id  # still pinned
+
+    # One more transient skip → exceeds the cap → advances past the node.
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    await sequencer._record_execution_and_advance(lead.id, li_node.id, result)
+    await db_session.refresh(state)
+    assert state.status == LeadSequenceStatus.COMPLETED
+
+
+# --------------------------------------------------------------------------
+# Per-account playwright lock (M5 follow-up)
+# --------------------------------------------------------------------------
+
+
+async def test_account_lock_serializes_concurrent_runs():
+    """Two concurrent _AccountLock waiters get exclusive access in order."""
+    from app.services.linkedin.playwright_impl import _AccountLock, _new_redis
+
+    aid = "test-lock-acct"
+    rc = _new_redis()
+    try:
+        await rc.delete(f"linkedin-acct-lock:{aid}")
+    finally:
+        await rc.aclose()
+
+    order: list[str] = []
+
+    async def task(name, hold_time):
+        async with _AccountLock(aid):
+            order.append(f"{name}:enter")
+            await asyncio.sleep(hold_time)
+            order.append(f"{name}:exit")
+
+    # Fire both concurrently — B has to wait for A.
+    await asyncio.gather(task("A", 0.2), task("B", 0.05))
+
+    # Whichever ran first must finish before the second starts.
+    assert order[0].endswith(":enter")
+    assert order[1].endswith(":exit")
+    assert order[2].endswith(":enter")
+    assert order[3].endswith(":exit")
+    # Same task name on enter+exit (no interleaving).
+    assert order[0].split(":")[0] == order[1].split(":")[0]
+    assert order[2].split(":")[0] == order[3].split(":")[0]
+
+
+async def test_account_lock_busy_maps_to_rate_limited(db_session, monkeypatch):
+    """If the lock can't be acquired, the sequencer treats it as transient."""
+    from app.services.linkedin.base import AccountLockBusy
+    from app.workers import sequencer as seq_mod
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+
+    class _StubBusy:
+        async def view_profile(self, account, profile):
+            raise AccountLockBusy("test: lock held")
+        async def follow_profile(self, *a, **k): return ActionResult(ok=True)
+        async def react_to_post(self, *a, **k): return ActionResult(ok=True)
+        async def latest_post_urn(self, *a, **k): return None
+        async def test_connection(self, *a, **k): return ActionResult(ok=True)
+        async def inbox_recent_events(self, *a, **k): return []
+    monkeypatch.setattr(seq_mod, "get_linkedin_provider", lambda: _StubBusy())
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "rate_limited"
+    assert "lock" in result["error"]

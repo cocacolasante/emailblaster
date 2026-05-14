@@ -309,6 +309,17 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   fine but campaigns get stuck because tasks never run; `docker compose
   logs worker` shows `ModuleNotFoundError`. Always run
   `docker compose build backend worker beat` after editing requirements.
+- **`docker compose restart` does NOT re-read `.env`.** Env vars get
+  substituted into containers at *create* time, not on restart. After
+  editing `.env`, a plain restart leaves the old values in the running
+  containers. Symptom: a config-only change (new Brevo key, new
+  Anthropic key, etc.) appears in `.env` but the app still hits the
+  old credential and 401s. Fix: recreate the affected containers —
+  ```bash
+  docker compose up -d --force-recreate backend worker beat
+  ```
+  Verify by comparing host `.env` against `docker compose exec backend
+  printenv VAR_NAME` after the recreate.
 - **Pre-M1 leads have no `lead_sequence_state` row.** Campaigns +
   leads that existed before the M1 migration's backfill ran are fine
   going forward, but if your dev DB had leads inserted via the legacy
@@ -319,6 +330,62 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   `send_message` return `True` on FAILURE and `False` on success
   (yes, really — see upstream README). `linkedin_api_impl.py` wraps
   these and inverts so the rest of our code can treat truthy=success.
+- **Concurrent playwright launches poison `li_at` sessions.** Two
+  browser instances launched within the same ~10s window for the same
+  LinkedIn account look to LinkedIn like the same cookie used from two
+  fresh browser fingerprints — that trips bot-detection and
+  invalidates the session, even when both individual requests look
+  fine. Fix: `PlaywrightLinkedInProvider._run` wraps every browser
+  session in a Redis lock keyed on `linkedin-acct-lock:{account_id}`
+  (`playwright_impl._AccountLock`). Poll fires while sequencer holds
+  the lock → poll waits up to 90s, then raises `AccountLockBusy`. The
+  sequencer maps `AccountLockBusy` to a `rate_limited` skip, which is
+  in `TRANSIENT_SKIP_STATUSES` and triggers retry-in-5min behavior
+  rather than advancing the cursor. Symptom before the fix: cookie
+  works on Test, but the very next poll-tick + sequencer-tick collision
+  (~5 min later) flagged the session as expired.
+- **Sequential playwright launches also drift the cookie.** Even
+  serialized via the lock, repeated fresh Chromium launches against
+  the same LinkedIn account accumulate enough canvas/WebGL fingerprint
+  variance to make LinkedIn invalidate `li_at`. Mitigations in place:
+  (1) `LINKEDIN_POLL_INTERVAL_MINUTES` defaults to 30 min (was 5);
+  (2) `linkedin_poller._account_has_work` skips the playwright launch
+  entirely when no leads in this account's campaigns are in
+  `INVITED`/`CONNECTED` connection status — i.e., when there's nothing
+  inbound to detect. The poller bumps `last_polled_at` regardless so
+  it doesn't spam-skip.
+- **Persistent Chrome profile per LinkedIn account** is the real fix
+  for fingerprint drift. `PlaywrightLinkedInProvider._run_locked` uses
+  `chromium.launch_persistent_context(user_data_dir=...)` so the same
+  Chrome profile (cookies, localStorage, fonts cache, fingerprint
+  state) is reopened each run. Profile dirs live under
+  `LINKEDIN_PROFILES_DIR` (default `/app/_linkedin_profiles/{account_id}`).
+  First launch for a fresh profile dir is seeded by extracting the
+  bare `li_at` from `session_cookies_encrypted`; thereafter the
+  profile is authoritative. When the user pastes a new `li_at` via
+  the modal, the linkedin_accounts router calls
+  `playwright_impl.clear_profile(account_id)` to wipe the dir so the
+  next `_run` reseeds with the new cookie. Same on account delete.
+  The `session_cookies_encrypted` column is still mirrored post-run
+  as a backup for re-seeding if the profile is ever lost.
+- **Don't cache aioredis at module scope in worker code.** Celery
+  prefork tasks each call `asyncio.run(...)` which builds a fresh
+  event loop; a cached `aioredis.Redis` carries connection-pool state
+  bound to whichever loop first created it and fails with "Event loop
+  is closed" on the second task. `playwright_impl._new_redis()`
+  returns a fresh client per call and `_safe_close()`s it before
+  return. `sequencer._li_redis()` still caches (legacy) — fine for
+  tests that monkeypatch `_LI_REDIS_CLIENT=None`, but rewrite if it
+  ever causes issues in production.
+- **Sequencer transient retries.** A `skipped` step normally advances
+  the cursor immediately, but skips with `status` in
+  `TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited"}`
+  keep the lead pinned on the current node and push `next_run_at` out
+  by `TRANSIENT_RETRY_MINUTES` (5). After `MAX_TRANSIENT_RETRIES` (10)
+  consecutive transient skips on the same visit, the cursor advances
+  like a normal skip so a permanently-broken account doesn't hold the
+  lead forever. The retry budget resets when the lead re-enters the
+  node (via `entered_current_at`).
 
 ## Run / develop
 
@@ -376,4 +443,57 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-13 — Default LinkedIn provider switched to "playwright" so the HTTP poller stops poisoning the li_at. Backend 365._
+_Last updated: 2026-05-14 — Major hardening pass on Playwright provider._
+_Backend tests: **371 passed** (was 365)._
+
+## Today's hardening (2026-05-13/14)
+
+1. **Sequencer transient-retry behavior.** `TRANSIENT_SKIP_STATUSES =
+   {"challenged", "restricted", "rate_limited"}` keeps the lead pinned
+   on the current node for 5 min retries instead of advancing the
+   cursor. `MAX_TRANSIENT_RETRIES=10` caps the budget per visit. Means
+   short LinkedIn outages no longer permanently strand sequences.
+2. **`AccountLockBusy` exception.** New transient-skip class for the
+   per-account Redis lock timeout. Wired into the sequencer to map to
+   `rate_limited`.
+3. **Per-account Redis lock around every `_run`.** `_AccountLock` in
+   `playwright_impl.py` serializes browser launches against the same
+   LinkedIn account, fixing the concurrent-poll-+-sequencer collision
+   that was poisoning cookies.
+4. **Persistent Chrome profile per account** (the real fingerprint
+   fix). `chromium.launch_persistent_context(user_data_dir=...)` keeps
+   cookies, localStorage, and Chrome's internal state stable across
+   runs. `_extract_seed_cookies` bootstraps a fresh profile dir with
+   the user-pasted `li_at`. `playwright_impl.clear_profile()` wipes
+   the dir on user cookie re-paste or account delete (called from the
+   linkedin_accounts router).
+5. **Poller throttled.** `LINKEDIN_POLL_INTERVAL_MINUTES` default
+   raised 5 → 30. `linkedin_poller._account_has_work` skips the
+   playwright launch entirely when no leads are in `invited`/
+   `connected` state.
+6. **Redis client no longer cached at module scope in
+   `playwright_impl`.** Was tripping "Event loop is closed" under
+   Celery's per-task `asyncio.run`. Now uses `_new_redis()` +
+   `_safe_close()` per call.
+7. **`send_connect_request` updated** — switched to LinkedIn's modern
+   endpoint `voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreate`
+   with payload `{"inviteeProfileUrn": "urn:li:fsd_profile:..."}` and
+   optional `customMessage`. URN resolution via existing `_resolve_urn`
+   (DOM-scrape from the prospect's profile page). **Untested live —
+   throwaway account got challenge-flagged before we could verify.**
+8. **`_voyager` now logs response headers + type on non-2xx** so we
+   can spot endpoint deprecations (LinkedIn signals these with 30x +
+   Location).
+
+## OPEN: validate the new send_connect payload
+
+The new endpoint + payload shape is in code but not yet confirmed
+working against LinkedIn. Test path (after warming up the throwaway
+account or using a different one):
+1. Settings → LinkedIn Accounts → Test → status=OK
+2. Re-enroll lead 061e45c7 (currently halted): `UPDATE lead_sequence_states SET status='active', next_run_at=now(), halt_reason=null WHERE lead_id='061e45c7-cfa2-4c10-86cd-e71fec64ae68';`
+3. Watch worker logs for the `Voyager POST … ?action=verifyQuotaAndCreate` line. **Expected: status=200 or 201.** If still 400, inspect the response body — we'll see real LinkedIn-side validation now (no more session-expired noise blocking us).
+
+If 400 comes back with a clear field-validation message, iterate on
+the payload shape (candidates: `inviteeProfileUrn` wrapper variants,
+adding `trackingId`, nested `invitee` object).

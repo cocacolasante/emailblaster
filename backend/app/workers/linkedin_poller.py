@@ -21,11 +21,12 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models import (
+    Campaign,
     Lead,
     LinkedInAccount,
     LinkedInAccountStatus,
@@ -115,8 +116,39 @@ async def _poll_account(session: AsyncSession, account: LinkedInAccount) -> dict
     return counts
 
 
+async def _account_has_work(session: AsyncSession, account_id) -> bool:
+    """Is there any reason this account's inbox needs polling RIGHT NOW?
+
+    We only care about inbound events from leads we're tracking. A lead is
+    only relevant if it's either:
+      - INVITED  — waiting on the prospect to accept our connect request
+      - CONNECTED — waiting on a reply to a DM we sent / could send
+
+    If every lead in this account's campaigns is in UNKNOWN/DECLINED/WITHDRAWN
+    state, polling produces zero useful information and just burns playwright
+    launches against LinkedIn, which drifts the browser fingerprint and
+    invalidates the cookie.
+    """
+    count = await session.scalar(
+        select(func.count())
+        .select_from(Lead)
+        .join(Campaign, Campaign.id == Lead.campaign_id)
+        .where(
+            Campaign.linkedin_account_id == account_id,
+            Lead.linkedin_connection_status.in_([
+                LinkedInConnectionStatus.INVITED,
+                LinkedInConnectionStatus.CONNECTED,
+            ]),
+        )
+    )
+    return bool(count and count > 0)
+
+
 async def _poll_all_async() -> dict[str, int]:
-    totals = {"accounts": 0, "messages_matched": 0, "messages_total": 0, "connections": 0}
+    totals = {
+        "accounts": 0, "skipped_no_work": 0,
+        "messages_matched": 0, "messages_total": 0, "connections": 0,
+    }
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -126,6 +158,13 @@ async def _poll_all_async() -> dict[str, int]:
                 )
             )).scalars().all()
             for acc in accounts:
+                if not await _account_has_work(session, acc.id):
+                    # Nothing inbound could possibly be relevant — skip the
+                    # playwright launch entirely. Bump last_polled_at so we
+                    # don't poll-spam on the next tick either.
+                    acc.last_polled_at = datetime.now(timezone.utc)
+                    totals["skipped_no_work"] += 1
+                    continue
                 totals["accounts"] += 1
                 c = await _poll_account(session, acc)
                 totals["messages_matched"] += c["messages_matched"]
