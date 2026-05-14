@@ -443,10 +443,52 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-14 — Major hardening pass on Playwright provider._
-_Backend tests: **371 passed** (was 365)._
+_Last updated: 2026-05-14 — Diagnostic upgrades on connect/follow/DM/InMail
+error handling; gitignore cleanup for leaked LinkedIn profile data._
+_Backend tests: **378 passed** (was 371)._
 
-## Today's hardening (2026-05-13/14)
+## Diagnostic + cleanup pass (2026-05-14)
+
+1. **`.gitignore` cleanup.** Persistent Chrome profile dirs under
+   `backend/_linkedin_profiles/` were committed in earlier "still not
+   working" commits, leaking the user's active `li_at` cookie + full
+   browser cache. `git rm --cached` removed them from index; the dir
+   plus `celerybeat-schedule` are now ignored. **The leaked li_at has
+   been rotated/will need rotation.**
+2. **`_parse_li_error()` in `playwright_impl.py`.** Pulls a structured
+   error code + message out of Voyager error envelopes
+   (`{status,code,message}` or nested `errorDetails.inputErrors`).
+   Every write action (connect / follow / react / DM / invite_to_page
+   / InMail / comment_on_post) now formats failures as
+   `"CODE: message"` instead of a raw 200-char body slice — surfaces
+   exactly what LinkedIn objected to.
+3. **`_voyager` logs the response's final URL** on non-2xx, AND emits
+   an info-level note on 2xx if the request URL was redirected (likely
+   endpoint move). Combined with `_parse_li_error`, an endpoint change
+   or payload validation failure is now self-diagnosing in worker logs.
+4. **`send_connect_request` logs the resolved URN** before the POST,
+   so we can confirm `_resolve_urn` returned a real URN (vs scraping a
+   stale page-loaded URN that doesn't belong to the prospect).
+5. **`customMessage` trimmed to 200 chars** (was 300). LinkedIn caps
+   notes at 200 for Free / 300 for Premium; the safer floor avoids a
+   422 for Free accounts.
+6. **New test file `tests/test_phase21_voyager_error_parser.py`** —
+   7 tests covering the error-envelope shapes we've seen in the wild.
+
+## OPEN: validate send_connect end-to-end
+
+The throwaway dev account (`allseason.crew.yt@gmail.com`) is
+permanently challenged and cannot exercise the new
+`voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreate`
+endpoint. **The other session's note: established LinkedIn accounts
+(verified phone, photo, real connection history) are required for any
+write action to survive bot-detection.** Next step: connect a real
+established LinkedIn account in Settings → LinkedIn Accounts, paste
+fresh `li_at`, then run a connect step. If the new payload is wrong,
+the worker logs will now print a parsed `code: message` from LinkedIn
+that tells us exactly what to fix.
+
+## Previous hardening (2026-05-13/14)
 
 1. **Sequencer transient-retry behavior.** `TRANSIENT_SKIP_STATUSES =
    {"challenged", "restricted", "rate_limited"}` keeps the lead pinned
@@ -485,15 +527,3 @@ _Backend tests: **371 passed** (was 365)._
    can spot endpoint deprecations (LinkedIn signals these with 30x +
    Location).
 
-## OPEN: validate the new send_connect payload
-
-The new endpoint + payload shape is in code but not yet confirmed
-working against LinkedIn. Test path (after warming up the throwaway
-account or using a different one):
-1. Settings → LinkedIn Accounts → Test → status=OK
-2. Re-enroll lead 061e45c7 (currently halted): `UPDATE lead_sequence_states SET status='active', next_run_at=now(), halt_reason=null WHERE lead_id='061e45c7-cfa2-4c10-86cd-e71fec64ae68';`
-3. Watch worker logs for the `Voyager POST … ?action=verifyQuotaAndCreate` line. **Expected: status=200 or 201.** If still 400, inspect the response body — we'll see real LinkedIn-side validation now (no more session-expired noise blocking us).
-
-If 400 comes back with a clear field-validation message, iterate on
-the payload shape (candidates: `inviteeProfileUrn` wrapper variants,
-adding `trackingId`, nested `invitee` object).
