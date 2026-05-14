@@ -443,9 +443,45 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-14 — Diagnostic upgrades on connect/follow/DM/InMail
-error handling; gitignore cleanup for leaked LinkedIn profile data._
-_Backend tests: **378 passed** (was 371)._
+_Last updated: 2026-05-14 — Human-dwell helper: feed/profile pages now get
+6-15s of scroll + mouse activity before any other navigation, defeating
+LinkedIn's "fast feed → profile" bot pattern that was tripping challenge
+on the first profile view even with an established account._
+_Backend tests: **378 + 5 new dwell tests** (rebuild pending)._
+
+## Human-dwell anti-bot pass (2026-05-14)
+
+The established account got challenged on the first `view_profile` step
+(captured live in worker logs): 9.7s from task receipt to challenge,
+meaning auth succeeded but the immediate profile navigation tripped
+LinkedIn's bot scorer.  Root cause: Playwright launched → /feed/ →
+/in/young-burke/ in <2s of in-page activity.  No human reads the feed
+that fast.
+
+Fix shipped in `playwright_impl.py`:
+
+1. **New `_human_dwell()` helper** — sits on the current page for a
+   randomized window doing: initial idle, 2-3 small downward scrolls
+   with reading pauses, sometimes scroll back partway, 2-4 random
+   mouse moves.  Always swallows exceptions (camouflage is
+   best-effort, never load-bearing).
+2. **`_ensure_authenticated` now dwells 8-15s on `/feed/`** after
+   login is confirmed, before returning.  Replaces the old
+   `asyncio.sleep(1.5-4)`.
+3. **`view_profile` dwells 6-12s on the profile page** before URN
+   resolution.  Also helps the URN scrape because LinkedIn's SPA gets
+   more time to hydrate the page DOM.
+4. **`_scrape_urn_from_page` dwells 5-9s** when it has to navigate to
+   the profile page itself (called from follow/DM/connect/etc. for URN
+   resolution).  Replaces a bare 1.5-3s sleep.
+5. **New test file `tests/test_phase22_human_dwell.py`** — 5 tests
+   covering: completes within window, scrolls/moves when asked,
+   doesn't scroll when `scroll=False`, swallows mouse errors,
+   respects min-sleep budget.
+
+Tradeoff: per-step runtime grows ~10-15s because of the dwells.  This
+is well within `LINKEDIN_MIN_ACTION_DELAY_SECONDS=90`, and the slowdown
+is exactly what makes the action look human.
 
 ## Diagnostic + cleanup pass (2026-05-14)
 

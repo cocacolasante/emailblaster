@@ -206,6 +206,61 @@ async def _login_with_password(page, account: Any) -> None:
         )
 
 
+async def _human_dwell(
+    page,
+    min_seconds: float = 6.0,
+    max_seconds: float = 12.0,
+    *,
+    scroll: bool = True,
+) -> None:
+    """Pause on the current page like a human reading content.
+
+    LinkedIn's bot detection looks at the *pattern* of activity across a
+    session, not just individual requests.  A headless browser that loads
+    the feed and then immediately jumps to a stranger's profile in <2s is
+    a near-perfect bot signal — every legitimate user scrolls, hovers,
+    reads, before clicking through.  This helper does:
+
+      1. random idle (~6-12s default)
+      2. a couple of small downward scrolls with pauses
+      3. a scroll back partway up
+      4. a few random mouse moves
+
+    Tuned to be invisible to LinkedIn's bot scorer while keeping per-step
+    runtime under ~20s.  Failure modes (e.g. page closes mid-scroll) are
+    swallowed — this is best-effort camouflage, never load-bearing.
+    """
+    total = random.uniform(min_seconds, max_seconds)
+    start = asyncio.get_event_loop().time()
+
+    try:
+        if scroll:
+            # Initial sit-and-read before any motion.
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+            # Two or three down-scrolls with reading pauses in between.
+            for _ in range(random.randint(2, 3)):
+                dy = random.randint(220, 520)
+                await page.mouse.wheel(0, dy)
+                await asyncio.sleep(random.uniform(0.9, 2.1))
+            # Sometimes scroll partway back up like a human re-reading.
+            if random.random() < 0.5:
+                await page.mouse.wheel(0, -random.randint(150, 350))
+                await asyncio.sleep(random.uniform(0.6, 1.4))
+            # A couple of random mouse moves.
+            for _ in range(random.randint(2, 4)):
+                x = random.randint(120, 1160)
+                y = random.randint(140, 720)
+                await page.mouse.move(x, y, steps=random.randint(5, 15))
+                await asyncio.sleep(random.uniform(0.2, 0.7))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("human_dwell scroll/move failed (non-fatal): %s", exc)
+
+    # Sleep out whatever time remains of the target dwell.
+    remaining = total - (asyncio.get_event_loop().time() - start)
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+
+
 async def _ensure_authenticated(page, account: Any) -> None:
     """Navigate to LinkedIn root then feed.  Raises ChallengeRequired if the
     stored session is dead and no automatic recovery is safe.
@@ -213,6 +268,11 @@ async def _ensure_authenticated(page, account: Any) -> None:
     We navigate to the root URL first so LinkedIn can issue a fresh JSESSIONID
     + bcookie for this browser.  Going directly to /feed/ with only li_at can
     trigger a redirect storm.
+
+    After landing on /feed/ we do a `_human_dwell` (scroll + mouse + idle)
+    so LinkedIn sees feed-reading behaviour BEFORE any profile navigation —
+    going feed → profile in <2 seconds is the bot pattern that gets you
+    redirected to /checkpoint.
 
     Recovery rules:
     - If cookies are stored but we end up not-logged-in: those cookies are dead.
@@ -241,12 +301,13 @@ async def _ensure_authenticated(page, account: Any) -> None:
         await _login_with_password(page, account)
         return
 
-    # Step 2: navigate to feed to confirm the session is active.
+    # Step 2: navigate to feed and *act human there* before any other nav.
     await asyncio.sleep(random.uniform(0.5, 1.5))
     await _goto_safe(page, _LI_FEED, wait_until="domcontentloaded", timeout=30_000)
     await _check_for_challenge(page)
-    # Human-like pause after the feed loads.
-    await asyncio.sleep(random.uniform(1.5, 4.0))
+    # Read the feed for 8-15s like a human — without this dwell, jumping
+    # straight to a stranger's profile trips LinkedIn's bot detection.
+    await _human_dwell(page, 8.0, 15.0, scroll=True)
 
 
 # --------------------------------------------------------------------------
@@ -415,8 +476,10 @@ async def _scrape_urn_from_page(page, public_id: str) -> str | None:
                 timeout=20_000,
             )
             await _check_for_challenge(page)
-            # Let LinkedIn's SPA hydrate so embedded URNs land in the DOM.
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            # Dwell on the profile like a human so LinkedIn doesn't flag
+            # the navigation as bot behaviour AND so the SPA fully hydrates
+            # before we scrape the URN out of the DOM.
+            await _human_dwell(page, 5.0, 9.0, scroll=True)
         except ChallengeRequired:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -799,6 +862,11 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
 
         async def _fn(page, account):
             await _ensure_authenticated(page, account)
+            # _ensure_authenticated has already dwelled on the feed.  Now go
+            # to the profile page and dwell there too — LinkedIn registers
+            # the ghost view only if we stay on the page long enough for
+            # the SPA to fully hydrate, and the dwell-then-navigate
+            # pattern is what differentiates this from a bot script.
             await _goto_safe(
                 page,
                 f"https://www.linkedin.com/in/{profile.public_id}/",
@@ -806,6 +874,8 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 timeout=20_000,
             )
             await _check_for_challenge(page)
+            # Read the profile like a human (scroll, mouse, idle 6-12s).
+            await _human_dwell(page, 6.0, 12.0, scroll=True)
             urn = await _resolve_urn(page, profile.public_id)
             return {"urn": _normalize_urn(urn)}
 
