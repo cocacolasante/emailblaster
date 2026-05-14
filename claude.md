@@ -443,11 +443,87 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-14 — Human-dwell helper: feed/profile pages now get
-6-15s of scroll + mouse activity before any other navigation, defeating
-LinkedIn's "fast feed → profile" bot pattern that was tripping challenge
-on the first profile view even with an established account._
-_Backend tests: **378 + 5 new dwell tests** (rebuild pending)._
+_Last updated: 2026-05-14 — Unipile hosted-API integration (foundation).
+Even with the human-dwell fix, the established account still got challenged on
+the very first /feed/ navigation (9.1s, no chance for dwell to run) —
+Cloudflare bot-management was flagging the headless+datacenter fingerprint
+on every fresh Chromium launch. Switched to Unipile (hosted browser API,
+real Chrome on residential IPs)._
+
+_Backend tests: **383 + 33 new unipile tests** = 416 expected (run pending)._
+
+## Unipile integration (2026-05-14)
+
+The DIY/Playwright path is permanently fighting LinkedIn's bot scorer —
+even with persistent profiles, Redis-locked launches, stealth patches,
+human dwell, and an established account, every fresh Chromium session
+keeps tripping the challenge.  Decision: punt the heavy lifting to
+Unipile, which runs real desktop Chrome on residential IPs.
+
+Foundation shipped (tasks #92-#97 in the in-session list):
+
+1. **`UnipileLinkedInProvider`** in `services/linkedin/unipile_impl.py`.
+   Async httpx-based; supports all 11 LinkedInProvider methods.
+   Maps Unipile error envelopes (status/code/message) onto our
+   ChallengeRequired / AccountRestricted / UnipileError domain types.
+   Reads ``UNIPILE_DSN`` + ``UNIPILE_API_KEY`` from settings (both empty
+   in dev until the user signs up).
+
+2. **`get_provider()` default switched to `"unipile"`** in
+   `services/linkedin/__init__.py`.  Playwright / hybrid / http impls
+   remain selectable as fallbacks via `LINKEDIN_PROVIDER`.
+
+3. **33 unit tests** in `tests/test_phase23_unipile_provider.py` using
+   `httpx.MockTransport`.  Covers happy paths, error mapping
+   (checkpoint → ChallengeRequired, restricted → AccountRestricted,
+   network → UnipileError), header injection, premium-required InMail
+   path, inbox event polling fallback.
+
+4. **Schema + migration `0006`**: added `LinkedInAccount.unipile_account_id`
+   (unique, nullable), `LinkedInAccount.provider_kind` (default "diy"),
+   and relaxed `password_encrypted` to nullable.
+
+5. **Router endpoints**:
+   - `POST /linkedin-accounts/connect-via-unipile` — creates a placeholder
+     row, calls Unipile's hosted-link API, returns the URL the frontend
+     opens in a new tab.  The placeholder's local UUID is passed to
+     Unipile as ``name`` so webhook events can correlate.
+   - `POST /linkedin-accounts/{id}/sync-unipile` — polling fallback if
+     the webhook hasn't reached us yet.
+   - `POST /linkedin-accounts/{id}` (legacy create) now requires
+     `linkedin_email + password` for DIY rows and rejects empty values.
+   - `DELETE` also calls Unipile's `delete_account` for Unipile rows so
+     we don't leak resources on their side.
+
+6. **Webhook handler `POST /webhooks/unipile`** in `routers/webhooks.py`.
+   HMAC-SHA256 verifies the body against `UNIPILE_WEBHOOK_SECRET`.
+   Routes events: `account.connected` (writes unipile_account_id + email),
+   `account.disconnected`, `account.checkpoint`, `message.received` (sets
+   `lead.linkedin_last_reply_at` + promotes connection_status to
+   CONNECTED), `invitation.accepted` (sets CONNECTED).  Event-name casing
+   normalised so the handler tolerates both `account.connected` and
+   `ACCOUNT_CONNECTED` etc.
+
+7. **Frontend `ConnectLinkedInModal`** redesigned with a Hosted/Local
+   toggle.  Hosted mode shows just a Label field + "Connect via Unipile"
+   button; the button POSTs `/connect-via-unipile`, opens the returned
+   hosted URL in a new tab, and polls `/sync-unipile` every 3s until
+   status flips to OK (10-min timeout).  Local mode preserves the
+   password+li_at flow as a fallback, with copy that nudges the user
+   toward Hosted.
+
+Open work (next sessions):
+- Sequencer integration is automatic — `send_linkedin_step` already
+  calls `get_provider()` which now returns Unipile, no changes needed.
+  But the rate-limit/lock code in `playwright_impl.py` is now mostly
+  inert when provider=unipile — task #98 strips it.
+- Webhook idempotency table (currently we don't dedup repeated event
+  deliveries; Unipile's "at-least-once" semantics mean we may double-
+  process if they retry).  Add a `webhook_events` table keyed on
+  event_id when this becomes a real issue.
+- ConnectLinkedInModal tests need updates for the new toggle UI.
+
+## Previous: Human-dwell anti-bot pass (2026-05-14)
 
 ## Human-dwell anti-bot pass (2026-05-14)
 

@@ -3,10 +3,13 @@
 Concrete impls live alongside the ABC. ``get_provider()`` returns the
 implementation selected by ``settings.LINKEDIN_PROVIDER``:
 
-- ``"hybrid"``    (default) — reads via linkedin-api HTTP, writes via
-  Playwright browser.  Best speed + fingerprint combination.
-- ``"playwright"``          — all actions via Playwright.
-- ``"http"``                — all actions via linkedin-api HTTP (legacy).
+- ``"unipile"``    (default) — hosted browser API.  Real Chrome on
+  residential IPs.  No bot-detection issues.  Requires UNIPILE_API_KEY +
+  UNIPILE_DSN.
+- ``"playwright"``          — all actions via local headless Chromium.
+  Permanent bot-detection trouble; kept for dev fallback.
+- ``"hybrid"``              — Playwright writes + HTTP reads.  Legacy.
+- ``"http"``                — all actions via linkedin-api HTTP.  Legacy.
 """
 from app.services.linkedin.base import (
     ActionResult,
@@ -18,6 +21,7 @@ from app.services.linkedin.base import (
 from app.services.linkedin.hybrid_impl import HybridLinkedInProvider
 from app.services.linkedin.linkedin_api_impl import LinkedinApiProvider
 from app.services.linkedin.playwright_impl import PlaywrightLinkedInProvider
+from app.services.linkedin.unipile_impl import UnipileLinkedInProvider
 
 _provider: LinkedInProvider | None = None
 
@@ -27,14 +31,22 @@ def get_provider() -> LinkedInProvider:
     global _provider
     if _provider is None:
         from app.config import settings
-        name = (settings.LINKEDIN_PROVIDER or "hybrid").lower()
-        if name == "http":
+        name = (settings.LINKEDIN_PROVIDER or "unipile").lower()
+        if name == "unipile":
+            _provider = UnipileLinkedInProvider()
+        elif name == "http":
             _provider = LinkedinApiProvider()
         elif name == "playwright":
             _provider = PlaywrightLinkedInProvider()
         else:
             _provider = HybridLinkedInProvider()
     return _provider
+
+
+def _reset_provider_for_tests() -> None:
+    """Reset the singleton.  Test-only; never call from app code."""
+    global _provider
+    _provider = None
 
 
 __all__ = [
@@ -46,5 +58,6 @@ __all__ = [
     "LinkedinApiProvider",
     "PlaywrightLinkedInProvider",
     "ProfileRef",
+    "UnipileLinkedInProvider",
     "get_provider",
 ]

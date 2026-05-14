@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -9,11 +13,16 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models import (
+    Campaign,
     EmailEvent,
     EmailEventType,
     Lead,
+    LinkedInAccount,
+    LinkedInAccountStatus,
+    LinkedInConnectionStatus,
     Suppression,
     SuppressionReason,
 )
@@ -173,3 +182,289 @@ async def unsubscribe(
     ))
     await db.commit()
     return HTMLResponse(_UNSUBSCRIBE_HTML)
+
+
+# --------------------------------------------------------------------------
+# Unipile webhooks
+# --------------------------------------------------------------------------
+#
+# Unipile pushes events to us instead of us polling.  Events we care about:
+#
+#   account.connected     — user finished the hosted-auth flow; payload
+#                           includes the new account_id + the "name" we
+#                           supplied at link-creation time (our local
+#                           LinkedInAccount.id), letting us correlate.
+#   account.disconnected  — user revoked / cookies expired; flip status to
+#                           FAILED so the sequencer stops dispatching.
+#   account.checkpoint    — Unipile is waiting on captcha/2FA.  Flip to
+#                           CHALLENGED and surface the URL.
+#   message.received      — inbound DM on LinkedIn; update Lead's
+#                           linkedin_last_reply_at + connection_status.
+#   invitation.accepted   — prospect accepted our connect request; flip
+#                           Lead.linkedin_connection_status -> CONNECTED.
+#
+# Auth: Unipile signs the raw body with HMAC-SHA256 using the shared
+# secret configured in their dashboard.  Signature lives in the
+# ``X-Unipile-Signature`` header (or ``Unipile-Signature`` depending on
+# their delivery flavour).  We constant-time compare.  Missing secret or
+# missing/invalid signature → 401 (no work done).
+
+
+def _verify_unipile_signature(raw_body: bytes, header_value: str | None) -> bool:
+    if not settings.UNIPILE_WEBHOOK_SECRET:
+        # No secret configured → refuse everything to avoid running on
+        # forged payloads in production.  In dev you can leave the secret
+        # empty AND skip hitting this endpoint at all.
+        return False
+    if not header_value:
+        return False
+    # Some Unipile flavours emit "sha256=<hex>"; others bare hex.  Handle both.
+    expected = hmac.new(
+        settings.UNIPILE_WEBHOOK_SECRET.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    given = header_value.strip()
+    if given.lower().startswith("sha256="):
+        given = given.split("=", 1)[1].strip()
+    return hmac.compare_digest(expected.lower(), given.lower())
+
+
+async def _handle_account_connected(
+    db: AsyncSession, payload: dict[str, Any]
+) -> None:
+    """Bind the Unipile account_id we just learned about to the local row.
+
+    Correlation:
+    - The placeholder row was created by POST /linkedin-accounts/connect-via-unipile
+      with our local id passed to Unipile as ``name``.  Unipile echoes
+      that back in the webhook payload under ``name`` (or ``account.name``).
+    - We look up the row by id and stamp ``unipile_account_id`` + email +
+      status from the webhook body.
+    """
+    body = payload.get("data") or payload.get("account") or payload
+    local_id_raw = (
+        body.get("name")
+        or (body.get("account") or {}).get("name")
+        or payload.get("name")
+    )
+    unipile_id = (
+        body.get("account_id")
+        or body.get("id")
+        or (body.get("account") or {}).get("id")
+    )
+    if not local_id_raw or not unipile_id:
+        logger.warning(
+            "Unipile account.connected missing name/account_id: %s",
+            payload,
+        )
+        return
+    try:
+        local_id = uuid.UUID(str(local_id_raw))
+    except (ValueError, TypeError):
+        logger.warning(
+            "Unipile account.connected name not a UUID: %r",
+            local_id_raw,
+        )
+        return
+    acc = await db.get(LinkedInAccount, local_id)
+    if acc is None:
+        logger.warning(
+            "Unipile account.connected references unknown local id %s",
+            local_id,
+        )
+        return
+    acc.unipile_account_id = str(unipile_id)
+    acc.provider_kind = "unipile"
+    acc.status = LinkedInAccountStatus.OK
+    acc.pending_challenge_url = None
+    acc.last_error = None
+    email = (
+        body.get("user_email")
+        or body.get("linkedin_email")
+        or (body.get("user") or {}).get("email")
+    )
+    if email and not acc.linkedin_email.startswith("(pending"):
+        # Keep the manually edited label/email if user set one; otherwise
+        # take what Unipile gives us.
+        pass
+    elif email:
+        acc.linkedin_email = email
+
+
+async def _handle_account_status_change(
+    db: AsyncSession, payload: dict[str, Any], new_status: LinkedInAccountStatus,
+    challenge: bool = False,
+) -> None:
+    body = payload.get("data") or payload.get("account") or payload
+    unipile_id = (
+        body.get("account_id")
+        or body.get("id")
+        or (body.get("account") or {}).get("id")
+    )
+    if not unipile_id:
+        return
+    acc = await db.scalar(
+        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == str(unipile_id))
+    )
+    if acc is None:
+        return
+    acc.status = new_status
+    if challenge:
+        acc.pending_challenge_url = "https://www.linkedin.com"
+    acc.last_error = (
+        body.get("detail")
+        or body.get("message")
+        or body.get("title")
+        or new_status.value
+    )
+
+
+async def _find_lead_for_event(
+    db: AsyncSession, account: LinkedInAccount, body: dict[str, Any],
+) -> Lead | None:
+    """Match a Unipile event payload to one of our leads by public_identifier."""
+    sender = body.get("sender") or body.get("from") or body.get("attendee") or {}
+    public_id = (
+        sender.get("provider_id")
+        or sender.get("public_identifier")
+        or sender.get("public_id")
+        or body.get("provider_id")
+    )
+    if not public_id:
+        return None
+    slug = str(public_id).strip("/").split("/")[-1].lower()
+    lead_rows = (await db.execute(
+        select(Lead)
+        .join(Campaign, Campaign.id == Lead.campaign_id)
+        .where(Campaign.linkedin_account_id == account.id)
+    )).scalars().all()
+    for l in lead_rows:
+        if not l.linkedin_url:
+            continue
+        their_slug = l.linkedin_url.rstrip("/").split("/")[-1].split("?")[0].lower()
+        if their_slug == slug:
+            return l
+    return None
+
+
+async def _handle_message_received(
+    db: AsyncSession, payload: dict[str, Any],
+) -> None:
+    body = payload.get("data") or payload.get("message") or payload
+    unipile_id = (
+        body.get("account_id")
+        or (body.get("account") or {}).get("id")
+        or payload.get("account_id")
+    )
+    if not unipile_id:
+        return
+    acc = await db.scalar(
+        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == str(unipile_id))
+    )
+    if acc is None:
+        return
+    lead = await _find_lead_for_event(db, acc, body)
+    if lead is None:
+        return
+    ts_raw = body.get("timestamp") or body.get("created_at")
+    lead.linkedin_last_reply_at = _parse_iso(ts_raw) or datetime.now(timezone.utc)
+    # First inbound message implies 1st-degree connection.
+    if lead.linkedin_connection_status != LinkedInConnectionStatus.CONNECTED:
+        lead.linkedin_connection_status = LinkedInConnectionStatus.CONNECTED
+
+
+async def _handle_invitation_accepted(
+    db: AsyncSession, payload: dict[str, Any],
+) -> None:
+    body = payload.get("data") or payload.get("invitation") or payload
+    unipile_id = (
+        body.get("account_id")
+        or (body.get("account") or {}).get("id")
+        or payload.get("account_id")
+    )
+    if not unipile_id:
+        return
+    acc = await db.scalar(
+        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == str(unipile_id))
+    )
+    if acc is None:
+        return
+    lead = await _find_lead_for_event(db, acc, body)
+    if lead is None:
+        return
+    lead.linkedin_connection_status = LinkedInConnectionStatus.CONNECTED
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        s = str(value)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@router.post("/webhooks/unipile")
+async def unipile_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Receive Unipile push events.
+
+    Signature: we verify HMAC-SHA256 of the raw body with
+    ``settings.UNIPILE_WEBHOOK_SECRET``.  A missing or invalid signature
+    returns 401 without touching the DB.
+
+    Idempotency: every event Unipile sends has an ``id``; if we've seen it
+    before we no-op.  (We don't currently persist seen ids; if duplicate
+    delivery becomes a real issue add a ``webhook_events`` table.)
+    """
+    raw = await request.body()
+    sig = request.headers.get("x-unipile-signature") or request.headers.get("unipile-signature")
+    if not _verify_unipile_signature(raw, sig):
+        raise HTTPException(status_code=401, detail="invalid signature")
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    event_type = (
+        payload.get("type")
+        or payload.get("event")
+        or payload.get("event_name")
+        or ""
+    ).lower()
+    logger.info("Unipile webhook event=%r", event_type)
+
+    # Route by event name.  Unipile occasionally varies the casing /
+    # punctuation between versions (account.connected vs ACCOUNT_CONNECTED),
+    # so we normalise to lowercase + dot.
+    normalised = event_type.replace("_", ".").replace(":", ".")
+
+    if normalised in {"account.connected", "account.created", "creation.success"}:
+        await _handle_account_connected(db, payload)
+    elif normalised in {"account.disconnected", "account.deleted", "creation.fail"}:
+        await _handle_account_status_change(db, payload, LinkedInAccountStatus.FAILED)
+    elif normalised in {"account.checkpoint", "account.error.checkpoint"}:
+        await _handle_account_status_change(
+            db, payload, LinkedInAccountStatus.CHALLENGED, challenge=True,
+        )
+    elif normalised in {"message.received", "messaging.message.received", "new.message"}:
+        await _handle_message_received(db, payload)
+    elif normalised in {"invitation.accepted", "user.relation.created", "new.relation"}:
+        await _handle_invitation_accepted(db, payload)
+    else:
+        logger.info("Unipile webhook: ignoring event_type=%r", event_type)
+        return {"ok": True, "ignored": True}
+
+    await db.commit()
+    return {"ok": True}

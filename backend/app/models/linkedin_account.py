@@ -34,11 +34,30 @@ class LinkedInAccount(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     label: Mapped[str] = mapped_column(Text, nullable=False)
     linkedin_email: Mapped[str] = mapped_column(Text, nullable=False, index=True)
-    password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    # Nullable since 0006: Unipile-managed accounts don't store a password
+    # (Unipile owns the LinkedIn session).  DIY/Playwright accounts still
+    # require this.
+    password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Populated after a successful login; JSON-encoded li_at + JSESSIONID etc.
+    # Only used by DIY/Playwright impls.  Unipile rows leave this empty.
     session_cookies_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Per-account proxy override; falls back to settings.LINKEDIN_PROXY_URL.
+    # Only meaningful for DIY/Playwright; Unipile manages its own proxies.
     proxy_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Unipile's opaque account id, returned by the hosted-auth flow.
+    # NULL for DIY/Playwright accounts.  Provider methods that need to
+    # call Unipile read this off the model instance.
+    unipile_account_id: Mapped[str | None] = mapped_column(
+        Text, nullable=True, unique=True,
+    )
+    # "diy" (legacy Playwright / linkedin-api) or "unipile".  Defaults to
+    # "diy" so old rows behave as before; the connect-via-Unipile router
+    # inserts new rows with "unipile".  Useful for branching in the router
+    # / sequencer when behaviour diverges (e.g. password is required for
+    # diy but not for unipile).
+    provider_kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default="diy", server_default="diy",
+    )
     status: Mapped[LinkedInAccountStatus] = mapped_column(
         Enum(
             LinkedInAccountStatus,

@@ -11,8 +11,12 @@ from app.models import LinkedInAccountStatus
 
 class LinkedInAccountCreate(BaseModel):
     label: str = Field(min_length=1)
-    linkedin_email: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    # For DIY accounts these are required.  For Unipile-managed accounts
+    # the user goes through the hosted-auth flow instead and a separate
+    # endpoint creates the row — so here they're optional to allow both
+    # paths through the same schema.
+    linkedin_email: str | None = Field(default=None, min_length=1)
+    password: str | None = Field(default=None, min_length=1)
     proxy_url: str | None = None
     li_at_cookie: str | None = None
 
@@ -38,6 +42,31 @@ class LinkedInAccountResponse(BaseModel):
     pending_challenge_url: str | None
     created_at: datetime
     updated_at: datetime
+    # Unipile-specific fields.  NULL on legacy DIY rows.
+    unipile_account_id: str | None = None
+    provider_kind: str = "diy"
+
+
+class ConnectViaUnipileRequest(BaseModel):
+    """Body for POST /linkedin-accounts/connect-via-unipile.
+
+    Caller supplies a label and the front-end URL the user should land on
+    once Unipile's hosted flow completes (success/failure variants).
+    """
+    label: str = Field(min_length=1)
+    success_redirect_url: str = Field(min_length=1)
+    failure_redirect_url: str | None = None
+
+
+class ConnectViaUnipileResponse(BaseModel):
+    """Returned by POST /linkedin-accounts/connect-via-unipile.
+
+    ``account_id`` is our local LinkedInAccount.id — we create the row
+    eagerly so the frontend can poll its status.  ``hosted_url`` is the
+    Unipile URL the user opens to complete login.
+    """
+    account_id: uuid.UUID
+    hosted_url: str
 
 
 class LinkedInTestResponse(BaseModel):

@@ -33,3 +33,20 @@ export async function resolveLinkedInChallenge(id) {
   const { data } = await client.post(`/linkedin-accounts/${id}/resolve-challenge`, {});
   return data;
 }
+
+// --- Unipile hosted-auth flow ----------------------------------------
+// 1. POST /connect-via-unipile -> { account_id, hosted_url }
+// 2. Frontend opens hosted_url in a new tab so the user logs in to LinkedIn
+//    through Unipile's hosted form.
+// 3. Unipile fires webhook -> backend persists unipile_account_id + status.
+// 4. Frontend polls /sync-unipile (or just /:id) until status flips to OK.
+
+export async function connectViaUnipile(payload) {
+  const { data } = await client.post('/linkedin-accounts/connect-via-unipile', payload);
+  return data;
+}
+
+export async function syncUnipileStatus(id) {
+  const { data } = await client.post(`/linkedin-accounts/${id}/sync-unipile`);
+  return data;
+}

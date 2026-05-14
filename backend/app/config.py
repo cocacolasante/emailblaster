@@ -37,15 +37,27 @@ class Settings(BaseSettings):
     IMAP_POLL_INTERVAL_MINUTES: int = 20
 
     # LinkedIn provider selection
-    # "playwright" (default) — all actions via headless Chromium. Safe to use
-    #                          without a residential proxy because the session
-    #                          cookies are used inside a real browser session.
-    # "hybrid"               — Playwright writes + HTTP reads. Only safe with
-    #                          LINKEDIN_PROXY_URL set; otherwise the HTTP poll
-    #                          hits LinkedIn from the datacenter IP with a
-    #                          home-IP-bound li_at and gets the cookie flagged.
-    # "http"                 — all actions via linkedin-api HTTP (legacy).
-    LINKEDIN_PROVIDER: str = "playwright"
+    # "unipile"    — hosted browser API (real Chrome + residential IPs).
+    #                Recommended for any production-ish use; no challenge
+    #                bot-detection issues because LinkedIn sees a real
+    #                desktop browser from a residential IP.  Requires
+    #                UNIPILE_API_KEY + UNIPILE_DSN.
+    # "playwright" — all actions via local headless Chromium.  Bot-detection
+    #                risk; profile pages get challenge-flagged within a few
+    #                runs even on established accounts.  Kept for offline
+    #                fallback / dev without a Unipile key.
+    # "hybrid"     — Playwright writes + linkedin-api HTTP reads.  Legacy.
+    # "http"       — all actions via linkedin-api HTTP.  Legacy.
+    LINKEDIN_PROVIDER: str = "unipile"
+
+    # Unipile config — required when LINKEDIN_PROVIDER=unipile.
+    # DSN is the tenant host returned from the dashboard, e.g.
+    # "api12.unipile.com:13443".  API key from dashboard → access-tokens.
+    # Webhook secret is shared between Unipile's webhook config + our handler;
+    # used to verify incoming events.
+    UNIPILE_DSN: str = ""
+    UNIPILE_API_KEY: str = ""
+    UNIPILE_WEBHOOK_SECRET: str = ""
 
     # LinkedIn (DIY: linkedin-api library + optional residential proxy)
     LINKEDIN_PROXY_URL: str = ""  # e.g. http://user:pass@host:port; empty = direct
