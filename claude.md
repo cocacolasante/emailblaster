@@ -450,7 +450,13 @@ Cloudflare bot-management was flagging the headless+datacenter fingerprint
 on every fresh Chromium launch. Switched to Unipile (hosted browser API,
 real Chrome on residential IPs)._
 
-_Backend tests: **383 + 33 new unipile tests** = 416 expected (run pending)._
+_Backend tests: **416 passing** (was 383 + 33 new unipile tests)._
+
+> **🚀 Starting on a fresh dev box?** Jump to
+> [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
+> below — it walks through every step (ngrok / cloudflared tunnel,
+> Unipile webhook config, .env wiring, force-recreate) needed to get
+> the stack talking to Unipile on a new machine.
 
 ## Unipile integration (2026-05-14)
 
@@ -522,6 +528,164 @@ Open work (next sessions):
   process if they retry).  Add a `webhook_events` table keyed on
   event_id when this becomes a real issue.
 - ConnectLinkedInModal tests need updates for the new toggle UI.
+
+## Unipile setup runbook (any computer, local dev)
+
+> **Multi-machine context:** this whole runbook is the one source of
+> truth for getting Unipile wired up on a fresh dev box.  Follow it top
+> to bottom on any new machine.  All steps are Windows / PowerShell;
+> macOS / Linux equivalents are obvious (`brew install`, etc.).
+
+### 1. Sign up + grab credentials (once per Unipile account)
+
+1. Sign up at <https://www.unipile.com>.
+2. Dashboard top bar shows your **DSN** like `api12.unipile.com:13443` —
+   copy it.  Each tenant gets a different number (`api3.`, `api12.`, etc.).
+3. Sidebar → **Access Tokens** → **Generate** → copy the token.  Unipile
+   only shows it once; lose it and you generate a new one.
+
+### 2. Public HTTPS tunnel (every dev box)
+
+Unipile's servers can't reach `localhost`, so we need a tunnel.  Two
+options:
+
+**ngrok (recommended — has a request inspector at <http://127.0.0.1:4040>):**
+
+```powershell
+winget install Ngrok.Ngrok
+# Sign up at ngrok.com, copy the authtoken from
+# https://dashboard.ngrok.com/get-started/your-authtoken
+ngrok config add-authtoken <YOUR_TOKEN>
+ngrok http 8000     # leave running in its own terminal
+```
+
+The output line `Forwarding https://<random>.ngrok-free.app -> http://localhost:8000`
+is your public URL.
+
+**Cloudflared (no signup):**
+
+```powershell
+winget install --id Cloudflare.cloudflared
+cloudflared tunnel --url http://localhost:8000
+```
+
+Prints a `https://<random>.trycloudflare.com` URL.  Trade-off: no
+request inspector.
+
+⚠ **Free ngrok / cloudflared subdomains change on every restart.**  Keep
+the tunnel terminal running; if it dies, update all three webhook URLs
+in Unipile + `WEBHOOK_BASE_URL` in `.env` + force-recreate containers.
+
+### 3. Create the three Unipile webhooks
+
+Unipile splits webhooks by data source, so you need **three** webhooks
+that all POST to the same `/webhooks/unipile` endpoint.  Our handler
+dispatches on event-name internally, so it doesn't care which webhook
+delivered the event.
+
+For each: Dashboard → **Webhooks** → **Create webhook**.
+
+| # | Name | Data source | URL |
+|---|---|---|---|
+| 1 | `emailblaster - account` | **Account / Status update** | `https://<tunnel>/webhooks/unipile` |
+| 2 | `emailblaster - messaging` | **Messaging** | `https://<tunnel>/webhooks/unipile` |
+| 3 | `emailblaster - relations` | **Users / Relations events** | `https://<tunnel>/webhooks/unipile` |
+
+For HMAC: Unipile lets you generate **one** secret for the first webhook
+and **reuse it** for the other two (paste the same string).  All three
+must share a single secret — our handler reads a single
+`UNIPILE_WEBHOOK_SECRET` value.  If a future Unipile version forbids
+reuse, extend the handler to accept a comma-separated list of secrets
+(small change in `_verify_unipile_signature`).
+
+Skip **Mailing / Mail Tracking / Calendar Events** — we don't use those
+data sources.
+
+### 4. Wire `.env`
+
+Open `.env` (project root) and set these four:
+
+```env
+UNIPILE_DSN=api12.unipile.com:13443      # your DSN from step 1
+UNIPILE_API_KEY=<access token from step 1>
+UNIPILE_WEBHOOK_SECRET=<HMAC secret from step 3>
+WEBHOOK_BASE_URL=https://<tunnel-host-no-trailing-slash>
+```
+
+`WEBHOOK_BASE_URL` must point to the SAME tunnel host you gave Unipile
+in step 3.  It's used by `POST /linkedin-accounts/connect-via-unipile`
+to build the `notify_url` Unipile attaches to the hosted-auth flow.
+
+### 5. Force-recreate so `.env` actually takes effect
+
+`docker compose restart` does NOT re-read `.env` (already a gotcha in
+the Conventions section).  Use:
+
+```powershell
+docker compose up -d --force-recreate backend worker beat
+```
+
+Verify it took:
+
+```powershell
+docker compose exec backend printenv UNIPILE_DSN UNIPILE_API_KEY UNIPILE_WEBHOOK_SECRET WEBHOOK_BASE_URL
+```
+
+All four should print non-empty values.
+
+### 6. Sanity-check the tunnel is reachable
+
+```powershell
+curl.exe -X POST "https://<tunnel>/webhooks/unipile" -H "Content-Type: application/json" -d "{}"
+```
+
+Expected: `401 {"detail":"invalid signature"}` — that means our
+HMAC-verify fired, which means routing through the tunnel works.  Then
+hit the **Send test event** button on each Unipile webhook and watch:
+
+```powershell
+docker compose logs -f backend | findstr /I unipile
+```
+
+You should see three `Unipile webhook event='...'` lines, each returning
+200.
+
+### 7. End-to-end smoke (link a real LinkedIn account)
+
+1. Open <http://localhost:5173/settings>.
+2. **LinkedIn Accounts → Connect new**.  Toggle stays on **Hosted
+   (Unipile)** by default.  Enter a label, click **Connect via Unipile**.
+3. New tab opens at Unipile's hosted login.  Complete the LinkedIn
+   login there.
+4. Modal in our app should auto-close as soon as Unipile fires
+   `account.connected` → our handler stamps `unipile_account_id` + flips
+   status to OK.  (Polling fallback at 3s intervals catches webhook
+   delivery delays.)
+5. Tail logs to confirm:
+   ```powershell
+   docker compose logs -f backend | findstr /I unipile
+   ```
+
+### 8. Run a campaign step
+
+Re-enroll the lead from the Activity tab and watch:
+
+```powershell
+docker compose logs -f worker | findstr /I "send_linkedin_step Unipile"
+```
+
+A `view_profile` should complete in 1–3 seconds (single HTTPS call to
+Unipile) vs. the old 9-second-then-challenge pattern.
+
+### Troubleshooting
+
+| Symptom | Probable cause | Fix |
+|---|---|---|
+| `401 invalid signature` in backend logs after Unipile send-test | HMAC secret in `.env` doesn't match the one in Unipile's webhook config | Re-copy the secret, update `.env`, force-recreate |
+| Unipile dashboard shows delivery `timeout` | Tunnel died, or `WEBHOOK_BASE_URL` host doesn't match Unipile's webhook URL host | Restart tunnel, update all three webhook URLs in Unipile + `WEBHOOK_BASE_URL`, force-recreate |
+| `account.connected` fires but row never flips OK | Unipile sent the event with an empty `name` | Check the delivery payload in Unipile's dashboard for `name == <our local UUID>`; if blank, ensure the `connect-via-unipile` endpoint successfully called `create_hosted_auth_link` with `name=str(acc.id)` |
+| `UnipileError: UNIPILE_DSN not set` | `.env` not loaded into the container | Did you force-recreate?  `docker compose restart` won't do it |
+| ConnectLinkedInModal "Local (legacy)" tab still shows | That's expected — kept as fallback.  Default toggle is Hosted | n/a — strip happens in task #98 once Unipile path proven live |
 
 ## Previous: Human-dwell anti-bot pass (2026-05-14)
 
