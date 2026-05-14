@@ -298,20 +298,62 @@ async (args) => {
 async def _voyager(page, method: str, url: str, body=None) -> tuple[int, str]:
     """Run a Voyager API call from the browser page.
 
-    Returns ``(status, body)``. On non-2xx responses, also logs response
-    headers + type so we can catch endpoint moves (LinkedIn signals these
-    with 301 / opaqueredirect + a Location header pointing at the new
-    endpoint).
+    Returns ``(status, body)``.  On non-2xx responses, logs status + type +
+    body + response headers + the FINAL response URL.  ``res.url`` differing
+    from the request URL means LinkedIn 30x-redirected — usually a sign the
+    endpoint has been deprecated and silently moved.
     """
     result = await page.evaluate(_VOYAGER_JS, [method, url, body])
     status, body_text = result["status"], result["body"]
+    final_url = result.get("url") or ""
     if status < 200 or status >= 300:
         logger.warning(
-            "Voyager %s %s -> status=%s type=%s body=%r headers=%r",
-            method, url, status, result.get("type"),
-            body_text[:200], result.get("headers"),
+            "Voyager %s %s -> status=%s final_url=%s type=%s body=%r headers=%r",
+            method, url, status, final_url, result.get("type"),
+            body_text[:500], result.get("headers"),
+        )
+    elif final_url and final_url != url and "?" not in url:
+        # 2xx but redirected — LinkedIn likely moved the endpoint.  Only flag
+        # bare URLs (query-string variants are normal redirects on action= URLs).
+        logger.info(
+            "Voyager %s %s -> 2xx but redirected to %s (possible endpoint move)",
+            method, url, final_url,
         )
     return status, body_text
+
+
+def _parse_li_error(body: str) -> str | None:
+    """Pull a human-readable error out of a LinkedIn Voyager error response.
+
+    LinkedIn error bodies are typically JSON like::
+
+        {"status":422,"code":"CANT_INVITE_MEMBER","message":"..."}
+        {"errorDetails":{"inputErrors":[{"description":{"value":"..."}}]}}
+
+    Returns a short ``"CODE: message"`` string when one is extractable,
+    otherwise None so the caller can fall back to the raw body.
+    """
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    code = data.get("code") or (data.get("serviceErrorCode") and f"err{data['serviceErrorCode']}")
+    message = data.get("message")
+    if code or message:
+        return f"{code or '?'}: {message or '(no message)'}"
+    # Nested input-validation errors.
+    details = data.get("errorDetails") or {}
+    input_errors = details.get("inputErrors") or []
+    if input_errors:
+        descs = [
+            (e.get("description") or {}).get("value")
+            or e.get("description") or e.get("code")
+            for e in input_errors
+        ]
+        return "input_errors: " + "; ".join(str(d) for d in descs if d)
+    return None
 
 
 def _parse_json(text: str) -> dict | list:
@@ -799,7 +841,9 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 {"patch": {"$set": {"following": True}}, "entityUrn": urn},
             )
             if status not in (200, 201, 204):
-                raise LinkedInProviderError(f"follow_profile returned {status}: {body[:200]}")
+                raise LinkedInProviderError(
+                    f"follow_profile returned {status}: {_parse_li_error(body) or body[:300]}"
+                )
             return {"urn": urn}
 
         try:
@@ -828,7 +872,9 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 {"reactionType": reaction},
             )
             if status not in (200, 201, 204):
-                raise LinkedInProviderError(f"react_to_post returned {status}: {body[:200]}")
+                raise LinkedInProviderError(
+                    f"react_to_post returned {status}: {_parse_li_error(body) or body[:300]}"
+                )
             return {}
 
         try:
@@ -898,13 +944,9 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
             await _ensure_authenticated(page, account)
             await asyncio.sleep(random.uniform(1.0, 3.0))
 
-            # The growth/normInvitations endpoint's `profileId` field wants
-            # the FSD entity ID (e.g. "ACwAAA0v..."), NOT the URL slug.
-            # Sending the slug returns 422 unconditionally — verified
-            # against linkedin-api's source, which always resolves the
-            # public_id to an entity URN before posting. Use _resolve_urn
-            # (DOM scrape, fallback to /voyager/api/identity/profiles) to
-            # get the URN, then extract the ID suffix.
+            # Modern endpoint wants the full URN in ``inviteeProfileUrn``.
+            # _resolve_urn scrapes the profile DOM (falls back to Voyager
+            # /api/identity/profiles).  Bare public_id is NOT accepted.
             urn = profile.urn or await _resolve_urn(page, profile.public_id)
             if not urn:
                 raise LinkedInProviderError(
@@ -912,18 +954,21 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                     f"{profile.public_id or '<unknown>'}"
                 )
             profile_id = urn.split(":")[-1]  # urn:li:fsd_profile:ABC -> ABC
+            logger.info(
+                "send_connect: account=%s prospect=%s urn=%s note=%s",
+                account.id, profile.public_id, urn, bool(note and note.strip()),
+            )
 
-            # LinkedIn deprecated /voyager/api/growth/normInvitations
-            # somewhere in 2024 (replies with {"data":{"status":301}}).
-            # Modern endpoint is voyagerRelationshipsDash with the
-            # ?action=verifyQuotaAndCreate query. Payload field name is
-            # ``inviteeProfileUrn`` (NOT bare ``invitee``) and the note
-            # field is ``customMessage``. Confirmed via response headers
-            # in earlier logs (x-restli-error-response: true, real prod
-            # fabric).
+            # LinkedIn deprecated /voyager/api/growth/normInvitations in 2024.
+            # Current endpoint: voyagerRelationshipsDashMemberRelationships
+            # with ?action=verifyQuotaAndCreate.  Payload field is
+            # ``inviteeProfileUrn`` and the optional note is ``customMessage``.
+            # LinkedIn caps notes at 200 chars for Free and 300 for Premium;
+            # we trim to 200 to be safe (Premium will accept this, Free won't
+            # 422 on length).
             payload: dict = {"inviteeProfileUrn": urn}
             if note and note.strip():
-                payload["customMessage"] = note.strip()[:300]
+                payload["customMessage"] = note.strip()[:200]
 
             status, body = await _voyager(
                 page, "POST",
@@ -932,7 +977,13 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 payload,
             )
             if status not in (200, 201, 204):
-                raise LinkedInProviderError(f"send_connect returned {status}: {body[:200]}")
+                # Surface LinkedIn's structured error code if present so the
+                # user sees e.g. "CANT_INVITE_MEMBER: Daily limit reached"
+                # instead of an opaque 422 body.
+                pretty = _parse_li_error(body) or body[:300]
+                raise LinkedInProviderError(
+                    f"send_connect returned {status}: {pretty}"
+                )
             return {"profile_id": profile_id, "urn": urn}
 
         try:
@@ -976,7 +1027,9 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 payload,
             )
             if status not in (200, 201, 204):
-                raise LinkedInProviderError(f"send_dm returned {status}: {body[:200]}")
+                raise LinkedInProviderError(
+                    f"send_dm returned {status}: {_parse_li_error(body) or body[:300]}"
+                )
             return {"urn": urn}
 
         try:
@@ -1014,7 +1067,9 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                 },
             )
             if status not in (200, 201, 204):
-                raise LinkedInProviderError(f"invite_to_page returned {status}: {body[:200]}")
+                raise LinkedInProviderError(
+                    f"invite_to_page returned {status}: {_parse_li_error(body) or body[:300]}"
+                )
             return {"urn": urn}
 
         try:
@@ -1067,7 +1122,9 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
                     "premium_required": True,
                     "error": f"InMail unavailable ({status})",
                 }
-            raise LinkedInProviderError(f"send_inmail returned {status}: {resp_body[:200]}")
+            raise LinkedInProviderError(
+                f"send_inmail returned {status}: {_parse_li_error(resp_body) or resp_body[:300]}"
+            )
 
         try:
             result = await self._run(account, _fn)
@@ -1117,7 +1174,7 @@ class PlaywrightLinkedInProvider(LinkedInProvider):
             )
             if status2 not in (200, 201, 204):
                 raise LinkedInProviderError(
-                    f"comment_on_post returned {status2}: {body2[:200]}"
+                    f"comment_on_post returned {status2}: {_parse_li_error(body2) or body2[:300]}"
                 )
             return {}
 
