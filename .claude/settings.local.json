@@ -7,7 +7,10 @@
       "Bash(npm run *)",
       "Bash(npm test *)",
       "Bash(docker network *)",
-      "Bash(curl -i -s -H \"Origin: http://localhost:5173\" http://localhost:8000/campaigns/)"
+      "Bash(curl -i -s -H \"Origin: http://localhost:5173\" http://localhost:8000/campaigns/)",
+      "Bash(grep -vE \"broker_connection_retry|CPendingDeprecationWarning|warnings.warn|^worker-1  \\\\| $|^beat-1  \\\\| $|^backend-1  \\\\| $\")",
+      "Bash(docker builder *)",
+      "WebFetch(domain:developer.unipile.com)"
     ]
   }
 }
