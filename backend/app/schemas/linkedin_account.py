@@ -9,24 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models import LinkedInAccountStatus
 
 
-class LinkedInAccountCreate(BaseModel):
-    label: str = Field(min_length=1)
-    # For DIY accounts these are required.  For Unipile-managed accounts
-    # the user goes through the hosted-auth flow instead and a separate
-    # endpoint creates the row — so here they're optional to allow both
-    # paths through the same schema.
-    linkedin_email: str | None = Field(default=None, min_length=1)
-    password: str | None = Field(default=None, min_length=1)
-    proxy_url: str | None = None
-    li_at_cookie: str | None = None
-
-
 class LinkedInAccountUpdate(BaseModel):
+    """Mutable fields on an existing LinkedInAccount row.
+
+    All accounts are Unipile-managed — Unipile owns the LinkedIn session,
+    so the only thing the caller can change on our side is the display
+    label.
+    """
     label: str | None = Field(default=None, min_length=1)
-    linkedin_email: str | None = Field(default=None, min_length=1)
-    password: str | None = Field(default=None, min_length=1)
-    proxy_url: str | None = None
-    li_at_cookie: str | None = None
 
 
 class LinkedInAccountResponse(BaseModel):
@@ -34,7 +24,6 @@ class LinkedInAccountResponse(BaseModel):
     id: uuid.UUID
     label: str
     linkedin_email: str
-    proxy_url: str | None
     status: LinkedInAccountStatus
     last_error: str | None
     last_tested_at: datetime | None
@@ -42,9 +31,8 @@ class LinkedInAccountResponse(BaseModel):
     pending_challenge_url: str | None
     created_at: datetime
     updated_at: datetime
-    # Unipile-specific fields.  NULL on legacy DIY rows.
     unipile_account_id: str | None = None
-    provider_kind: str = "diy"
+    provider_kind: str = "unipile"
 
 
 class ConnectViaUnipileRequest(BaseModel):
@@ -75,6 +63,24 @@ class LinkedInTestResponse(BaseModel):
     error: str | None = None
     challenge_url: str | None = None
     meta: dict[str, Any] | None = None
+
+
+class DiscoverableUnipileAccount(BaseModel):
+    """One LinkedIn account already linked in Unipile that hasn't yet been
+    bound to a local LinkedInAccount row.  Returned by
+    ``GET /linkedin-accounts/discoverable``.
+    """
+    unipile_account_id: str
+    name: str | None = None           # display name from connection_params.im.username
+    linkedin_email: str | None = None # if Unipile exposed it
+    public_identifier: str | None = None
+    status: str | None = None         # Unipile-side status string
+
+
+class ImportFromUnipileRequest(BaseModel):
+    """Bind a Unipile-side account to a fresh local LinkedInAccount row."""
+    unipile_account_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
 
 
 class ResolveChallengeRequest(BaseModel):

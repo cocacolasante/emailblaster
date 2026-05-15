@@ -38,7 +38,7 @@ from app.workers import sequencer
 def _reset_module_redis_clients(monkeypatch):
     """pytest-asyncio gives each test a fresh event loop, but our sequencer
     redis singleton is module-level. Reset so we don't reuse a client bound
-    to a dead loop. (playwright_impl creates clients per call now.)"""
+    to a dead loop."""
     monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
 
 
@@ -387,63 +387,3 @@ async def test_transient_retry_cap_eventually_advances(db_session, monkeypatch):
     assert state.status == LeadSequenceStatus.COMPLETED
 
 
-# --------------------------------------------------------------------------
-# Per-account playwright lock (M5 follow-up)
-# --------------------------------------------------------------------------
-
-
-async def test_account_lock_serializes_concurrent_runs():
-    """Two concurrent _AccountLock waiters get exclusive access in order."""
-    from app.services.linkedin.playwright_impl import _AccountLock, _new_redis
-
-    aid = "test-lock-acct"
-    rc = _new_redis()
-    try:
-        await rc.delete(f"linkedin-acct-lock:{aid}")
-    finally:
-        await rc.aclose()
-
-    order: list[str] = []
-
-    async def task(name, hold_time):
-        async with _AccountLock(aid):
-            order.append(f"{name}:enter")
-            await asyncio.sleep(hold_time)
-            order.append(f"{name}:exit")
-
-    # Fire both concurrently — B has to wait for A.
-    await asyncio.gather(task("A", 0.2), task("B", 0.05))
-
-    # Whichever ran first must finish before the second starts.
-    assert order[0].endswith(":enter")
-    assert order[1].endswith(":exit")
-    assert order[2].endswith(":enter")
-    assert order[3].endswith(":exit")
-    # Same task name on enter+exit (no interleaving).
-    assert order[0].split(":")[0] == order[1].split(":")[0]
-    assert order[2].split(":")[0] == order[3].split(":")[0]
-
-
-async def test_account_lock_busy_maps_to_rate_limited(db_session, monkeypatch):
-    """If the lock can't be acquired, the sequencer treats it as transient."""
-    from app.services.linkedin.base import AccountLockBusy
-    from app.workers import sequencer as seq_mod
-
-    acc = await _make_li_account(db_session)
-    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
-    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
-    lead = await _make_lead(db_session, campaign)
-
-    class _StubBusy:
-        async def view_profile(self, account, profile):
-            raise AccountLockBusy("test: lock held")
-        async def follow_profile(self, *a, **k): return ActionResult(ok=True)
-        async def react_to_post(self, *a, **k): return ActionResult(ok=True)
-        async def latest_post_urn(self, *a, **k): return None
-        async def test_connection(self, *a, **k): return ActionResult(ok=True)
-        async def inbox_recent_events(self, *a, **k): return []
-    monkeypatch.setattr(seq_mod, "get_linkedin_provider", lambda: _StubBusy())
-
-    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
-    assert result["status"] == "rate_limited"
-    assert "lock" in result["error"]

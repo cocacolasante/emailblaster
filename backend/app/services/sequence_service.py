@@ -160,7 +160,13 @@ PUBLISHABLE_KINDS_M1 = {
     SequenceNodeKind.LINKEDIN_REACT_POST,
     SequenceNodeKind.LINKEDIN_CONNECT,
     SequenceNodeKind.LINKEDIN_DM,
-    SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE,
+    # LINKEDIN_INVITE_TO_PAGE excluded: HAR-verified Voyager shape is in
+    # ``unipile_impl.invite_to_page`` but Unipile's /api/v1/linkedin
+    # passthrough whitelist doesn't include
+    # ``voyagerRelationshipsDashInvitations`` — every shape variant we
+    # tried returns ``errors/malformed_request`` from their forwarder.
+    # Re-enable once Unipile support allowlists the endpoint OR ships a
+    # packaged "invite-to-follow-page" action.
     SequenceNodeKind.LINKEDIN_INMAIL,
     SequenceNodeKind.LINKEDIN_COMMENT_POST,
 }

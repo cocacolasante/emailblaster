@@ -1,26 +1,19 @@
 """LinkedIn provider package.
 
-Concrete impls live alongside the ABC. ``get_provider()`` returns the
-implementation selected by ``settings.LINKEDIN_PROVIDER``:
-
-- ``"unipile"``    (default) — hosted browser API.  Real Chrome on
-  residential IPs.  No bot-detection issues.  Requires UNIPILE_API_KEY +
-  UNIPILE_DSN.
-- ``"playwright"``          — all actions via local headless Chromium.
-  Permanent bot-detection trouble; kept for dev fallback.
-- ``"hybrid"``              — Playwright writes + HTTP reads.  Legacy.
-- ``"http"``                — all actions via linkedin-api HTTP.  Legacy.
+All actions go through Unipile's hosted browser API (real Chrome on
+residential IPs).  The DIY Playwright / hybrid / linkedin-api HTTP
+providers were removed once Unipile proved it could keep sessions alive
+without our own fingerprint/proxy bookkeeping; the ABC is preserved in
+case a second hosted provider ever needs to slot in alongside Unipile.
 """
 from app.services.linkedin.base import (
+    AccountRestricted,
     ActionResult,
     ChallengeRequired,
     InboundEvent,
     LinkedInProvider,
     ProfileRef,
 )
-from app.services.linkedin.hybrid_impl import HybridLinkedInProvider
-from app.services.linkedin.linkedin_api_impl import LinkedinApiProvider
-from app.services.linkedin.playwright_impl import PlaywrightLinkedInProvider
 from app.services.linkedin.unipile_impl import UnipileLinkedInProvider
 
 _provider: LinkedInProvider | None = None
@@ -30,16 +23,7 @@ def get_provider() -> LinkedInProvider:
     """Return the configured LinkedIn provider singleton."""
     global _provider
     if _provider is None:
-        from app.config import settings
-        name = (settings.LINKEDIN_PROVIDER or "unipile").lower()
-        if name == "unipile":
-            _provider = UnipileLinkedInProvider()
-        elif name == "http":
-            _provider = LinkedinApiProvider()
-        elif name == "playwright":
-            _provider = PlaywrightLinkedInProvider()
-        else:
-            _provider = HybridLinkedInProvider()
+        _provider = UnipileLinkedInProvider()
     return _provider
 
 
@@ -50,13 +34,11 @@ def _reset_provider_for_tests() -> None:
 
 
 __all__ = [
+    "AccountRestricted",
     "ActionResult",
     "ChallengeRequired",
-    "HybridLinkedInProvider",
     "InboundEvent",
     "LinkedInProvider",
-    "LinkedinApiProvider",
-    "PlaywrightLinkedInProvider",
     "ProfileRef",
     "UnipileLinkedInProvider",
     "get_provider",

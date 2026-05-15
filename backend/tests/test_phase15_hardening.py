@@ -272,18 +272,16 @@ def test_no_decrypt_calls_outside_imap_client():
     the 'someone added a decrypt call somewhere else' regression.
 
     Allowlist:
-      - imap_client.py — original encrypted-credential consumer
-      - linkedin/linkedin_api_impl.py — HTTP LinkedIn provider (M2). Same
-        invariant: decrypted plaintext lives only in local scope and is
-        deleted before the wrapper returns.
-      - linkedin/playwright_impl.py — Playwright LinkedIn provider. Same
-        invariant: password decrypted only in _login_with_password (local
-        scope, del'd before return); session state decrypted only in _run.
+      - imap_client.py — encrypted IMAP-password consumer (only remaining
+        plaintext-decrypt path now that the DIY LinkedIn providers were
+        stripped in favour of Unipile, which never receives a plaintext
+        password from us).
+      - encryption.py — the encrypt/decrypt helpers themselves.
     """
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent / "app"
-    allowed = {"imap_client.py", "encryption.py", "linkedin_api_impl.py", "playwright_impl.py"}
+    allowed = {"imap_client.py", "encryption.py"}
     offenders = []
     for path in root.rglob("*.py"):
         if path.name in allowed:

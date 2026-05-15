@@ -46,6 +46,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-http://localhost:8000}
+      UNIPILE_DSN: ${UNIPILE_DSN:-}
+      UNIPILE_API_KEY: ${UNIPILE_API_KEY:-}
+      UNIPILE_WEBHOOK_SECRET: ${UNIPILE_WEBHOOK_SECRET:-}
+      UNIPILE_WEBHOOK_AUTH_HEADER: ${UNIPILE_WEBHOOK_AUTH_HEADER:-X-Unipile-Auth}
       PYTHONPATH: /app
     ports:
       - "8000:8000"
@@ -76,6 +80,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-http://localhost:8000}
+      UNIPILE_DSN: ${UNIPILE_DSN:-}
+      UNIPILE_API_KEY: ${UNIPILE_API_KEY:-}
+      UNIPILE_WEBHOOK_SECRET: ${UNIPILE_WEBHOOK_SECRET:-}
+      UNIPILE_WEBHOOK_AUTH_HEADER: ${UNIPILE_WEBHOOK_AUTH_HEADER:-X-Unipile-Auth}
       PYTHONPATH: /app
     volumes:
       - ./backend:/app
@@ -96,6 +104,11 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       IMAP_POLL_INTERVAL_MINUTES: ${IMAP_POLL_INTERVAL_MINUTES:-20}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-http://localhost:8000}
+      UNIPILE_DSN: ${UNIPILE_DSN:-}
+      UNIPILE_API_KEY: ${UNIPILE_API_KEY:-}
+      UNIPILE_WEBHOOK_SECRET: ${UNIPILE_WEBHOOK_SECRET:-}
+      UNIPILE_WEBHOOK_AUTH_HEADER: ${UNIPILE_WEBHOOK_AUTH_HEADER:-X-Unipile-Auth}
       PYTHONPATH: /app
     volumes:
       - ./backend:/app

@@ -2,24 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 
 import {
   connectViaUnipile,
-  createLinkedInAccount,
   deleteLinkedInAccount,
   getLinkedInAccount,
+  importFromUnipile,
+  listDiscoverableUnipileAccounts,
   resolveLinkedInChallenge,
   syncUnipileStatus,
-  testLinkedInAccount,
-  updateLinkedInAccount,
 } from '../api/linkedinAccounts.js';
-
-// --- Static defaults --------------------------------------------------
-
-const EMPTY_DIY = {
-  label: '',
-  linkedin_email: '',
-  password: '',
-  proxy_url: '',
-  li_at_cookie: '',
-};
 
 // How often to poll /linkedin-accounts/{id}/sync-unipile while waiting for
 // the user to complete Unipile's hosted-login.
@@ -31,28 +20,10 @@ const SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
   const editing = Boolean(account);
-  const isUnipile = account?.provider_kind === 'unipile';
 
-  // Mode toggle — "unipile" is the recommended hosted flow; "diy" is the
-  // legacy password + li_at paste path.  When editing an existing
-  // Unipile-managed row we lock to "unipile".  When editing a DIY row we
-  // lock to "diy".  On the "create new" screen the user gets a choice and
-  // we default to "unipile".
-  const [mode, setMode] = useState(
-    editing ? (isUnipile ? 'unipile' : 'diy') : 'unipile',
-  );
-
-  // ---- DIY form state --------------------------------------------------
-  const [form, setForm] = useState(EMPTY_DIY);
-  const [showPassword, setShowPassword] = useState(false);
-  const [showCookieSection, setShowCookieSection] = useState(false);
-
-  // ---- Common state ---------------------------------------------------
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState(null);
   const [resolvingChallenge, setResolvingChallenge] = useState(false);
+  const [testResult, setTestResult] = useState(null);
 
   // ---- Unipile flow state ---------------------------------------------
   const [unipileLabel, setUnipileLabel] = useState('');
@@ -61,32 +32,27 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
   const [unipileWaiting, setUnipileWaiting] = useState(false);
   const pollRef = useRef(null);
 
+  // ---- "Import existing Unipile account" state ------------------------
+  // For accounts connected via Unipile's dashboard rather than our portal.
+  const [discoverable, setDiscoverable] = useState([]);
+  const [importing, setImporting] = useState(null);  // unipile_account_id mid-import
+  const [showImport, setShowImport] = useState(false);
+
   // ---- Effects --------------------------------------------------------
 
   useEffect(() => {
-    if (account) {
-      setForm({
-        label: account.label || '',
-        linkedin_email: account.linkedin_email || '',
-        password: '',
-        proxy_url: account.proxy_url || '',
-        li_at_cookie: '',
+    if (account?.status === 'challenged') {
+      setTestResult({
+        ok: false,
+        status: 'challenged',
+        challenge_url: account.pending_challenge_url,
       });
-      if (account.status === 'challenged') {
-        setTestResult({
-          ok: false,
-          status: 'challenged',
-          challenge_url: account.pending_challenge_url,
-        });
-        setShowCookieSection(true);
-      }
     } else {
-      setForm(EMPTY_DIY);
       setTestResult(null);
     }
   }, [account]);
 
-  // Stop polling on unmount / mode change.
+  // Stop polling on unmount.
   useEffect(() => {
     return () => {
       if (pollRef.current) {
@@ -96,54 +62,37 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
     };
   }, []);
 
-  function updateForm(field, value) {
-    setForm((f) => ({ ...f, [field]: value }));
-  }
-
-  // ---- DIY path -------------------------------------------------------
-
-  async function handleDiySave() {
-    setError(null);
-    setSaving(true);
-    try {
-      const payload = { ...form };
-      if (editing && !payload.password) delete payload.password;
-      if (!payload.proxy_url) delete payload.proxy_url;
-      if (!payload.li_at_cookie) delete payload.li_at_cookie;
-
-      const saved = editing
-        ? await updateLinkedInAccount(account.id, payload)
-        : await createLinkedInAccount(payload);
-
+  // Refresh the discoverable list on the "create new" screen. Cheap call —
+  // single GET, scoped to unbound rows.
+  useEffect(() => {
+    if (editing) return;
+    let cancelled = false;
+    (async () => {
       try {
-        const r = await testLinkedInAccount(saved.id);
-        setTestResult(r);
-      } catch (e) {
-        setTestResult({ ok: false, error: e?.message || 'Saved, but test failed' });
+        const list = await listDiscoverableUnipileAccounts();
+        if (!cancelled) setDiscoverable(list || []);
+      } catch (_e) {
+        if (!cancelled) setDiscoverable([]);  // 503 if Unipile not configured — fine
       }
+    })();
+    return () => { cancelled = true; };
+  }, [editing]);
+
+  async function handleImport(disc) {
+    setError(null);
+    setImporting(disc.unipile_account_id);
+    try {
+      const saved = await importFromUnipile({
+        unipile_account_id: disc.unipile_account_id,
+        label: unipileLabel?.trim() || disc.name || 'LinkedIn (imported)',
+      });
       if (onSaved) onSaved(saved);
+      onClose();
     } catch (e) {
-      const detail = e?.response?.data?.detail || e?.message || 'Save failed';
+      const detail = e?.response?.data?.detail || e?.message || 'Import failed';
       setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
     } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleDiyTest() {
-    if (!editing) {
-      setError('Save the account first, then test.');
-      return;
-    }
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const r = await testLinkedInAccount(account.id);
-      setTestResult(r);
-    } catch (e) {
-      setTestResult({ ok: false, error: e?.message || 'Test failed' });
-    } finally {
-      setTesting(false);
+      setImporting(null);
     }
   }
 
@@ -221,7 +170,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
           setUnipileWaiting(false);
           setTestResult({ ok: false, error: fresh.last_error || `status=${fresh.status}` });
         }
-      } catch (e) {
+      } catch (_e) {
         // Transient — keep polling.
       }
     }, SYNC_POLL_MS);
@@ -236,7 +185,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
     }
     try {
       await deleteLinkedInAccount(unipileAccountId);
-    } catch (e) {
+    } catch (_e) {
       // Best-effort; don't block the close.
     }
     setUnipileWaiting(false);
@@ -272,32 +221,49 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
           </button>
         </div>
 
-        {/* Mode toggle (only on new / non-locked rows) */}
-        {!editing && (
-          <div className="mb-5 inline-flex w-full rounded-lg border border-slate-200 bg-slate-50 p-1">
-            <button
-              type="button"
-              onClick={() => setMode('unipile')}
-              className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                mode === 'unipile' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Hosted (Unipile)
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('diy')}
-              className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                mode === 'diy' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Local (legacy)
-            </button>
+        {editing ? (
+          <div className="space-y-4">
+            <div className="text-sm text-slate-600">
+              <div className="font-medium text-slate-900">{account.label}</div>
+              <div className="font-mono text-xs">{account.linkedin_email}</div>
+              <div className="mt-1 text-xs">
+                Status: <span className="font-medium">{account.status}</span>
+              </div>
+            </div>
+            {challenged && (
+              <div className="p-3 rounded-lg bg-yellow-50 border border-yellow-200 text-sm text-yellow-900 space-y-2">
+                <div className="font-medium">LinkedIn requires verification.</div>
+                <p className="text-xs text-yellow-800">
+                  Complete any verification Unipile prompts you for in its
+                  hosted browser, then click below to clear the challenge state
+                  on our side.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleResolveChallenge}
+                  disabled={resolvingChallenge}
+                  className="px-3 py-1.5 text-xs bg-yellow-100 hover:bg-yellow-200 text-yellow-900 border border-yellow-300 rounded-md disabled:opacity-50"
+                >
+                  {resolvingChallenge ? 'Clearing…' : 'Clear challenge state'}
+                </button>
+              </div>
+            )}
+            {error && (
+              <div data-testid="modal-error" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
+                {error}
+              </div>
+            )}
+            <div className="flex justify-end pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
-        )}
-
-        {/* ---- Unipile flow ---- */}
-        {mode === 'unipile' && (
+        ) : (
           <div className="space-y-4">
             {!unipileWaiting && (
               <>
@@ -318,6 +284,55 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
                   />
                 </div>
+
+                {/* Import existing Unipile accounts ----------------------- */}
+                {discoverable.length > 0 && (
+                  <div className="border border-slate-200 rounded-lg overflow-hidden" data-testid="unipile-import-section">
+                    <button
+                      type="button"
+                      onClick={() => setShowImport((v) => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 hover:bg-slate-100 text-sm font-medium text-slate-700 border-b border-slate-200"
+                    >
+                      <span>
+                        Already connected in Unipile?{' '}
+                        <span className="text-slate-500 font-normal">
+                          ({discoverable.length} unbound account{discoverable.length === 1 ? '' : 's'} found)
+                        </span>
+                      </span>
+                      <span className="text-xs">{showImport ? '▲' : '▼'}</span>
+                    </button>
+                    {showImport && (
+                      <ul className="divide-y divide-slate-100">
+                        {discoverable.map((d) => (
+                          <li key={d.unipile_account_id} className="flex items-center justify-between px-3 py-2">
+                            <div className="text-sm">
+                              <div className="font-medium text-slate-900">{d.name || d.public_identifier || d.unipile_account_id}</div>
+                              <div className="text-[11px] text-slate-500 font-mono">
+                                {d.public_identifier || d.unipile_account_id}
+                                {d.status ? ` · ${d.status}` : ''}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleImport(d)}
+                              disabled={importing != null}
+                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {importing === d.unipile_account_id ? 'Importing…' : 'Import'}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {showImport && (
+                      <div className="px-3 py-2 bg-slate-50 text-[11px] text-slate-500 border-t border-slate-200">
+                        Tip: the label field above is applied to the imported row.
+                        Leave blank to use the LinkedIn display name.
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
                   <button
                     type="button"
@@ -379,170 +394,6 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                 {error}
               </div>
             )}
-          </div>
-        )}
-
-        {/* ---- DIY (legacy) flow ---- */}
-        {mode === 'diy' && (
-          <div className="space-y-4">
-            <div>
-              <label htmlFor="li-label" className="block text-sm font-medium text-slate-700 mb-1">Label</label>
-              <input
-                id="li-label"
-                value={form.label}
-                onChange={(e) => updateForm('label', e.target.value)}
-                placeholder="e.g. Anthony — main"
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="li-email" className="block text-sm font-medium text-slate-700 mb-1">LinkedIn login email</label>
-              <input
-                id="li-email"
-                value={form.linkedin_email}
-                onChange={(e) => updateForm('linkedin_email', e.target.value)}
-                placeholder="you@example.com"
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="li-password" className="block text-sm font-medium text-slate-700 mb-1">
-                Password{' '}
-                {editing && <span className="text-xs text-slate-400 font-normal">(leave blank to keep current)</span>}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="li-password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={form.password}
-                  onChange={(e) => updateForm('password', e.target.value)}
-                  className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium border border-slate-300 rounded-md transition-colors"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showPassword ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <p className="mt-1 text-xs text-slate-500">
-                Local automation uses the password to drive a headless browser.
-                LinkedIn's bot-detection routinely flags this path —{' '}
-                <strong className="text-amber-700">switch to "Hosted (Unipile)" above</strong>{' '}
-                unless you specifically need the local fallback.
-              </p>
-            </div>
-
-            <div>
-              <label htmlFor="li-proxy" className="block text-sm font-medium text-slate-700 mb-1">
-                Proxy URL{' '}
-                <span className="text-xs text-slate-400 font-normal">(optional)</span>
-              </label>
-              <input
-                id="li-proxy"
-                value={form.proxy_url}
-                onChange={(e) => updateForm('proxy_url', e.target.value)}
-                placeholder="http://user:pass@host:port"
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-mono"
-              />
-            </div>
-
-            <div className="border border-slate-200 rounded-lg overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setShowCookieSection((v) => !v)}
-                className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 hover:bg-slate-100 text-sm font-medium text-slate-700 transition-colors"
-              >
-                <span>Optional: seed with an existing session cookie</span>
-                <svg
-                  className={`w-4 h-4 text-slate-400 transition-transform ${showCookieSection ? 'rotate-180' : ''}`}
-                  fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              {showCookieSection && (
-                <div className="px-4 pb-4 pt-3 space-y-2">
-                  <label htmlFor="li-at" className="block text-sm font-medium text-slate-700">
-                    <code className="bg-slate-100 px-1 rounded text-xs">li_at</code> session cookie
-                  </label>
-                  <input
-                    id="li-at"
-                    value={form.li_at_cookie}
-                    onChange={(e) => updateForm('li_at_cookie', e.target.value)}
-                    placeholder="Paste your li_at cookie value here"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-mono"
-                  />
-                </div>
-              )}
-            </div>
-
-            {challenged && (
-              <div className="p-3 rounded-lg bg-yellow-50 border border-yellow-200 text-sm text-yellow-900 space-y-2">
-                <div className="font-medium">LinkedIn requires verification.</div>
-                <p className="text-xs text-yellow-800">
-                  Log into LinkedIn in your real browser, complete any
-                  verification it asks for, then either paste a fresh{' '}
-                  <code className="bg-yellow-100 px-1 rounded">li_at</code> cookie
-                  above or click below to clear the challenge state.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleResolveChallenge}
-                  disabled={resolvingChallenge}
-                  className="px-3 py-1.5 text-xs bg-yellow-100 hover:bg-yellow-200 text-yellow-900 border border-yellow-300 rounded-md disabled:opacity-50"
-                >
-                  {resolvingChallenge ? 'Clearing…' : 'Clear challenge state'}
-                </button>
-              </div>
-            )}
-
-            {testResult && !challenged && (
-              <div
-                data-testid="li-test-result"
-                className={`p-3 rounded-lg text-sm ${testResult.ok ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-red-50 border border-red-200 text-red-800'}`}
-              >
-                {testResult.ok
-                  ? 'Connection OK — session saved.'
-                  : `Connection failed: ${testResult.error || 'unknown error'}`}
-              </div>
-            )}
-
-            {error && (
-              <div data-testid="modal-error" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
-                {error}
-              </div>
-            )}
-
-            <div className="flex gap-2 justify-end pt-4 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={handleDiyTest}
-                disabled={testing || !editing}
-                className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {testing ? 'Testing…' : 'Test connection'}
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleDiySave}
-                disabled={saving}
-                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
           </div>
         )}
       </div>

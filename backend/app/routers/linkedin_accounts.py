@@ -14,16 +14,15 @@ from app.models import LinkedInAccount, LinkedInAccountStatus
 from app.schemas.linkedin_account import (
     ConnectViaUnipileRequest,
     ConnectViaUnipileResponse,
-    LinkedInAccountCreate,
+    DiscoverableUnipileAccount,
+    ImportFromUnipileRequest,
     LinkedInAccountResponse,
     LinkedInAccountUpdate,
     LinkedInTestResponse,
     ResolveChallengeRequest,
 )
-from app.services import encryption
 from app.services.linkedin import get_provider
 from app.services.linkedin.base import ChallengeRequired, AccountRestricted
-from app.services.linkedin.playwright_impl import clear_profile
 from app.services.linkedin.unipile_impl import UnipileError, UnipileLinkedInProvider
 
 logger = logging.getLogger(__name__)
@@ -31,55 +30,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/linkedin-accounts", tags=["linkedin-accounts"])
 
 
-def _li_at_to_cookie_blob(li_at: str) -> str:
-    """Wrap a bare li_at token into the JSON format used by session_cookies_encrypted."""
-    import json
-    return json.dumps([
-        {"name": "li_at", "value": li_at, "domain": ".linkedin.com", "path": "/"},
-    ])
-
-
 async def _get_or_404(db: AsyncSession, account_id: uuid.UUID) -> LinkedInAccount:
     acc = await db.get(LinkedInAccount, account_id)
     if acc is None:
         raise HTTPException(status_code=404, detail="LinkedIn account not found")
-    return acc
-
-
-@router.post(
-    "/", response_model=LinkedInAccountResponse, status_code=status.HTTP_201_CREATED,
-)
-async def create_account(
-    payload: LinkedInAccountCreate, db: AsyncSession = Depends(get_db)
-) -> LinkedInAccount:
-    """Create a DIY (Playwright / linkedin-api) LinkedIn account row.
-
-    The new Unipile flow uses POST /connect-via-unipile instead; this
-    endpoint is the legacy create path that requires email + password.
-    Kept for backward compat and dev/test workflows.
-    """
-    if not payload.linkedin_email or not payload.password:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "DIY accounts require linkedin_email + password. "
-                "For Unipile-managed accounts, use POST /linkedin-accounts/connect-via-unipile."
-            ),
-        )
-    acc = LinkedInAccount(
-        label=payload.label,
-        linkedin_email=payload.linkedin_email,
-        password_encrypted=encryption.encrypt(payload.password),
-        proxy_url=payload.proxy_url or None,
-        provider_kind="diy",
-    )
-    if payload.li_at_cookie and payload.li_at_cookie.strip():
-        acc.session_cookies_encrypted = encryption.encrypt(
-            _li_at_to_cookie_blob(payload.li_at_cookie.strip())
-        )
-    db.add(acc)
-    await db.commit()
-    await db.refresh(acc)
     return acc
 
 
@@ -93,11 +47,11 @@ async def connect_via_unipile(
 ) -> ConnectViaUnipileResponse:
     """Begin a Unipile hosted-auth flow.
 
-    Creates a placeholder ``LinkedInAccount`` row with ``provider_kind='unipile'``
-    and asks Unipile for a hosted login URL.  The frontend opens that URL
-    in a new tab; Unipile drives the LinkedIn login; on success Unipile
-    fires the ``account.connected`` webhook with this account's local id
-    encoded in the ``name`` field so our webhook handler can correlate.
+    Creates a placeholder ``LinkedInAccount`` row and asks Unipile for a
+    hosted login URL.  The frontend opens that URL in a new tab; Unipile
+    drives the LinkedIn login; on success Unipile fires the
+    ``account.connected`` webhook with this account's local id encoded in
+    the ``name`` field so our webhook handler can correlate.
 
     The placeholder row carries no ``linkedin_email`` until Unipile reports
     back — we pull it from the webhook payload and persist it then.
@@ -111,7 +65,6 @@ async def connect_via_unipile(
     acc = LinkedInAccount(
         label=payload.label,
         linkedin_email="(pending Unipile auth)",
-        password_encrypted=None,
         provider_kind="unipile",
         status=LinkedInAccountStatus.UNTESTED,
     )
@@ -160,10 +113,6 @@ async def sync_unipile_status(
     we just refresh its status.
     """
     acc = await _get_or_404(db, account_id)
-    if acc.provider_kind != "unipile":
-        raise HTTPException(
-            status_code=422, detail="This account is not Unipile-managed.",
-        )
     if not acc.unipile_account_id:
         # Hosted flow hasn't completed yet — nothing to sync.  The frontend
         # should keep polling.
@@ -183,8 +132,23 @@ async def sync_unipile_status(
 
 
 def _apply_unipile_status(acc: LinkedInAccount, payload: dict) -> None:
-    """Translate a Unipile account-status dict onto our model fields."""
-    src = str(payload.get("status") or payload.get("connection_status") or "").upper()
+    """Translate a Unipile account-status dict onto our model fields.
+
+    Unipile's GET /accounts/{id} returns the per-data-stream status under
+    ``sources[].status`` rather than top-level — we fall back to the first
+    source's status when no rollup field is present.
+    """
+    src_raw = (
+        payload.get("status")
+        or payload.get("connection_status")
+        or next(
+            (s.get("status") for s in (payload.get("sources") or [])
+             if isinstance(s, dict) and s.get("status")),
+            None,
+        )
+        or ""
+    )
+    src = str(src_raw).upper()
     if src in {"OK", "CONNECTED", "ACTIVE"}:
         acc.status = LinkedInAccountStatus.OK
         acc.last_error = None
@@ -217,6 +181,123 @@ async def list_accounts(db: AsyncSession = Depends(get_db)) -> list[LinkedInAcco
     return list(rows)
 
 
+@router.get(
+    "/discoverable",
+    response_model=list[DiscoverableUnipileAccount],
+)
+async def list_discoverable_unipile_accounts(
+    db: AsyncSession = Depends(get_db),
+) -> list[DiscoverableUnipileAccount]:
+    """List LinkedIn accounts that exist in Unipile but aren't yet bound to
+    a local ``LinkedInAccount`` row.
+
+    Useful when the user connected LinkedIn via Unipile's dashboard
+    (instead of our portal's "Connect via Unipile" hosted flow). They
+    can then bind one of these via ``POST /import-from-unipile``.
+    """
+    if not settings.UNIPILE_API_KEY or not settings.UNIPILE_DSN:
+        raise HTTPException(
+            status_code=503,
+            detail="Unipile not configured — set UNIPILE_DSN + UNIPILE_API_KEY.",
+        )
+
+    # IDs already bound locally — we exclude these from the discoverable
+    # list so the UI never shows already-imported accounts.
+    bound_rows = (await db.execute(
+        select(LinkedInAccount.unipile_account_id)
+        .where(LinkedInAccount.unipile_account_id.is_not(None))
+    )).all()
+    bound_ids = {r[0] for r in bound_rows if r[0]}
+
+    provider = UnipileLinkedInProvider()
+    try:
+        accounts = await provider.list_accounts()
+    except UnipileError as exc:
+        raise HTTPException(status_code=502, detail=f"Unipile error: {exc}") from exc
+
+    out: list[DiscoverableUnipileAccount] = []
+    for a in accounts:
+        aid = a.get("id")
+        if not aid or aid in bound_ids:
+            continue
+        im = (a.get("connection_params") or {}).get("im") or {}
+        # Unipile exposes `sources[].status` per data-stream; the
+        # account-level rollup is usually the first source's status.
+        srcstatus: str | None = None
+        for s in (a.get("sources") or []):
+            if isinstance(s, dict) and s.get("status"):
+                srcstatus = s["status"]
+                break
+        out.append(DiscoverableUnipileAccount(
+            unipile_account_id=aid,
+            name=im.get("username") or a.get("name"),
+            linkedin_email=a.get("user_email") or a.get("linkedin_email"),
+            public_identifier=im.get("publicIdentifier"),
+            status=srcstatus,
+        ))
+    return out
+
+
+@router.post(
+    "/import-from-unipile",
+    response_model=LinkedInAccountResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_from_unipile(
+    payload: ImportFromUnipileRequest,
+    db: AsyncSession = Depends(get_db),
+) -> LinkedInAccount:
+    """Bind a Unipile-side LinkedIn account to a fresh local row.
+
+    Idempotency: if a row already exists with this ``unipile_account_id``
+    we return 409.  The DB-level unique index also defends against races.
+    """
+    if not settings.UNIPILE_API_KEY or not settings.UNIPILE_DSN:
+        raise HTTPException(
+            status_code=503,
+            detail="Unipile not configured — set UNIPILE_DSN + UNIPILE_API_KEY.",
+        )
+
+    existing = await db.scalar(
+        select(LinkedInAccount).where(
+            LinkedInAccount.unipile_account_id == payload.unipile_account_id
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This Unipile account is already bound to local row {existing.id}.",
+        )
+
+    provider = UnipileLinkedInProvider()
+    try:
+        status_payload = await provider.fetch_account_status(payload.unipile_account_id)
+    except UnipileError as exc:
+        raise HTTPException(status_code=502, detail=f"Unipile error: {exc}") from exc
+
+    # Pull a reasonable linkedin_email from Unipile's payload.
+    im = (status_payload.get("connection_params") or {}).get("im") or {}
+    linkedin_email = (
+        status_payload.get("user_email")
+        or status_payload.get("linkedin_email")
+        or im.get("username")
+        or "(unknown)"
+    )
+
+    acc = LinkedInAccount(
+        label=payload.label,
+        linkedin_email=linkedin_email,
+        provider_kind="unipile",
+        unipile_account_id=payload.unipile_account_id,
+        status=LinkedInAccountStatus.UNTESTED,
+    )
+    _apply_unipile_status(acc, status_payload)
+    db.add(acc)
+    await db.commit()
+    await db.refresh(acc)
+    return acc
+
+
 @router.get("/{account_id}", response_model=LinkedInAccountResponse)
 async def get_account(
     account_id: uuid.UUID, db: AsyncSession = Depends(get_db)
@@ -232,34 +313,10 @@ async def update_account(
 ) -> LinkedInAccount:
     acc = await _get_or_404(db, account_id)
     updates = payload.model_dump(exclude_unset=True)
-    li_at = updates.pop("li_at_cookie", None)
-    profile_needs_wipe = False
-    if li_at and li_at.strip():
-        acc.session_cookies_encrypted = encryption.encrypt(
-            _li_at_to_cookie_blob(li_at.strip())
-        )
-        acc.status = LinkedInAccountStatus.UNTESTED
-        acc.pending_challenge_url = None
-        acc.last_error = None
-        profile_needs_wipe = True
-    if "password" in updates and updates["password"]:
-        acc.password_encrypted = encryption.encrypt(updates.pop("password"))
-        if not li_at:
-            # Wipe cookies so the next test forces a fresh login with the
-            # new password — but only if we didn't just set them via li_at.
-            acc.session_cookies_encrypted = None
-        acc.status = LinkedInAccountStatus.UNTESTED
-        profile_needs_wipe = True
-    else:
-        updates.pop("password", None)
     for k, v in updates.items():
         setattr(acc, k, v)
     await db.commit()
     await db.refresh(acc)
-    # Drop the persistent Chrome profile if cookies/password changed — next
-    # _run() reseeds from the encrypted blob the user just pasted.
-    if profile_needs_wipe:
-        clear_profile(acc.id)
     return acc
 
 
@@ -272,19 +329,13 @@ async def delete_account(
     acc = await _get_or_404(db, account_id)
     # campaigns.linkedin_account_id is ON DELETE SET NULL at DB level, so
     # campaigns pointing at this account just lose the reference.
-    aid = acc.id
     unipile_id = acc.unipile_account_id
-    provider_kind = acc.provider_kind
     await db.delete(acc)
     await db.commit()
-    # Clean up the persistent Chrome profile dir for this account so we
-    # don't accumulate orphaned profiles on disk.  (No-op for Unipile rows
-    # — they never created one.)
-    clear_profile(aid)
-    # Also free the Unipile-side resource so we don't leak a dangling
-    # session there.  Best-effort: a failure here is logged but does not
-    # block the local delete.
-    if provider_kind == "unipile" and unipile_id:
+    # Free the Unipile-side resource so we don't leak a dangling session
+    # there.  Best-effort: a failure here is logged but does not block the
+    # local delete.
+    if unipile_id:
         try:
             await UnipileLinkedInProvider().delete_account(unipile_id)
         except Exception as exc:  # noqa: BLE001
@@ -298,9 +349,7 @@ async def delete_account(
 async def test_account(
     account_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ) -> LinkedInTestResponse:
-    """Try to authenticate against LinkedIn. Persists fresh cookies on
-    success; persists challenge_url + flips status on failure.
-    """
+    """Verify the account is healthy on Unipile's side."""
     acc = await _get_or_404(db, account_id)
     provider = get_provider()
     acc.last_tested_at = datetime.now(timezone.utc)
@@ -362,11 +411,6 @@ async def resolve_challenge(
     acc.pending_challenge_url = None
     acc.status = LinkedInAccountStatus.UNTESTED
     acc.last_error = None
-    # Clear stale cookies so re-test does a fresh password login from a clean
-    # state — required because the old cookies triggered the challenge and are
-    # now invalid. The fresh password login will succeed once the user has
-    # completed any verification in their own browser.
-    acc.session_cookies_encrypted = None
     await db.commit()
     await db.refresh(acc)
     return acc

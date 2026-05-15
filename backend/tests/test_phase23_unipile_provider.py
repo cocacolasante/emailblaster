@@ -125,13 +125,35 @@ async def test_checkpoint_error_maps_to_challenge_required():
 
 @pytest.mark.asyncio
 async def test_restricted_error_maps_to_account_restricted():
+    """Only the LinkedIn-account-state error codes raise AccountRestricted.
+    A generic ``errors/restricted`` does not — earlier impls grepped the
+    body for "restricted" anywhere and false-positived on
+    ``errors/resource_access_restricted`` (a Unipile plan error)."""
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(
             403,
-            json={"type": "errors/restricted", "title": "account banned"},
+            json={"type": "errors/account_restricted", "title": "account banned"},
         )
     prov = _provider_with(handler)
     with pytest.raises(AccountRestricted):
+        await prov.fetch_account_status("up-1")
+
+
+@pytest.mark.asyncio
+async def test_resource_access_restricted_does_not_map_to_account_restricted():
+    """Unipile's plan-permission error must surface as a plain UnipileError
+    so callers don't flip a healthy account to RESTRICTED."""
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "type": "errors/resource_access_restricted",
+                "title": "Resource access restricted",
+                "detail": "You don't have access to this resource.",
+            },
+        )
+    prov = _provider_with(handler)
+    with pytest.raises(UnipileError):
         await prov.fetch_account_status("up-1")
 
 
@@ -281,10 +303,18 @@ async def test_follow_profile_posts_to_follow_endpoint():
         seen.append(req)
         return httpx.Response(200, json={"followed": True})
     prov = _provider_with(handler)
-    res = await prov.follow_profile(_FakeAccount(), ProfileRef(public_id="j"))
+    res = await prov.follow_profile(
+        _FakeAccount(), ProfileRef(public_id="j", urn="urn:li:fsd_profile:J"),
+    )
     assert res.ok is True
     assert seen[0].method == "POST"
-    assert "/api/v1/users/j/follow" in str(seen[0].url)
+    assert "/api/v1/linkedin" in str(seen[0].url)
+    body = json.loads(seen[0].content)
+    assert body["account_id"] == "up-acct-XYZ"
+    assert body["method"] == "POST"
+    assert "followingStates/urn:li:fsd_followingState:urn:li:fsd_profile:J" in body["request_url"]
+    assert body["body"] == {"patch": {"$set": {"following": True}}}
+    assert body["encoding"] is False
 
 
 @pytest.mark.asyncio
@@ -292,12 +322,17 @@ async def test_react_to_post_sends_reaction_type():
     seen: list[httpx.Request] = []
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(req)
-        return httpx.Response(200, json={"reacted": True})
+        return httpx.Response(201, json={"object": "ReactionAdded"})
     prov = _provider_with(handler)
     res = await prov.react_to_post(_FakeAccount(), "urn:li:share:1", reaction="celebrate")
     assert res.ok is True
+    assert str(seen[0].url).endswith("/api/v1/posts/reaction")
     body = json.loads(seen[0].content)
-    assert body == {"type": "CELEBRATE"}
+    assert body == {
+        "account_id": "up-acct-XYZ",
+        "post_id": "urn:li:share:1",
+        "type": "CELEBRATE",
+    }
 
 
 @pytest.mark.asyncio
@@ -305,7 +340,9 @@ async def test_latest_post_urn_returns_first_item():
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"items": [{"urn": "urn:li:share:111"}, {"urn": "urn:li:share:222"}]})
     prov = _provider_with(handler)
-    urn = await prov.latest_post_urn(_FakeAccount(), ProfileRef(public_id="x"))
+    urn = await prov.latest_post_urn(
+        _FakeAccount(), ProfileRef(public_id="x", urn="urn:li:fsd_profile:X"),
+    )
     assert urn == "urn:li:share:111"
 
 
@@ -314,8 +351,30 @@ async def test_latest_post_urn_returns_none_on_error():
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"detail": "broken"})
     prov = _provider_with(handler)
-    urn = await prov.latest_post_urn(_FakeAccount(), ProfileRef(public_id="x"))
+    urn = await prov.latest_post_urn(
+        _FakeAccount(), ProfileRef(public_id="x", urn="urn:li:fsd_profile:X"),
+    )
     assert urn is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_id_fetches_via_users_endpoint():
+    """When only a public_id is set, the resolver makes a GET /users/{slug}
+    to translate it into the canonical provider_id, then caches the result
+    on the ProfileRef so the next call doesn't re-fetch."""
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(200, json={"provider_id": "ACoAA-token", "object": "User"})
+
+    prov = _provider_with(handler)
+    profile = ProfileRef(public_id="slug-only")
+    out = await prov._resolve_provider_id("up-acct-XYZ", profile)
+    assert out == "ACoAA-token"
+    assert "/api/v1/users/slug-only" in str(seen[0].url)
+    # Subsequent calls reuse the cached urn.
+    assert profile.urn == "ACoAA-token"
 
 
 # --------------------------------------------------------------------------
@@ -331,10 +390,12 @@ async def test_send_connect_uses_invite_endpoint_with_message_trim():
         return httpx.Response(200, json={"invitation_id": "INV-1"})
     prov = _provider_with(handler)
     note = "x" * 250  # over 200-char floor
-    res = await prov.send_connect_request(_FakeAccount(), ProfileRef(public_id="j"), note=note)
+    res = await prov.send_connect_request(
+        _FakeAccount(), ProfileRef(public_id="j", urn="urn:li:fsd_profile:J"), note=note,
+    )
     assert res.ok is True
     body = json.loads(seen[0].content)
-    assert body["provider_id"] == "j"
+    assert body["provider_id"] == "urn:li:fsd_profile:J"
     assert body["account_id"] == "up-acct-XYZ"
     assert len(body["message"]) == 200
 
@@ -346,7 +407,9 @@ async def test_send_connect_omits_message_when_none():
         seen.append(req)
         return httpx.Response(200, json={})
     prov = _provider_with(handler)
-    await prov.send_connect_request(_FakeAccount(), ProfileRef(public_id="j"), note=None)
+    await prov.send_connect_request(
+        _FakeAccount(), ProfileRef(public_id="j", urn="urn:li:fsd_profile:J"), note=None,
+    )
     body = json.loads(seen[0].content)
     assert "message" not in body
 
@@ -358,30 +421,53 @@ async def test_send_dm_starts_chat_with_text():
         seen.append(req)
         return httpx.Response(200, json={"chat_id": "C-1", "message_id": "M-1"})
     prov = _provider_with(handler)
-    res = await prov.send_dm(_FakeAccount(), ProfileRef(public_id="j"), text="hi there")
+    res = await prov.send_dm(
+        _FakeAccount(), ProfileRef(public_id="j", urn="urn:li:fsd_profile:J"), text="hi there",
+    )
     assert res.ok is True
     body = json.loads(seen[0].content)
-    assert body == {"account_id": "up-acct-XYZ", "attendees_ids": ["j"], "text": "hi there"}
+    assert body == {
+        "account_id": "up-acct-XYZ",
+        "attendees_ids": ["urn:li:fsd_profile:J"],
+        "text": "hi there",
+    }
     assert res.external_id == "M-1"
 
 
 @pytest.mark.asyncio
-async def test_invite_to_page_posts_to_company_endpoint():
+async def test_invite_to_page_returns_unipile_passthrough_blocked():
+    """invite_to_page is a stub that returns a clean error.  We have the
+    HAR-verified Voyager shape but Unipile's /api/v1/linkedin passthrough
+    rejects ``voyagerRelationshipsDashInvitations`` with
+    ``errors/malformed_request`` regardless of payload shape (probed
+    extensively — the same passthrough call for ``feed/dash/followingStates``
+    works, so it's a Unipile whitelist issue).  The impl no-ops on the
+    network until that's resolved, so callers see a clear reason without
+    burning calls."""
     seen: list[httpx.Request] = []
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(req)
         return httpx.Response(200, json={})
     prov = _provider_with(handler)
-    res = await prov.invite_to_page(_FakeAccount(), ProfileRef(public_id="j"), page_id="9876")
-    assert res.ok is True
-    assert "/api/v1/companies/9876/invite" in str(seen[0].url)
-    body = json.loads(seen[0].content)
-    assert body == {"provider_id": "j"}
+    res = await prov.invite_to_page(
+        _FakeAccount(),
+        ProfileRef(public_id="j", urn="urn:li:fsd_profile:J"),
+        page_id="9876",
+    )
+    assert res.ok is False
+    assert (res.meta or {}).get("code") == "unipile_passthrough_blocked"
+    assert (res.meta or {}).get("page_id") == "9876"
+    # No network call fired — the stub short-circuits.
+    assert seen == []
 
 
 @pytest.mark.asyncio
 async def test_send_inmail_signals_premium_required_when_unipile_says_so():
+    """The resolver hop returns a provider_id; the POST /chats that follows
+    returns 402, and we map that to premium_required."""
     def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET" and "/api/v1/users/" in str(req.url):
+            return httpx.Response(200, json={"provider_id": "ACoAA-classic"})
         return httpx.Response(
             402,
             json={"type": "errors/premium_required", "title": "no inmail credits"},
@@ -390,6 +476,40 @@ async def test_send_inmail_signals_premium_required_when_unipile_says_so():
     res = await prov.send_inmail(_FakeAccount(), ProfileRef(public_id="j"), subject="hi", body="msg")
     assert res.ok is False
     assert (res.meta or {}).get("premium_required") is True
+
+
+@pytest.mark.asyncio
+async def test_send_inmail_uses_form_encoded_sales_navigator_body():
+    """Happy path: form-encoded body with bracket-notation linkedin[*] keys.
+    Unipile translates the classic provider_id to its Sales Nav variant
+    internally when ``linkedin[api]=sales_navigator`` is set."""
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.method == "GET" and "/api/v1/users/" in str(req.url):
+            return httpx.Response(200, json={"provider_id": "ACoAA-classic"})
+        return httpx.Response(201, json={"object": "ChatStarted", "chat_id": "C-9"})
+
+    prov = _provider_with(handler)
+    res = await prov.send_inmail(
+        _FakeAccount(),
+        ProfileRef(public_id="j"),
+        subject="Quick question",
+        body="Hello, this is an InMail.",
+    )
+    assert res.ok is True
+    post_req = next(r for r in seen if r.method == "POST")
+    assert str(post_req.url).endswith("/api/v1/chats")
+    assert post_req.headers["content-type"].startswith("application/x-www-form-urlencoded")
+    from urllib.parse import parse_qsl
+    pairs = parse_qsl(post_req.content.decode(), keep_blank_values=True)
+    assert ("account_id", "up-acct-XYZ") in pairs
+    assert ("attendees_ids", "ACoAA-classic") in pairs
+    assert ("subject", "Quick question") in pairs
+    assert ("text", "Hello, this is an InMail.") in pairs
+    assert ("linkedin[api]", "sales_navigator") in pairs
+    assert ("linkedin[inmail]", "true") in pairs
 
 
 @pytest.mark.asyncio
@@ -402,7 +522,9 @@ async def test_comment_on_post_posts_to_comments_endpoint():
     res = await prov.comment_on_post(_FakeAccount(), "urn:li:share:1", "nice post")
     assert res.ok is True
     body = json.loads(seen[0].content)
-    assert body == {"text": "nice post"}
+    assert body == {"account_id": "up-acct-XYZ", "text": "nice post"}
+    # account_id no longer in the query string.
+    assert "account_id" not in str(seen[0].url)
 
 
 # --------------------------------------------------------------------------

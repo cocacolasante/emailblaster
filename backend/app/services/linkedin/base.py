@@ -1,7 +1,7 @@
 """LinkedIn provider abstract base + shared types.
 
-Concrete implementations (DIY linkedin-api, hosted Unipile, etc.) inherit
-from ``LinkedInProvider``. Workers + routers depend only on this module —
+Concrete implementations (currently just Unipile) inherit from
+``LinkedInProvider``. Workers + routers depend only on this module —
 no concrete-impl imports leak above this layer.
 """
 from __future__ import annotations
@@ -41,19 +41,6 @@ class AccountRestricted(LinkedInProviderError):
     """
 
 
-class AccountLockBusy(LinkedInProviderError):
-    """Couldn't acquire the per-account serialization lock within the timeout.
-
-    Concurrent playwright browser launches against the same LinkedIn account
-    look like two different sessions reusing the same ``li_at`` and trip
-    LinkedIn's bot-detection. We hold a Redis lock around every browser run
-    so only one is in flight per account at a time; this exception is raised
-    when the wait exceeds ``_AccountLock.ACQUIRE_TIMEOUT_SECONDS``. Callers
-    should treat it as a transient skip (retry later), not a permanent
-    failure.
-    """
-
-
 # --------------------------------------------------------------------------
 # Shared dataclasses
 # --------------------------------------------------------------------------
@@ -64,9 +51,9 @@ class ProfileRef:
     """How we refer to a LinkedIn profile.
 
     ``public_id`` is the slug at the end of a profile URL
-    (https://www.linkedin.com/in/<public_id>/). It's what linkedin-api
-    needs for most calls. ``urn`` is the canonical urn:li:fsd_profile:
-    identifier — required for reactions, messaging, etc.
+    (https://www.linkedin.com/in/<public_id>/). ``urn`` is the canonical
+    urn:li:fsd_profile: identifier — required for reactions, messaging,
+    etc.
 
     A ProfileRef may have one or both; callers should fill in what they
     can and ``provider.resolve(...)`` fills in the rest.

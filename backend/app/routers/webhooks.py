@@ -210,24 +210,24 @@ async def unsubscribe(
 # missing/invalid signature → 401 (no work done).
 
 
-def _verify_unipile_signature(raw_body: bytes, header_value: str | None) -> bool:
-    if not settings.UNIPILE_WEBHOOK_SECRET:
+def _verify_unipile_auth(header_value: str | None) -> bool:
+    """Compare the inbound auth header against the configured shared secret.
+
+    Unipile doesn't HMAC-sign request bodies — when creating a webhook
+    you specify a custom header + value (e.g. ``X-Unipile-Auth: <secret>``),
+    Unipile echoes that exact header back on every delivery, and we
+    constant-time compare the value here.  See the Unipile docs section
+    "Authentication" on the Webhooks page.
+    """
+    expected = settings.UNIPILE_WEBHOOK_SECRET
+    if not expected:
         # No secret configured → refuse everything to avoid running on
-        # forged payloads in production.  In dev you can leave the secret
-        # empty AND skip hitting this endpoint at all.
+        # forged payloads.  Set UNIPILE_WEBHOOK_SECRET in .env and add the
+        # same value to each Unipile webhook's headers list.
         return False
     if not header_value:
         return False
-    # Some Unipile flavours emit "sha256=<hex>"; others bare hex.  Handle both.
-    expected = hmac.new(
-        settings.UNIPILE_WEBHOOK_SECRET.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    given = header_value.strip()
-    if given.lower().startswith("sha256="):
-        given = given.split("=", 1)[1].strip()
-    return hmac.compare_digest(expected.lower(), given.lower())
+    return hmac.compare_digest(header_value.strip(), expected)
 
 
 async def _handle_account_connected(
@@ -418,18 +418,23 @@ async def unipile_webhook(
 ) -> dict[str, Any]:
     """Receive Unipile push events.
 
-    Signature: we verify HMAC-SHA256 of the raw body with
-    ``settings.UNIPILE_WEBHOOK_SECRET``.  A missing or invalid signature
-    returns 401 without touching the DB.
+    Auth: Unipile uses a static shared-secret-in-a-header pattern — when
+    creating the webhook you add a custom header (default
+    ``X-Unipile-Auth``) and Unipile echoes it on every delivery.  We
+    constant-time compare against ``settings.UNIPILE_WEBHOOK_SECRET``.
+    Missing or wrong value → 401, no DB writes.
 
     Idempotency: every event Unipile sends has an ``id``; if we've seen it
     before we no-op.  (We don't currently persist seen ids; if duplicate
     delivery becomes a real issue add a ``webhook_events`` table.)
     """
     raw = await request.body()
-    sig = request.headers.get("x-unipile-signature") or request.headers.get("unipile-signature")
-    if not _verify_unipile_signature(raw, sig):
-        raise HTTPException(status_code=401, detail="invalid signature")
+    # Header name is configurable so it can match whatever the user
+    # configured in Unipile's webhook dashboard.  Starlette lowercases
+    # header keys; we look up case-insensitively via .get().
+    auth_value = request.headers.get(settings.UNIPILE_WEBHOOK_AUTH_HEADER.lower())
+    if not _verify_unipile_auth(auth_value):
+        raise HTTPException(status_code=401, detail="invalid auth header")
     try:
         payload = json.loads(raw)
     except Exception as exc:

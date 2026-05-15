@@ -15,10 +15,6 @@ anthropic==0.42.0
 cryptography==44.0.0
 python-dateutil==2.9.0.post0
 pytz==2024.2
-linkedin-api==2.3.1
-playwright==1.49.0
-playwright-stealth==1.0.6
-setuptools==69.5.1  # playwright-stealth uses pkg_resources; setuptools>=72 breaks it
 
 # Testing
 pytest==8.3.4

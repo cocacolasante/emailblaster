@@ -10,7 +10,10 @@
       "Bash(curl -i -s -H \"Origin: http://localhost:5173\" http://localhost:8000/campaigns/)",
       "Bash(grep -vE \"broker_connection_retry|CPendingDeprecationWarning|warnings.warn|^worker-1  \\\\| $|^beat-1  \\\\| $|^backend-1  \\\\| $\")",
       "Bash(docker builder *)",
-      "WebFetch(domain:developer.unipile.com)"
+      "WebFetch(domain:developer.unipile.com)",
+      "WebFetch(domain:support.linkedhelper.com)",
+      "WebSearch",
+      "WebFetch(domain:linkedin.api-docs.io)"
     ]
   }
 }

@@ -22,108 +22,125 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Stop HTTP poller from invalidating the li_at.**
-  - **Default provider switched from `hybrid` → `playwright`.** Confirmed
-    via logs (2026-05-13 19:17–19:19) that the hybrid HTTP poller hits
-    LinkedIn from the Docker host's datacenter IP every 5 min with the
-    user's home-IP-bound `li_at`. LinkedIn flags the cookie globally,
-    so the next Playwright action fails with "session expired" and the
-    user has to re-paste. Playwright-only sends everything through the
-    browser session so the cookie stays valid.
-  - **`_ensure_authenticated` no longer falls back to password login**
-    when stored cookies fail to authenticate. Headless password login
-    almost always trips LinkedIn's bot-detection challenge. Now raises
-    `ChallengeRequired` immediately when cookies are stored but invalid;
-    password login only runs on true first-time setup (no stored cookies).
-  - **`_run` now keeps the full Playwright `storage_state`** (minus
-    `JSESSIONID` only) across sessions. Previously stripped everything
-    except `li_at`, which meant LinkedIn saw a "new browser" every run
-    (no `bcookie`/`bscookie` continuity) and trip-redirected.
-  - **`_run` auto-clears `pending_challenge_url` and resets status**
-    from `CHALLENGED|FAILED|UNTESTED → OK` on a successful action.
-  - **`_ensure_authenticated` navigates to root → feed** in two hops
-    rather than straight to `/feed/` — lets LinkedIn issue a fresh
-    `JSESSIONID` + `bcookie` before we ask for protected content.
-  - Three provider impls remain behind `LinkedInProvider` ABC:
-    - `"playwright"` **(default)** — all actions via headless Chromium.
-      Safe without a residential proxy.
-    - `"hybrid"` — Playwright writes + HTTP reads. **Only safe with
-      `LINKEDIN_PROXY_URL` set;** otherwise the poller poisons the cookie.
-    - `"http"` — legacy `linkedin-api` HTTP (testing/fallback only).
-  Tests: **backend 365 passed**.
+- **Last completed:** **Validated every Unipile endpoint live + fixed 7 endpoint-shape bugs.**
+  Ran the full action suite against a real Unipile account
+  (`Anthony Colasante`, Sales Nav premium, unipile_id
+  `eU5rAYqAQo-6yDRdjgNAiw`) targeting the throwaway profile
+  `ant-cola-a5898840a` + the public Bill Gates profile.  Working live:
+  `test_connection`, `view_profile`, `latest_post_urn`,
+  `inbox_recent_events`, `follow_profile`, `send_connect_request`,
+  `react_to_post`, `comment_on_post`.  `send_dm` correctly returns
+  `no_connection_with_recipient` against a non-1st-degree target.
+  - **Bug fixes in `unipile_impl.py`:** (1) `inbox_recent_events` was
+    sending `isoformat()` with microseconds + `+00:00`; Unipile requires
+    strict `YYYY-MM-DDTHH:MM:SS.sssZ`. (2) New `_resolve_provider_id`
+    helper — most endpoints (`/users/invite`, `/users/{id}/posts`,
+    `/chats`) reject LinkedIn public slugs with
+    `errors/invalid_recipient`; they need the canonical `ACoAAA...`
+    member token via `GET /users/{slug}` first. The resolver caches
+    the result on the ProfileRef. (3) `follow_profile` rewritten to
+    use Unipile's raw Voyager passthrough at `POST /api/v1/linkedin`
+    with a `followingStates` patch — Unipile doesn't package follow.
+    (4) `react_to_post` moved from `POST /posts/{urn}/reactions`
+    (404) to `POST /api/v1/posts/reaction` body-based with
+    `{account_id, post_id, type}`. (5) `comment_on_post` needed
+    `account_id` in the body, not the query. (6) `send_inmail`
+    rewritten to use form-encoded body with bracket-notation
+    `linkedin[api]=sales_navigator` + `linkedin[inmail]=true`; live
+    test returns Unipile 403 `errors/resource_access_restricted`
+    (Sales Nav API access not enabled on the Unipile workspace, not a
+    code bug — endpoint shape is correct). (7) `_raise_for_special_codes`
+    tightened: was grepping error bodies for "restricted" and
+    false-positively raising `AccountRestricted` on
+    `errors/resource_access_restricted` (a Unipile plan error). Now
+    matches only specific LinkedIn-account-state codes.
+  - **`_request` extended** to support form-encoded bodies via `data=`
+    (pre-encoded as bytes through `content=` so httpx ships an
+    AsyncByteStream).
+  - **`invite_to_page` is blocked on Unipile's passthrough whitelist.**
+    HAR-captured the exact LinkedIn Voyager request that powers their
+    admin-UI "Invite connections to follow" action:
+    `POST /voyager/api/voyagerRelationshipsDashInvitations?inviter=(organizationUrn:urn:li:fsd_company:<PAGE_ID>)`
+    with `x-restli-method: batch_create` + body
+    `{"elements":[{"inviteeMember":"urn:li:fsd_profile:<MEMBER>","genericInvitationType":"ORGANIZATION"}]}`.
+    Tried routing via Unipile's raw passthrough at `POST /api/v1/linkedin`
+    in every documented shape (inlined query string, separate
+    `query_params` field per Unipile's "Raw Data" docs, `encoding=true/false`,
+    `headers` dict, with/without `x-restli-method`, URL-encoded vs raw
+    URN colons) — every variant returns Unipile's
+    `errors/malformed_request` from their forwarder, BEFORE the request
+    reaches LinkedIn (a plain GET to `identity/profiles/me` via the
+    passthrough fails the same way).  `follow_profile` works through the
+    same passthrough only because `feed/dash/followingStates` happens to
+    be on Unipile's allowlist.  The impl now returns a clean
+    `unipile_passthrough_blocked` ActionResult and
+    `LINKEDIN_INVITE_TO_PAGE` is gated out of `PUBLISHABLE_KINDS_M1`.
+    Next step: open a Unipile support ticket asking them to allowlist
+    `voyagerRelationshipsDashInvitations`, then restore the impl + gate
+    from git history (it lives in commits prior to the gating revert).
+  - Added a `_resolve_provider_id` unit test, a `resource_access_restricted`
+    error-mapping regression test, a form-encoded InMail body test, and
+    rewrote `test_publish_rejects_non_numeric_page_id` →
+    `test_publish_rejects_linkedin_invite_to_page` to assert the new gate.
+  - Ad-hoc smoke scripts at `backend/scripts/test_unipile_endpoints.py`
+    and `backend/scripts/test_unipile_post_actions.py` — handy for
+    re-validating against the live API.
+  Tests: **backend 405 passed**, **frontend 150 passed**.
 
-- **Previously:** **Hybrid LinkedIn provider + anti-detection hardening.**
-  - **Three provider impls**, all behind `LinkedInProvider` ABC, selectable
-    via `LINKEDIN_PROVIDER` env var:
-    - `"hybrid"` (was default — see above) — HTTP for reads, Playwright for writes.
-    - `"playwright"` — all actions via headless Chromium.
-    - `"http"` — legacy `linkedin-api` HTTP (kept for testing/fallback).
-  - **`hybrid_impl.py`** (`HybridLinkedInProvider`): all user-visible
-    actions go to Playwright (test_connection, view_profile, follow_profile,
-    react_to_post, all writes). Only `latest_post_urn` and
-    `inbox_recent_events` use HTTP — they fail silently (skip/[]), so a
-    server-IP JSESSIONID failure doesn't halt the sequence. Without
-    `LINKEDIN_PROXY_URL`, LinkedIn won't issue JSESSIONID to datacenter
-    IPs even with a valid li_at, so the HTTP bucket is intentionally small.
-  - **`playwright_impl.py`** (`PlaywrightLinkedInProvider`): real headless
-    Chromium + `playwright-stealth`. All Voyager API calls go through
-    `page.evaluate()` fetch() so they run from the browser's IP/session.
-    Adds 1.5–4s jitter after page load + 1–3s before each write action.
-  - **`linkedin_api_impl.py`** updated: `_build_client_sync` now detects
-    Playwright `storage_state` format (`{"cookies":[...],"origins":[...]}`)
-    and extracts `li_at` from it, so HTTP reads work seamlessly after a
-    Playwright write has stored the full browser session.
-  - **Session format round-trip**: Playwright writes → stores `storage_state`;
-    HTTP reads → extracts `li_at`, writes back `[{"name":"li_at",...}]`;
-    Playwright writes → re-bootstraps from `li_at`, stores `storage_state`.
-  - **Sequencer jitter**: `advance_sequences` dispatches LinkedIn steps
-    with `apply_async(countdown=random.uniform(2, 8))` — avoids burst
-    patterns when multiple leads fire simultaneously.
-  - `LINKEDIN_DAILY_CONNECT_CAP` bumped from 15 → 20 (safe ceiling for
-    established accounts; LinkedIn enforces ~100/week).
-  - `playwright==1.49.0` + `playwright-stealth==1.0.6` in
-    `requirements.txt`; Chromium baked into Docker image at
-    `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`.
-  Tests: **backend 365 passed**.
+- **Previously:** **Stripped the dead Playwright / DIY code paths.**
+  Unipile is the only LinkedIn provider now.  Deleted
+  `services/linkedin/playwright_impl.py`, `hybrid_impl.py`,
+  `linkedin_api_impl.py`; deleted `tests/test_phase21_voyager_error_parser.py`
+  and `tests/test_phase22_human_dwell.py`; dropped `_AccountLock` /
+  `AccountLockBusy` from `base.py` + the corresponding sequencer except
+  branch; deleted `LINKEDIN_PROVIDER`, `LINKEDIN_PROXY_URL`, and
+  `LINKEDIN_PROFILES_DIR` from `app/config.py`; dropped `playwright`,
+  `playwright-stealth`, and `linkedin-api` from `requirements.txt`;
+  removed the Chromium install + runtime libs from `backend/Dockerfile`
+  (saves ~170MB image bloat); deleted the legacy
+  `POST /linkedin-accounts/` create endpoint + the password/li_at
+  PATCH fields; collapsed `ConnectLinkedInModal` to Unipile-only (no
+  more "Local (legacy)" toggle); updated the `encryption.decrypt`
+  allowlist in `test_phase15_hardening.py` to `{imap_client.py,
+  encryption.py}` (the DIY consumer is gone).  The
+  `password_encrypted` / `session_cookies_encrypted` / `proxy_url`
+  columns on `LinkedInAccount` are kept nullable for legacy rows but
+  nothing in the code touches them.
+  Tests: **backend 402 passed**, **frontend 150 passed**.
 
-- **Previously:** **Activity tab — LinkedIn + sequence visibility +
-  halted-lead re-enrollment.**
-  - **Expanded `/activity` endpoint** now returns four extra scalar
-    counts (`sequence_active/halted/completed/pending`) plus three new
-    lists: `recent_sequence_steps` (last 30 `lead_step_executions`
-    rows joined with node kind), `halted_leads` (leads whose sequence
-    is halted, with halt reason), `upcoming_steps` (next 10 active
-    leads sorted by `next_run_at`).
-  - **New `POST /campaigns/{id}/re-enroll-halted`** resets all halted
-    `lead_sequence_states` back to the live entry node (`next_run_at =
-    now`). The sequencer auto-skips the already-sent email entry node
-    on its next beat tick. Returns `{"re_enrolled": N}`.
-  - **Activity tab** now shows: Sequence state counters (4 numbers),
-    Halted leads panel with "Re-enroll all" button, Recent sequence
-    steps table (step kind badge + result pill + error + when),
-    Upcoming scheduled steps table — plus the existing email pipeline
-    counters and feed, now relabelled "Email pipeline".
-  - **Fixed pre-existing test break**: `test_phase9_send_task.py`
-    patched the removed `_get_redis` symbol; updated to patch
-    `_new_redis` instead.
-  Tests: **backend 365 passed**, **frontend 153 passed** (1 pre-existing
-  failure in `ConnectLinkedInModal.test.jsx`, unrelated).
+- **Previously:** **Unipile hosted-API integration.**  Switched the
+  default provider to Unipile (real desktop Chrome on residential IPs),
+  added `UnipileLinkedInProvider`, hosted-auth flow endpoints
+  (`POST /linkedin-accounts/connect-via-unipile`, `/sync-unipile`,
+  `/discoverable`, `/import-from-unipile`), webhook handler at
+  `POST /webhooks/unipile` with static-custom-header auth, frontend
+  modal redesign, and 33 new provider tests
+  (`test_phase23_unipile_provider.py`).  See the **Unipile setup
+  runbook** below for fresh-dev-box wiring.
+
 - **In flight:** nothing.
-- **Next up:** Test the hybrid provider end-to-end:
-  1. Settings → LinkedIn Accounts → Test (Playwright does fresh browser login,
-     stores `storage_state`).
-  2. Run a campaign with a `linkedin_view_profile` step first — this uses
-     the HTTP provider with the `li_at` extracted from the stored state.
-  3. Run a `linkedin_connect` step — this uses the Playwright browser.
-  If sessions still expire, consider a `"playwright"` provider for reads
-  too, or increase `LINKEDIN_MIN_ACTION_DELAY_SECONDS` to space out actions.
-- **Next up:** open. Suggested directions:
+- **Next up:** open.  Suggested directions:
+  - **Open a Unipile support ticket** for two passthrough/permission
+    issues at once: (a) allowlist `voyagerRelationshipsDashInvitations`
+    on `/api/v1/linkedin` so `invite_to_page` can fire; (b) enable Sales
+    Navigator API access on the workspace so `send_inmail` (POST
+    `/api/v1/chats` with `linkedin[api]=sales_navigator`) stops returning
+    `errors/resource_access_restricted`.  Both impls are HAR / docs-
+    verified — neither is a code bug.
+  - **Unlock InMail in Unipile.** Live test returned 403
+    `errors/resource_access_restricted` — the impl is correct but the
+    Unipile workspace doesn't have Sales Nav API access enabled.
+    Either upgrade the Unipile plan or contact their support.
+  - **Webhook idempotency.** Unipile's "at-least-once" delivery means
+    we may double-process retries.  Add a `webhook_events` table keyed
+    on event_id when this becomes a real issue.
+  - **Drop legacy DB columns.**  `password_encrypted` /
+    `session_cookies_encrypted` / `proxy_url` on `linkedin_accounts`
+    are dead.  Schedule a migration to drop them once the legacy DIY
+    rows are gone from production.
   - **Cross-cutting cleanup** from `docs/roadmap.md#cross-cutting-tasks`
     (sequence templates, multi-tenant readiness, named node_modules
     volume).
-  - **Hybrid LinkedIn provider** — wire a hosted impl (Unipile etc.)
-    behind the existing `LinkedInProvider` ABC if customer-account ban
-    risk becomes a concern.
   - **Phase 2** — whatever you have in mind next.
 
 ## Stack
@@ -171,23 +188,24 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     cursors; dispatches email + LinkedIn channel handlers.
   - **5 sequence tables:** `sequences`, `sequence_nodes`,
     `sequence_edges`, `lead_sequence_states`, `lead_step_executions`.
-- **LinkedIn engine (M2):**
+- **LinkedIn engine:**
   - `app/services/linkedin/base.py` — `LinkedInProvider` ABC +
     `ProfileRef`, `ActionResult`, `InboundEvent`, `ChallengeRequired`,
     `AccountRestricted` types.
-  - `app/services/linkedin/linkedin_api_impl.py` — concrete impl
-    wrapping the `linkedin-api` PyPI package. **Only this module +
-    `imap_client.py` may call `encryption.decrypt(`** (hardening test
-    enforces). Decrypted password / cookies live in local scope only.
-    Sessions auto-refresh via stored Fernet-encrypted cookies; on
-    cookie expiry we re-login from the stored encrypted password.
-  - `LinkedInAccount` table: per-account password + cookies + proxy +
-    status (`untested|ok|failed|challenged|restricted`). Status flips
-    to `challenged` when LinkedIn demands a captcha/PIN — user resolves
-    in their own browser, posts `/resolve-challenge`, then re-tests.
+  - `app/services/linkedin/unipile_impl.py` — the only concrete impl.
+    Async httpx wrapper around Unipile's REST API; maps Unipile error
+    envelopes onto our domain types.  Reads `UNIPILE_DSN` +
+    `UNIPILE_API_KEY` from settings.
+  - `LinkedInAccount` table: rows are created either via the hosted-
+    auth flow (`POST /linkedin-accounts/connect-via-unipile`) or by
+    binding a pre-existing Unipile account (`POST /linkedin-accounts/
+    import-from-unipile`).  Status flips to `challenged` when Unipile
+    surfaces a checkpoint — user completes it in Unipile's hosted
+    browser, then we `/resolve-challenge` to clear the local flag.
   - Per-account rate limits via Redis: `LINKEDIN_DAILY_ACTION_CAP`
-    (default 20) + `LINKEDIN_MIN_ACTION_DELAY_SECONDS` (default 90).
-  - **M3 per-kind subcaps:** `LINKEDIN_DAILY_CONNECT_CAP` (15),
+    (default 20) + `LINKEDIN_MIN_ACTION_DELAY_SECONDS` (default 30).
+    Unipile humanises on its side; these are our burst-control floor.
+  - **Per-kind subcaps:** `LINKEDIN_DAILY_CONNECT_CAP` (20),
     `LINKEDIN_DAILY_DM_CAP` (30), `LINKEDIN_MONTHLY_PAGE_INVITE_CAP`
     (250 per page). Redis keys: `li-rate:{aid}:day:connect`,
     `li-rate:{aid}:day:dm`, `li-rate:page:{page_id}:month`. Page invite
@@ -209,8 +227,9 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   The connect modal has an inline hint about this
   ([`ConnectInboxModal.jsx`](frontend/src/components/ConnectInboxModal.jsx)).
 - **Encryption invariant:** only `app/services/imap_client.py` may call
-  `encryption.decrypt(`. A test in `test_phase15_hardening.py` greps the
-  codebase to enforce this. Don't violate it.
+  `encryption.decrypt(` (allowlist is `{imap_client.py, encryption.py}`
+  — the DIY LinkedIn consumer was stripped along with Playwright).  A
+  test in `test_phase15_hardening.py` greps the codebase to enforce.
 - **Docker network quirk:** if Docker Desktop restarts while containers
   are up, postgres can become detached from `emailblaster_default`
   (you'll see `socket.gaierror: Name or service not known` in backend
@@ -250,26 +269,13 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   `autouse` fixture that does this for every test in the file — copy
   that pattern in any new file exercising LinkedIn rate limits.
 - **`encryption.decrypt` allowlist:** the hardening grep test in
-  `test_phase15_hardening.py` lists `imap_client.py`,
-  `encryption.py`, `linkedin_api_impl.py`. Adding a new credential
-  consumer means updating this list AND keeping plaintext within
-  the new module's local scope (delete before return).
-- **linkedin-api library raw Voyager calls:** the upstream library
-  doesn't expose `follow_profile`, `react_to_post`, `invite_to_page`,
-  `send_inmail`, or `comment_on_post` helpers, so
-  `linkedin_api_impl.py` makes raw `POST` requests against
-  `voyager.linkedin.com/api/feed/...`,
-  `.../growth/normInvitations`,
-  `.../voyagerMessagingDashMessengerMessages?action=createMessage`
-  (InMail), and `.../feed/dash/socialActions/{urn}/comments`. These
-  endpoints aren't part of a stable contract and may break when
-  LinkedIn changes their web app. Symptom: 4xx from those endpoints
-  after weeks of working. Fix: inspect requests in the linkedin.com
-  web app, update the endpoint/body shapes.
-- **InMail premium-required path:** when LinkedIn returns 402/403
-  with "InMail" or "premium" in the body, `_send_inmail_sync` returns
-  `ok=False, premium_required=True` rather than raising. The
-  sequencer maps that to a `skipped` execution row with a clear error
+  `test_phase15_hardening.py` lists `imap_client.py` + `encryption.py`.
+  Adding a new credential consumer means updating this list AND keeping
+  plaintext within the new module's local scope (delete before return).
+- **InMail premium-required path:** when Unipile reports the account
+  lacks InMail credits, `send_inmail` returns
+  `ok=False, premium_required=True` rather than raising.  The sequencer
+  maps that to a `skipped` execution row with a clear error
   ("InMail unavailable — account needs Premium / Sales Nav credits")
   so the campaign keeps moving rather than retrying forever.
 - **Soft-deleted sequence nodes** (M5): when the user re-edits a
@@ -284,24 +290,6 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   - The analytics endpoint currently shows ONLY live nodes; retired
     nodes' counts aren't surfaced. If you want lifetime totals, add a
     `?include_deleted=true` flag later.
-- **`session_cookies_encrypted` is now polymorphic**: three possible formats
-  in the same column — all detected at read time:
-  1. `{"cookies":[...],"origins":[...]}` — Playwright `storage_state` (has
-     `"origins"` key). Written by Playwright/hybrid writes.
-  2. `[{"name":"li_at","value":"..."}]` — HTTP cookie list. Written by
-     HTTP reads (strips everything except `li_at` before persisting).
-  3. `[{"name":"li_at","value":"..."}, {"name":"JSESSIONID",...}, ...]` —
-     legacy full cookie jar (pre-hybrid). Handled by `_extract_li_at`.
-  `_is_playwright_state()` in `playwright_impl.py` and the updated
-  `_build_client_sync` in `linkedin_api_impl.py` both detect and handle
-  all three formats gracefully. Don't add a 4th format without updating both.
-- **Playwright browser binary is baked into the Docker image** via
-  `playwright install chromium` in the Dockerfile. `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`.
-  The binary is ~170MB — expect a slow first build. Subsequent builds are
-  cached unless `requirements.txt` or the Dockerfile changes.
-- **Playwright `--single-process` removed** from browser args — it
-  disables process isolation and crashes under load. Use
-  `--no-sandbox --disable-dev-shm-usage --disable-gpu` instead.
 - **Rebuild ALL THREE Python services when you change `requirements.txt`.**
   `backend`, `worker`, and `beat` all build from the same Dockerfile but
   docker-compose tags them as separate images. `docker compose build
@@ -326,57 +314,13 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   CSV flow that doesn't enroll, the analytics endpoint will show
   `total_leads=0` for them. The fix is a one-off backfill or just
   re-create the campaign.
-- **linkedin-api inverted booleans:** `add_connection` and
-  `send_message` return `True` on FAILURE and `False` on success
-  (yes, really — see upstream README). `linkedin_api_impl.py` wraps
-  these and inverts so the rest of our code can treat truthy=success.
-- **Concurrent playwright launches poison `li_at` sessions.** Two
-  browser instances launched within the same ~10s window for the same
-  LinkedIn account look to LinkedIn like the same cookie used from two
-  fresh browser fingerprints — that trips bot-detection and
-  invalidates the session, even when both individual requests look
-  fine. Fix: `PlaywrightLinkedInProvider._run` wraps every browser
-  session in a Redis lock keyed on `linkedin-acct-lock:{account_id}`
-  (`playwright_impl._AccountLock`). Poll fires while sequencer holds
-  the lock → poll waits up to 90s, then raises `AccountLockBusy`. The
-  sequencer maps `AccountLockBusy` to a `rate_limited` skip, which is
-  in `TRANSIENT_SKIP_STATUSES` and triggers retry-in-5min behavior
-  rather than advancing the cursor. Symptom before the fix: cookie
-  works on Test, but the very next poll-tick + sequencer-tick collision
-  (~5 min later) flagged the session as expired.
-- **Sequential playwright launches also drift the cookie.** Even
-  serialized via the lock, repeated fresh Chromium launches against
-  the same LinkedIn account accumulate enough canvas/WebGL fingerprint
-  variance to make LinkedIn invalidate `li_at`. Mitigations in place:
-  (1) `LINKEDIN_POLL_INTERVAL_MINUTES` defaults to 30 min (was 5);
-  (2) `linkedin_poller._account_has_work` skips the playwright launch
-  entirely when no leads in this account's campaigns are in
-  `INVITED`/`CONNECTED` connection status — i.e., when there's nothing
-  inbound to detect. The poller bumps `last_polled_at` regardless so
-  it doesn't spam-skip.
-- **Persistent Chrome profile per LinkedIn account** is the real fix
-  for fingerprint drift. `PlaywrightLinkedInProvider._run_locked` uses
-  `chromium.launch_persistent_context(user_data_dir=...)` so the same
-  Chrome profile (cookies, localStorage, fonts cache, fingerprint
-  state) is reopened each run. Profile dirs live under
-  `LINKEDIN_PROFILES_DIR` (default `/app/_linkedin_profiles/{account_id}`).
-  First launch for a fresh profile dir is seeded by extracting the
-  bare `li_at` from `session_cookies_encrypted`; thereafter the
-  profile is authoritative. When the user pastes a new `li_at` via
-  the modal, the linkedin_accounts router calls
-  `playwright_impl.clear_profile(account_id)` to wipe the dir so the
-  next `_run` reseeds with the new cookie. Same on account delete.
-  The `session_cookies_encrypted` column is still mirrored post-run
-  as a backup for re-seeding if the profile is ever lost.
 - **Don't cache aioredis at module scope in worker code.** Celery
   prefork tasks each call `asyncio.run(...)` which builds a fresh
   event loop; a cached `aioredis.Redis` carries connection-pool state
   bound to whichever loop first created it and fails with "Event loop
-  is closed" on the second task. `playwright_impl._new_redis()`
-  returns a fresh client per call and `_safe_close()`s it before
-  return. `sequencer._li_redis()` still caches (legacy) — fine for
-  tests that monkeypatch `_LI_REDIS_CLIENT=None`, but rewrite if it
-  ever causes issues in production.
+  is closed" on the second task.  `sequencer._li_redis()` still caches
+  (legacy) — fine for tests that monkeypatch `_LI_REDIS_CLIENT=None`,
+  but rewrite if it ever causes issues in production.
 - **Sequencer transient retries.** A `skipped` step normally advances
   the cursor immediately, but skips with `status` in
   `TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited"}`
@@ -392,8 +336,8 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 ```bash
 docker compose up -d                               # bring stack up
 docker compose exec backend alembic upgrade head   # apply migrations
-docker compose run --rm backend pytest             # backend tests (293)
-docker compose exec frontend npm test              # frontend tests (119)
+docker compose run --rm backend pytest             # backend tests (402)
+docker compose exec frontend npm test              # frontend tests (150)
 docker compose logs -f backend                     # tail logs
 ```
 
@@ -402,17 +346,6 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ## Open questions
 
-- **Hosted provider for production scale.** Decision deferred. The
-  `LinkedInProvider` ABC supports either DIY or a hosted provider
-  (Unipile, HeyReach, etc.) with no schema or worker changes. Triggers
-  to actually flip: customer accounts start getting restricted at
-  scale, OR external customers move <3 months out.
-- **Real-world test of M3/M4 write actions.** With a throwaway
-  LinkedIn account, the safe end-to-end test is: build a campaign
-  with `[email] → wait 1d → connect (with note)` and run a single
-  lead through it. Verify the connection request lands in LinkedIn's
-  "My Network → Sent" tab. Stop there until you're confident the
-  endpoint shapes still work for your account.
 - **Per-edge funnel percentages.** Analytics currently shows
   per-node counts only. Per-edge "% of leads who took this branch"
   would need a transition-history log (we don't write one today). Add
@@ -432,25 +365,22 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 - **Rich if/then-tree branching** — user picked the most expressive
   option. Implemented as a JSON expression language with `and/or/not` +
   leaf ops. Visual builder deferred to M4 (a JSON textarea ships in M1).
-- **LinkedIn path for M2: DIY** (revised from earlier plan). User has a
-  throwaway LinkedIn account for development + 3-6 months runway before
-  external customers, which makes DIY the right cost trade. Stack:
-  Python `linkedin-api` library wrapped behind the `LinkedInProvider`
-  ABC, residential proxy via `LINKEDIN_PROXY_URL`, encrypted
-  credentials in `LinkedInAccount`. Hosted providers (Unipile etc.) can
-  be added later as a parallel concrete impl — typically just for
-  write actions — without breaking M2 code.
+- **LinkedIn path: Unipile** (final decision, supersedes the earlier DIY
+  bet).  Tried DIY Playwright with persistent profiles, Redis locks,
+  stealth patches, and human-dwell — every fresh Chromium launch still
+  tripped LinkedIn's bot scorer because the headless+datacenter
+  fingerprint was unsalvageable.  Unipile runs real desktop Chrome on
+  residential IPs and has been steady; the entire DIY codebase was
+  stripped in 2026-05-14.
 
 ---
 
-_Last updated: 2026-05-14 — Unipile hosted-API integration (foundation).
-Even with the human-dwell fix, the established account still got challenged on
-the very first /feed/ navigation (9.1s, no chance for dwell to run) —
-Cloudflare bot-management was flagging the headless+datacenter fingerprint
-on every fresh Chromium launch. Switched to Unipile (hosted browser API,
-real Chrome on residential IPs)._
+_Last updated: 2026-05-14 — Stripped the dead DIY/Playwright code paths.
+Unipile is the sole LinkedIn provider; the `LinkedInProvider` ABC stays in
+place so a second hosted provider could slot in later without disturbing
+callers._
 
-_Backend tests: **416 passing** (was 383 + 33 new unipile tests)._
+_Backend tests: **405 passing**.  Frontend tests: **150 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
@@ -458,76 +388,67 @@ _Backend tests: **416 passing** (was 383 + 33 new unipile tests)._
 > Unipile webhook config, .env wiring, force-recreate) needed to get
 > the stack talking to Unipile on a new machine.
 
-## Unipile integration (2026-05-14)
+## Unipile integration
 
-The DIY/Playwright path is permanently fighting LinkedIn's bot scorer —
-even with persistent profiles, Redis-locked launches, stealth patches,
-human dwell, and an established account, every fresh Chromium session
-keeps tripping the challenge.  Decision: punt the heavy lifting to
-Unipile, which runs real desktop Chrome on residential IPs.
+LinkedIn actions are powered by Unipile (real desktop Chrome on
+residential IPs).  Key surface:
 
-Foundation shipped (tasks #92-#97 in the in-session list):
+1. **`UnipileLinkedInProvider`** in `services/linkedin/unipile_impl.py`
+   — the only concrete impl behind the `LinkedInProvider` ABC.  Async
+   httpx wrapper around Unipile's REST API.  Maps Unipile error
+   envelopes (status/code/message) onto our `ChallengeRequired` /
+   `AccountRestricted` / `UnipileError` domain types.
 
-1. **`UnipileLinkedInProvider`** in `services/linkedin/unipile_impl.py`.
-   Async httpx-based; supports all 11 LinkedInProvider methods.
-   Maps Unipile error envelopes (status/code/message) onto our
-   ChallengeRequired / AccountRestricted / UnipileError domain types.
-   Reads ``UNIPILE_DSN`` + ``UNIPILE_API_KEY`` from settings (both empty
-   in dev until the user signs up).
+2. **Router endpoints** in `routers/linkedin_accounts.py`:
+   - `POST /connect-via-unipile` — creates a placeholder row, gets a
+     hosted-login URL from Unipile, returns it for the frontend to
+     open.  The local UUID rides along as Unipile's `name` field so
+     webhook events can correlate back to the row.
+   - `POST /{id}/sync-unipile` — polling fallback when the webhook
+     hasn't reached us yet.
+   - `GET /discoverable` + `POST /import-from-unipile` — bind a
+     LinkedIn account that was connected via Unipile's dashboard
+     (instead of our hosted-auth flow) to a fresh local row.
+   - `DELETE /{id}` — also calls Unipile's `delete_account` so we
+     don't leak a session on their side.
 
-2. **`get_provider()` default switched to `"unipile"`** in
-   `services/linkedin/__init__.py`.  Playwright / hybrid / http impls
-   remain selectable as fallbacks via `LINKEDIN_PROVIDER`.
+3. **Webhook handler** `POST /webhooks/unipile` in `routers/webhooks.py`.
+   Unipile doesn't HMAC-sign bodies — auth is a static custom header.
+   Handler reads `request.headers[settings.UNIPILE_WEBHOOK_AUTH_HEADER]`
+   (default `X-Unipile-Auth`) and constant-time-compares against
+   `settings.UNIPILE_WEBHOOK_SECRET`.  Routes events: `account.connected`,
+   `account.disconnected`, `account.checkpoint`, `message.received`,
+   `invitation.accepted`.  Event-name casing normalised.
 
-3. **33 unit tests** in `tests/test_phase23_unipile_provider.py` using
-   `httpx.MockTransport`.  Covers happy paths, error mapping
-   (checkpoint → ChallengeRequired, restricted → AccountRestricted,
-   network → UnipileError), header injection, premium-required InMail
-   path, inbox event polling fallback.
+4. **`ConnectLinkedInModal`** frontend has two surfaces in create mode:
+   - "Connect via Unipile" button → calls `/connect-via-unipile` →
+     opens hosted URL in new tab → polls `/sync-unipile` every 3s
+     until status flips to OK (10-min timeout).
+   - Collapsible "Already connected in Unipile?" panel → lists
+     `/discoverable` rows → per-row Import button binds the
+     unipile account to a fresh local row.
 
-4. **Schema + migration `0006`**: added `LinkedInAccount.unipile_account_id`
-   (unique, nullable), `LinkedInAccount.provider_kind` (default "diy"),
-   and relaxed `password_encrypted` to nullable.
+## Quick-refresh: ngrok + Unipile webhooks
 
-5. **Router endpoints**:
-   - `POST /linkedin-accounts/connect-via-unipile` — creates a placeholder
-     row, calls Unipile's hosted-link API, returns the URL the frontend
-     opens in a new tab.  The placeholder's local UUID is passed to
-     Unipile as ``name`` so webhook events can correlate.
-   - `POST /linkedin-accounts/{id}/sync-unipile` — polling fallback if
-     the webhook hasn't reached us yet.
-   - `POST /linkedin-accounts/{id}` (legacy create) now requires
-     `linkedin_email + password` for DIY rows and rejects empty values.
-   - `DELETE` also calls Unipile's `delete_account` for Unipile rows so
-     we don't leak resources on their side.
+For day-to-day dev (new ngrok URL on every restart) there's a one-shot
+script that does the whole dance:
 
-6. **Webhook handler `POST /webhooks/unipile`** in `routers/webhooks.py`.
-   HMAC-SHA256 verifies the body against `UNIPILE_WEBHOOK_SECRET`.
-   Routes events: `account.connected` (writes unipile_account_id + email),
-   `account.disconnected`, `account.checkpoint`, `message.received` (sets
-   `lead.linkedin_last_reply_at` + promotes connection_status to
-   CONNECTED), `invitation.accepted` (sets CONNECTED).  Event-name casing
-   normalised so the handler tolerates both `account.connected` and
-   `ACCOUNT_CONNECTED` etc.
+```bash
+python3 scripts/dev_tunnel.py
+```
 
-7. **Frontend `ConnectLinkedInModal`** redesigned with a Hosted/Local
-   toggle.  Hosted mode shows just a Label field + "Connect via Unipile"
-   button; the button POSTs `/connect-via-unipile`, opens the returned
-   hosted URL in a new tab, and polls `/sync-unipile` every 3s until
-   status flips to OK (10-min timeout).  Local mode preserves the
-   password+li_at flow as a fallback, with copy that nudges the user
-   toward Hosted.
+It detects (or starts) ngrok pointing at `localhost:8000`, deletes
+every Unipile webhook on the workspace, recreates the three canonical
+ones (`messaging`, `account_status`, `users`) pointing at the live
+tunnel, patches `.env` (`WEBHOOK_BASE_URL`, optionally
+`UNIPILE_WEBHOOK_SECRET` with `--rotate-secret`), and only
+force-recreates `backend`/`worker`/`beat` when `.env` actually
+changed (idempotent — safe to re-run).  Pure stdlib, no pip install.
+Useful flags: `--dry-run`, `--rotate-secret`, `--no-recreate`,
+`--port N`.
 
-Open work (next sessions):
-- Sequencer integration is automatic — `send_linkedin_step` already
-  calls `get_provider()` which now returns Unipile, no changes needed.
-  But the rate-limit/lock code in `playwright_impl.py` is now mostly
-  inert when provider=unipile — task #98 strips it.
-- Webhook idempotency table (currently we don't dedup repeated event
-  deliveries; Unipile's "at-least-once" semantics mean we may double-
-  process if they retry).  Add a `webhook_events` table keyed on
-  event_id when this becomes a real issue.
-- ConnectLinkedInModal tests need updates for the new toggle UI.
+Use the full runbook below only when wiring a fresh dev box from
+scratch (Unipile account creation, ngrok install, etc.).
 
 ## Unipile setup runbook (any computer, local dev)
 
@@ -583,23 +504,55 @@ that all POST to the same `/webhooks/unipile` endpoint.  Our handler
 dispatches on event-name internally, so it doesn't care which webhook
 delivered the event.
 
-For each: Dashboard → **Webhooks** → **Create webhook**.
+**Unipile doesn't HMAC-sign request bodies.** Their auth model is a
+**static custom header** — you specify a header key + value when
+creating the webhook, and Unipile echoes that exact header (same value)
+on every delivery. Our handler reads
+`settings.UNIPILE_WEBHOOK_AUTH_HEADER` (default `X-Unipile-Auth`),
+constant-time-compares the value against `settings.UNIPILE_WEBHOOK_SECRET`,
+and 401s on mismatch. See `_verify_unipile_auth()` in `routers/webhooks.py`
+and the Unipile docs "Authentication" section on the Webhooks page.
 
-| # | Name | Data source | URL |
-|---|---|---|---|
-| 1 | `emailblaster - account` | **Account / Status update** | `https://<tunnel>/webhooks/unipile` |
-| 2 | `emailblaster - messaging` | **Messaging** | `https://<tunnel>/webhooks/unipile` |
-| 3 | `emailblaster - relations` | **Users / Relations events** | `https://<tunnel>/webhooks/unipile` |
+The dashboard UI for adding custom headers is inconsistent across
+Unipile flavours, so the most reliable path is **creating webhooks via
+the Unipile API**:
 
-For HMAC: Unipile lets you generate **one** secret for the first webhook
-and **reuse it** for the other two (paste the same string).  All three
-must share a single secret — our handler reads a single
-`UNIPILE_WEBHOOK_SECRET` value.  If a future Unipile version forbids
-reuse, extend the handler to accept a comma-separated list of secrets
-(small change in `_verify_unipile_signature`).
+```bash
+DSN=$(grep '^UNIPILE_DSN=' .env | cut -d'=' -f2-)
+KEY=$(grep '^UNIPILE_API_KEY=' .env | cut -d'=' -f2-)
+SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+TUNNEL=https://<your-ngrok-or-cloudflared-host>
 
-Skip **Mailing / Mail Tracking / Calendar Events** — we don't use those
-data sources.
+for SRC in messaging account_status users; do
+  curl -s -X POST "https://$DSN/api/v1/webhooks" \
+    -H "X-API-KEY: $KEY" -H "content-type: application/json" \
+    -d "{
+      \"name\": \"emailblaster - $SRC\",
+      \"request_url\": \"$TUNNEL/webhooks/unipile\",
+      \"source\": \"$SRC\",
+      \"headers\": [
+        {\"key\": \"Content-Type\", \"value\": \"application/json\"},
+        {\"key\": \"X-Unipile-Auth\", \"value\": \"$SECRET\"}
+      ]
+    }"
+done
+
+# Save the secret to paste into .env next:
+echo "$SECRET"
+```
+
+**Verified working `source` values (2026-05-14):**
+
+| `source` | Covers |
+|---|---|
+| `messaging` | new chat messages (DM replies) |
+| `account_status` | Unipile account state changes (`account.connected`, `account.checkpoint`, `account.disconnected`) |
+| `users` | new relations (`invitation.accepted`, new connections) |
+
+We don't use Unipile's `mailing` / `mail_tracking` / `calendar` sources.
+
+To list / delete webhooks: `GET` / `DELETE` `https://$DSN/api/v1/webhooks[/<id>]`
+with the `X-API-KEY` header.
 
 ### 4. Wire `.env`
 
@@ -608,7 +561,8 @@ Open `.env` (project root) and set these four:
 ```env
 UNIPILE_DSN=api12.unipile.com:13443      # your DSN from step 1
 UNIPILE_API_KEY=<access token from step 1>
-UNIPILE_WEBHOOK_SECRET=<HMAC secret from step 3>
+UNIPILE_WEBHOOK_SECRET=<the static header-value secret from step 3>
+UNIPILE_WEBHOOK_AUTH_HEADER=X-Unipile-Auth   # optional, this IS the default
 WEBHOOK_BASE_URL=https://<tunnel-host-no-trailing-slash>
 ```
 
@@ -636,12 +590,20 @@ All four should print non-empty values.
 ### 6. Sanity-check the tunnel is reachable
 
 ```powershell
+# Without the auth header → 401 (proves auth-check fires AND routing works)
 curl.exe -X POST "https://<tunnel>/webhooks/unipile" -H "Content-Type: application/json" -d "{}"
+# Expected: 401 {"detail":"invalid auth header"}
+
+# With the right header → 400 invalid JSON (auth passed, just no real event in body)
+curl.exe -X POST "https://<tunnel>/webhooks/unipile" `
+  -H "Content-Type: application/json" `
+  -H "X-Unipile-Auth: <THE_SECRET>" `
+  -d "{}"
+# Expected: 400 {"detail":"invalid JSON: ..."} or similar — the point is we got PAST auth
 ```
 
-Expected: `401 {"detail":"invalid signature"}` — that means our
-HMAC-verify fired, which means routing through the tunnel works.  Then
-hit the **Send test event** button on each Unipile webhook and watch:
+Both responses confirm routing through the tunnel works.  Then hit the
+**Send test event** button on each Unipile webhook and watch:
 
 ```powershell
 docker compose logs -f backend | findstr /I unipile
@@ -681,125 +643,8 @@ Unipile) vs. the old 9-second-then-challenge pattern.
 
 | Symptom | Probable cause | Fix |
 |---|---|---|
-| `401 invalid signature` in backend logs after Unipile send-test | HMAC secret in `.env` doesn't match the one in Unipile's webhook config | Re-copy the secret, update `.env`, force-recreate |
+| `401 invalid auth header` in backend logs after Unipile send-test | `UNIPILE_WEBHOOK_SECRET` in `.env` doesn't match the `X-Unipile-Auth` header value in Unipile's webhook config | Re-copy the secret into `.env`, force-recreate, OR re-create the webhook via the API with the matching value |
 | Unipile dashboard shows delivery `timeout` | Tunnel died, or `WEBHOOK_BASE_URL` host doesn't match Unipile's webhook URL host | Restart tunnel, update all three webhook URLs in Unipile + `WEBHOOK_BASE_URL`, force-recreate |
 | `account.connected` fires but row never flips OK | Unipile sent the event with an empty `name` | Check the delivery payload in Unipile's dashboard for `name == <our local UUID>`; if blank, ensure the `connect-via-unipile` endpoint successfully called `create_hosted_auth_link` with `name=str(acc.id)` |
 | `UnipileError: UNIPILE_DSN not set` | `.env` not loaded into the container | Did you force-recreate?  `docker compose restart` won't do it |
-| ConnectLinkedInModal "Local (legacy)" tab still shows | That's expected — kept as fallback.  Default toggle is Hosted | n/a — strip happens in task #98 once Unipile path proven live |
-
-## Previous: Human-dwell anti-bot pass (2026-05-14)
-
-## Human-dwell anti-bot pass (2026-05-14)
-
-The established account got challenged on the first `view_profile` step
-(captured live in worker logs): 9.7s from task receipt to challenge,
-meaning auth succeeded but the immediate profile navigation tripped
-LinkedIn's bot scorer.  Root cause: Playwright launched → /feed/ →
-/in/young-burke/ in <2s of in-page activity.  No human reads the feed
-that fast.
-
-Fix shipped in `playwright_impl.py`:
-
-1. **New `_human_dwell()` helper** — sits on the current page for a
-   randomized window doing: initial idle, 2-3 small downward scrolls
-   with reading pauses, sometimes scroll back partway, 2-4 random
-   mouse moves.  Always swallows exceptions (camouflage is
-   best-effort, never load-bearing).
-2. **`_ensure_authenticated` now dwells 8-15s on `/feed/`** after
-   login is confirmed, before returning.  Replaces the old
-   `asyncio.sleep(1.5-4)`.
-3. **`view_profile` dwells 6-12s on the profile page** before URN
-   resolution.  Also helps the URN scrape because LinkedIn's SPA gets
-   more time to hydrate the page DOM.
-4. **`_scrape_urn_from_page` dwells 5-9s** when it has to navigate to
-   the profile page itself (called from follow/DM/connect/etc. for URN
-   resolution).  Replaces a bare 1.5-3s sleep.
-5. **New test file `tests/test_phase22_human_dwell.py`** — 5 tests
-   covering: completes within window, scrolls/moves when asked,
-   doesn't scroll when `scroll=False`, swallows mouse errors,
-   respects min-sleep budget.
-
-Tradeoff: per-step runtime grows ~10-15s because of the dwells.  This
-is well within `LINKEDIN_MIN_ACTION_DELAY_SECONDS=90`, and the slowdown
-is exactly what makes the action look human.
-
-## Diagnostic + cleanup pass (2026-05-14)
-
-1. **`.gitignore` cleanup.** Persistent Chrome profile dirs under
-   `backend/_linkedin_profiles/` were committed in earlier "still not
-   working" commits, leaking the user's active `li_at` cookie + full
-   browser cache. `git rm --cached` removed them from index; the dir
-   plus `celerybeat-schedule` are now ignored. **The leaked li_at has
-   been rotated/will need rotation.**
-2. **`_parse_li_error()` in `playwright_impl.py`.** Pulls a structured
-   error code + message out of Voyager error envelopes
-   (`{status,code,message}` or nested `errorDetails.inputErrors`).
-   Every write action (connect / follow / react / DM / invite_to_page
-   / InMail / comment_on_post) now formats failures as
-   `"CODE: message"` instead of a raw 200-char body slice — surfaces
-   exactly what LinkedIn objected to.
-3. **`_voyager` logs the response's final URL** on non-2xx, AND emits
-   an info-level note on 2xx if the request URL was redirected (likely
-   endpoint move). Combined with `_parse_li_error`, an endpoint change
-   or payload validation failure is now self-diagnosing in worker logs.
-4. **`send_connect_request` logs the resolved URN** before the POST,
-   so we can confirm `_resolve_urn` returned a real URN (vs scraping a
-   stale page-loaded URN that doesn't belong to the prospect).
-5. **`customMessage` trimmed to 200 chars** (was 300). LinkedIn caps
-   notes at 200 for Free / 300 for Premium; the safer floor avoids a
-   422 for Free accounts.
-6. **New test file `tests/test_phase21_voyager_error_parser.py`** —
-   7 tests covering the error-envelope shapes we've seen in the wild.
-
-## OPEN: validate send_connect end-to-end
-
-The throwaway dev account (`allseason.crew.yt@gmail.com`) is
-permanently challenged and cannot exercise the new
-`voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreate`
-endpoint. **The other session's note: established LinkedIn accounts
-(verified phone, photo, real connection history) are required for any
-write action to survive bot-detection.** Next step: connect a real
-established LinkedIn account in Settings → LinkedIn Accounts, paste
-fresh `li_at`, then run a connect step. If the new payload is wrong,
-the worker logs will now print a parsed `code: message` from LinkedIn
-that tells us exactly what to fix.
-
-## Previous hardening (2026-05-13/14)
-
-1. **Sequencer transient-retry behavior.** `TRANSIENT_SKIP_STATUSES =
-   {"challenged", "restricted", "rate_limited"}` keeps the lead pinned
-   on the current node for 5 min retries instead of advancing the
-   cursor. `MAX_TRANSIENT_RETRIES=10` caps the budget per visit. Means
-   short LinkedIn outages no longer permanently strand sequences.
-2. **`AccountLockBusy` exception.** New transient-skip class for the
-   per-account Redis lock timeout. Wired into the sequencer to map to
-   `rate_limited`.
-3. **Per-account Redis lock around every `_run`.** `_AccountLock` in
-   `playwright_impl.py` serializes browser launches against the same
-   LinkedIn account, fixing the concurrent-poll-+-sequencer collision
-   that was poisoning cookies.
-4. **Persistent Chrome profile per account** (the real fingerprint
-   fix). `chromium.launch_persistent_context(user_data_dir=...)` keeps
-   cookies, localStorage, and Chrome's internal state stable across
-   runs. `_extract_seed_cookies` bootstraps a fresh profile dir with
-   the user-pasted `li_at`. `playwright_impl.clear_profile()` wipes
-   the dir on user cookie re-paste or account delete (called from the
-   linkedin_accounts router).
-5. **Poller throttled.** `LINKEDIN_POLL_INTERVAL_MINUTES` default
-   raised 5 → 30. `linkedin_poller._account_has_work` skips the
-   playwright launch entirely when no leads are in `invited`/
-   `connected` state.
-6. **Redis client no longer cached at module scope in
-   `playwright_impl`.** Was tripping "Event loop is closed" under
-   Celery's per-task `asyncio.run`. Now uses `_new_redis()` +
-   `_safe_close()` per call.
-7. **`send_connect_request` updated** — switched to LinkedIn's modern
-   endpoint `voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreate`
-   with payload `{"inviteeProfileUrn": "urn:li:fsd_profile:..."}` and
-   optional `customMessage`. URN resolution via existing `_resolve_urn`
-   (DOM-scrape from the prospect's profile page). **Untested live —
-   throwaway account got challenge-flagged before we could verify.**
-8. **`_voyager` now logs response headers + type on non-2xx** so we
-   can spot endpoint deprecations (LinkedIn signals these with 30x +
-   Location).
 

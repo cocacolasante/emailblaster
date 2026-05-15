@@ -36,46 +36,25 @@ class Settings(BaseSettings):
     # IMAP polling
     IMAP_POLL_INTERVAL_MINUTES: int = 20
 
-    # LinkedIn provider selection
-    # "unipile"    — hosted browser API (real Chrome + residential IPs).
-    #                Recommended for any production-ish use; no challenge
-    #                bot-detection issues because LinkedIn sees a real
-    #                desktop browser from a residential IP.  Requires
-    #                UNIPILE_API_KEY + UNIPILE_DSN.
-    # "playwright" — all actions via local headless Chromium.  Bot-detection
-    #                risk; profile pages get challenge-flagged within a few
-    #                runs even on established accounts.  Kept for offline
-    #                fallback / dev without a Unipile key.
-    # "hybrid"     — Playwright writes + linkedin-api HTTP reads.  Legacy.
-    # "http"       — all actions via linkedin-api HTTP.  Legacy.
-    LINKEDIN_PROVIDER: str = "unipile"
-
-    # Unipile config — required when LINKEDIN_PROVIDER=unipile.
+    # Unipile (hosted LinkedIn browser API on residential IPs).
     # DSN is the tenant host returned from the dashboard, e.g.
     # "api12.unipile.com:13443".  API key from dashboard → access-tokens.
-    # Webhook secret is shared between Unipile's webhook config + our handler;
-    # used to verify incoming events.
+    # Webhook auth: Unipile doesn't HMAC-sign bodies; instead, when creating
+    # the webhook you configure a custom HTTP header that Unipile echoes
+    # back on every delivery.  We check the inbound request for the same
+    # header + value.
     UNIPILE_DSN: str = ""
     UNIPILE_API_KEY: str = ""
     UNIPILE_WEBHOOK_SECRET: str = ""
+    UNIPILE_WEBHOOK_AUTH_HEADER: str = "X-Unipile-Auth"
 
-    # LinkedIn (DIY: linkedin-api library + optional residential proxy)
-    LINKEDIN_PROXY_URL: str = ""  # e.g. http://user:pass@host:port; empty = direct
-    LINKEDIN_DAILY_ACTION_CAP: int = 20  # per-account TOTAL actions per day
-    LINKEDIN_MIN_ACTION_DELAY_SECONDS: int = 90  # min gap between actions per account
-    # Inbox poll frequency. Every poll fires a fresh playwright Chromium
-    # launch against LinkedIn, and frequent launches drift the browser
-    # fingerprint enough that LinkedIn flags the `li_at` as bot-suspicious.
-    # 30 min strikes a balance between reply latency + cookie safety.
-    LINKEDIN_POLL_INTERVAL_MINUTES: int = 30
-    # Per-LinkedIn-account on-disk Chrome profile. Persistent context keeps
-    # cookies + localStorage + Chrome's fingerprint stable across launches,
-    # which keeps LinkedIn from invalidating the session every time we open
-    # a fresh browser. Each account gets a subdir named by its UUID.
-    LINKEDIN_PROFILES_DIR: str = "/app/_linkedin_profiles"
-    # Per-kind subcaps for write actions (M3). These are stricter than the
-    # overall daily cap because connects/DMs are what get accounts flagged.
-    # Per-kind subcaps. LinkedIn's real enforcement: ~100 connects/week for
+    # LinkedIn rate limits.  Unipile manages humanization on its side, but
+    # we still enforce daily caps + a per-account min-delay as a burst floor
+    # so a runaway sequence can't flood a single account with actions.
+    LINKEDIN_DAILY_ACTION_CAP: int = 20         # per-account TOTAL actions / day
+    LINKEDIN_MIN_ACTION_DELAY_SECONDS: int = 30 # min gap between actions
+    LINKEDIN_POLL_INTERVAL_MINUTES: int = 30    # inbox poller cadence
+    # Per-kind subcaps.  LinkedIn's real enforcement: ~100 connects/week for
     # established accounts (~14/day).  20/day is conservative and safe.
     # DMs require 1st-degree — 30/day is the practical ceiling before risk.
     LINKEDIN_DAILY_CONNECT_CAP: int = 20        # per-account connect requests / day

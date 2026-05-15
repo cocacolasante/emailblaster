@@ -13,7 +13,6 @@ import client from './client.js';
 import {
   listLinkedInAccounts,
   getLinkedInAccount,
-  createLinkedInAccount,
   updateLinkedInAccount,
   deleteLinkedInAccount,
   testLinkedInAccount,
@@ -45,19 +44,6 @@ describe('getLinkedInAccount', () => {
 
     expect(client.get).toHaveBeenCalledWith('/linkedin-accounts/acc-42');
     expect(result).toEqual(account);
-  });
-});
-
-describe('createLinkedInAccount', () => {
-  it('calls POST /linkedin-accounts/ with payload and returns data', async () => {
-    const payload = { label: 'New', linkedin_email: 'me@example.com', password: 'secret' };
-    const created = { id: 'new-1', ...payload };
-    client.post.mockResolvedValue({ data: created });
-
-    const result = await createLinkedInAccount(payload);
-
-    expect(client.post).toHaveBeenCalledWith('/linkedin-accounts/', payload);
-    expect(result).toEqual(created);
   });
 });
 

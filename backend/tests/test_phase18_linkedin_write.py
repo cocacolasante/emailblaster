@@ -468,7 +468,11 @@ async def test_publish_rejects_overlong_connect_note(client):
     assert any("note_template" in e and "300" in e for e in body["errors"])
 
 
-async def test_publish_rejects_non_numeric_page_id(client):
+async def test_publish_rejects_linkedin_invite_to_page(client):
+    """linkedin_invite_to_page is currently gated out of PUBLISHABLE_KINDS
+    because Unipile's /api/v1/linkedin passthrough doesn't allowlist
+    voyagerRelationshipsDashInvitations.  Publishing a sequence that uses
+    the kind should fail with a clear error pointing at the gated kind."""
     cid_resp = await client.post("/campaigns/", json={
         "name": "x", "goal": "g", "tone": "Direct",
         "sender_name": "A", "sender_email": "a@example.com",
@@ -485,7 +489,7 @@ async def test_publish_rejects_non_numeric_page_id(client):
             {"client_id": "e", "kind": "email", "is_entry": True, "config": {}},
             {
                 "client_id": "i", "kind": "linkedin_invite_to_page", "is_entry": False,
-                "config": {"page_id": "not-a-number"},
+                "config": {"page_id": "112935410"},
             },
         ],
         "edges": [
@@ -496,4 +500,10 @@ async def test_publish_rejects_non_numeric_page_id(client):
     pub = await client.post(f"/campaigns/{cid}/sequence/publish")
     body = pub.json()
     assert body["ok"] is False
-    assert any("page_id" in e and "numeric" in e for e in body["errors"])
+    assert any("linkedin_invite_to_page" in e for e in body["errors"])
+
+
+# test_publish_rejects_non_numeric_page_id removed — linkedin_invite_to_page
+# is currently gated out of PUBLISHABLE_KINDS, so the numeric-page_id check
+# is unreachable from the publish path.  Restore alongside re-enabling the
+# kind if Unipile allowlists voyagerRelationshipsDashInvitations.

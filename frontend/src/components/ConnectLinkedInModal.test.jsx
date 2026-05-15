@@ -4,10 +4,13 @@ import userEvent from '@testing-library/user-event';
 import ConnectLinkedInModal from './ConnectLinkedInModal.jsx';
 
 vi.mock('../api/linkedinAccounts.js', () => ({
-  createLinkedInAccount: vi.fn(),
-  updateLinkedInAccount: vi.fn(),
-  testLinkedInAccount: vi.fn(),
+  connectViaUnipile: vi.fn(),
+  deleteLinkedInAccount: vi.fn(),
+  getLinkedInAccount: vi.fn(),
+  importFromUnipile: vi.fn(),
+  listDiscoverableUnipileAccounts: vi.fn(),
   resolveLinkedInChallenge: vi.fn(),
+  syncUnipileStatus: vi.fn(),
 }));
 
 import * as liApi from '../api/linkedinAccounts.js';
@@ -16,7 +19,6 @@ const ACCOUNT = {
   id: 'acc-1',
   label: 'My LinkedIn',
   linkedin_email: 'me@example.com',
-  proxy_url: 'http://proxy:8080',
   status: 'ok',
   pending_challenge_url: null,
 };
@@ -37,158 +39,134 @@ function renderEdit(overrides = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  liApi.listDiscoverableUnipileAccounts.mockResolvedValue([]);
+  // window.open is invoked when launching the hosted flow; stub it so jsdom
+  // doesn't actually try to open a window.
+  vi.stubGlobal('open', vi.fn());
 });
 
 describe('ConnectLinkedInModal', () => {
-  it('renders "Connect LinkedIn account" when no account prop', () => {
+  it('renders "Connect LinkedIn account" when no account prop', async () => {
     renderNew();
     expect(screen.getByRole('heading', { name: /connect linkedin account/i })).toBeInTheDocument();
+    // The Unipile-only flow shows the label input + the launch button.
+    expect(screen.getByLabelText(/label/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /connect via unipile/i })).toBeInTheDocument();
   });
 
   it('renders "Edit LinkedIn account" when an account prop is passed', () => {
     renderEdit();
     expect(screen.getByRole('heading', { name: /edit linkedin account/i })).toBeInTheDocument();
+    expect(screen.getByText(ACCOUNT.label)).toBeInTheDocument();
+    expect(screen.getByText(ACCOUNT.linkedin_email)).toBeInTheDocument();
   });
 
-  it('pre-fills form fields from account prop; password is blank', () => {
-    renderEdit();
-    expect(screen.getByLabelText(/label/i)).toHaveValue(ACCOUNT.label);
-    expect(screen.getByLabelText(/linkedin login email/i)).toHaveValue(ACCOUNT.linkedin_email);
-    expect(screen.getByLabelText(/proxy url/i)).toHaveValue(ACCOUNT.proxy_url);
-    expect(screen.getByLabelText(/^password/i)).toHaveValue('');
-  });
-
-  it('save (new account) calls createLinkedInAccount then testLinkedInAccount', async () => {
+  it('Connect via Unipile button requires a label', async () => {
     const user = userEvent.setup();
-    const created = { id: 'new-acc-1' };
-    liApi.createLinkedInAccount.mockResolvedValue(created);
-    liApi.testLinkedInAccount.mockResolvedValue({ ok: true });
+    renderNew();
+    await user.click(screen.getByRole('button', { name: /connect via unipile/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('modal-error')).toHaveTextContent(/label/i);
+    });
+    expect(liApi.connectViaUnipile).not.toHaveBeenCalled();
+  });
+
+  it('Connect via Unipile calls the API and opens hosted URL', async () => {
+    const user = userEvent.setup();
+    liApi.connectViaUnipile.mockResolvedValue({
+      account_id: 'new-acc-1',
+      hosted_url: 'https://hosted.unipile.com/x',
+    });
 
     renderNew();
-
-    await user.type(screen.getByLabelText(/label/i), 'Work LI');
-    await user.type(screen.getByLabelText(/linkedin login email/i), 'test@li.com');
-    await user.type(screen.getByLabelText(/^password/i), 'mypassword');
-    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await user.type(screen.getByLabelText(/label/i), 'Anthony — main');
+    await user.click(screen.getByRole('button', { name: /connect via unipile/i }));
 
     await waitFor(() => {
-      expect(liApi.createLinkedInAccount).toHaveBeenCalled();
+      expect(liApi.connectViaUnipile).toHaveBeenCalled();
     });
-    const payload = liApi.createLinkedInAccount.mock.calls[0][0];
-    expect(payload.label).toBe('Work LI');
-    expect(payload.linkedin_email).toBe('test@li.com');
-    expect(payload.password).toBe('mypassword');
-
-    await waitFor(() => {
-      expect(liApi.testLinkedInAccount).toHaveBeenCalledWith('new-acc-1');
-    });
+    const payload = liApi.connectViaUnipile.mock.calls[0][0];
+    expect(payload.label).toBe('Anthony — main');
+    expect(payload.success_redirect_url).toContain('unipile=success');
+    expect(window.open).toHaveBeenCalledWith(
+      'https://hosted.unipile.com/x',
+      '_blank',
+      'noopener,noreferrer',
+    );
   });
 
-  it('save (edit) calls updateLinkedInAccount then testLinkedInAccount', async () => {
+  it('surfaces unipile API errors', async () => {
     const user = userEvent.setup();
-    const updated = { id: ACCOUNT.id };
-    liApi.updateLinkedInAccount.mockResolvedValue(updated);
-    liApi.testLinkedInAccount.mockResolvedValue({ ok: true });
-
-    renderEdit();
-    await user.click(screen.getByRole('button', { name: /^save$/i }));
-
-    await waitFor(() => {
-      expect(liApi.updateLinkedInAccount).toHaveBeenCalled();
-    });
-    const [id] = liApi.updateLinkedInAccount.mock.calls[0];
-    expect(id).toBe(ACCOUNT.id);
-
-    await waitFor(() => {
-      expect(liApi.testLinkedInAccount).toHaveBeenCalledWith(ACCOUNT.id);
-    });
-  });
-
-  it('save error shows error message in modal-error', async () => {
-    const user = userEvent.setup();
-    liApi.createLinkedInAccount.mockRejectedValue({
-      response: { data: { detail: 'Email already taken' } },
+    liApi.connectViaUnipile.mockRejectedValue({
+      response: { data: { detail: 'Unipile not configured' } },
     });
 
     renderNew();
     await user.type(screen.getByLabelText(/label/i), 'x');
-    await user.type(screen.getByLabelText(/linkedin login email/i), 'x@li.com');
-    await user.type(screen.getByLabelText(/^password/i), 'pass');
-    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await user.click(screen.getByRole('button', { name: /connect via unipile/i }));
 
     await waitFor(() => {
-      expect(screen.getByTestId('modal-error')).toHaveTextContent('Email already taken');
+      expect(screen.getByTestId('modal-error')).toHaveTextContent('Unipile not configured');
     });
   });
 
-  it('Test connection button is disabled in new mode', () => {
+  it('shows discoverable Unipile accounts when listDiscoverable returns rows', async () => {
+    liApi.listDiscoverableUnipileAccounts.mockResolvedValue([
+      {
+        unipile_account_id: 'u-1',
+        name: 'Alice Smith',
+        public_identifier: 'alice-smith',
+        status: 'CONNECTED',
+      },
+    ]);
     renderNew();
-    const testBtn = screen.getByRole('button', { name: /test connection/i });
-    expect(testBtn).toBeDisabled();
+    await waitFor(() => {
+      expect(screen.getByTestId('unipile-import-section')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Already connected in Unipile/i)).toBeInTheDocument();
   });
 
-  it('Test connection button is enabled in edit mode', () => {
-    renderEdit();
-    const testBtn = screen.getByRole('button', { name: /test connection/i });
-    expect(testBtn).not.toBeDisabled();
-  });
-
-  it('Test connection calls testLinkedInAccount with account.id', async () => {
+  it('clicking Import triggers importFromUnipile and closes', async () => {
     const user = userEvent.setup();
-    liApi.testLinkedInAccount.mockResolvedValue({ ok: true });
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    liApi.listDiscoverableUnipileAccounts.mockResolvedValue([
+      { unipile_account_id: 'u-1', name: 'Alice', public_identifier: 'alice' },
+    ]);
+    liApi.importFromUnipile.mockResolvedValue({ id: 'local-1', linkedin_email: 'alice@x.com' });
 
-    renderEdit();
-    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    renderNew({ onClose, onSaved });
+    await waitFor(() => screen.getByTestId('unipile-import-section'));
+    // Expand the panel.
+    await user.click(screen.getByRole('button', { name: /already connected in unipile/i }));
+    await user.click(screen.getByRole('button', { name: /^import$/i }));
 
     await waitFor(() => {
-      expect(liApi.testLinkedInAccount).toHaveBeenCalledWith(ACCOUNT.id);
+      expect(liApi.importFromUnipile).toHaveBeenCalledWith({
+        unipile_account_id: 'u-1',
+        label: 'Alice',
+      });
     });
+    expect(onSaved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
   });
 
-  it('challenge UI shows when testResult has status="challenged"', async () => {
+  it('edit view shows clear-challenge action when account is challenged', async () => {
     const user = userEvent.setup();
-    const created = { id: 'new-acc-2' };
-    liApi.createLinkedInAccount.mockResolvedValue(created);
-    liApi.testLinkedInAccount.mockResolvedValue({
-      ok: false,
-      status: 'challenged',
-      challenge_url: 'https://example.com/challenge',
-    });
+    liApi.resolveLinkedInChallenge.mockResolvedValue({});
+    renderEdit({ status: 'challenged' });
 
-    renderNew();
-    await user.type(screen.getByLabelText(/label/i), 'LI');
-    await user.type(screen.getByLabelText(/linkedin login email/i), 'li@example.com');
-    await user.type(screen.getByLabelText(/^password/i), 'pw');
-    await user.click(screen.getByRole('button', { name: /^save$/i }));
-
+    const clearBtn = await screen.findByRole('button', { name: /clear challenge state/i });
+    await user.click(clearBtn);
     await waitFor(() => {
-      expect(screen.getByText(/linkedin wants a security check/i)).toBeInTheDocument();
+      expect(liApi.resolveLinkedInChallenge).toHaveBeenCalledWith(ACCOUNT.id);
     });
-    expect(screen.getByRole('link', { name: 'https://example.com/challenge' })).toHaveAttribute(
-      'href',
-      'https://example.com/challenge',
-    );
-  });
-
-  it('password show/hide toggle works', async () => {
-    const user = userEvent.setup();
-    renderNew();
-
-    const passwordInput = screen.getByLabelText(/^password/i);
-    expect(passwordInput).toHaveAttribute('type', 'password');
-
-    await user.click(screen.getByRole('button', { name: /show password/i }));
-    expect(passwordInput).toHaveAttribute('type', 'text');
-
-    await user.click(screen.getByRole('button', { name: /hide password/i }));
-    expect(passwordInput).toHaveAttribute('type', 'password');
   });
 
   it('close button (×) calls onClose', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     renderNew({ onClose });
-
     await user.click(screen.getByRole('button', { name: /close/i }));
     expect(onClose).toHaveBeenCalled();
   });
@@ -196,7 +174,6 @@ describe('ConnectLinkedInModal', () => {
   it('overlay click calls onClose', () => {
     const onClose = vi.fn();
     renderNew({ onClose });
-
     fireEvent.click(screen.getByTestId('modal-overlay'));
     expect(onClose).toHaveBeenCalled();
   });

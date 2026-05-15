@@ -1,44 +1,33 @@
-"""Tests for the /linkedin-accounts router + the LinkedInProvider plumbing.
+"""Tests for the /linkedin-accounts router.
 
-The actual `linkedin-api` library is monkeypatched at the provider-impl
-level — we never make real LinkedIn HTTP calls in tests.
+The DIY password+li_at create path was stripped along with the Playwright
+provider — all rows now originate from the Unipile hosted-auth flow.  We
+insert rows directly via SQLAlchemy here so the CRUD endpoints can be
+exercised without standing up Unipile.
 """
 import uuid
 
-import pytest
-
 from app.models import LinkedInAccount, LinkedInAccountStatus
-from app.services import encryption
 from app.services.linkedin.base import ChallengeRequired, ActionResult
 
 
-def _payload(**overrides):
-    base = {
-        "label": "throwaway",
-        "linkedin_email": "throwaway@example.com",
-        "password": "test-password",
-    }
-    base.update(overrides)
-    return base
+async def _seed_account(db_session) -> LinkedInAccount:
+    acc = LinkedInAccount(
+        label="throwaway",
+        linkedin_email="throwaway@example.com",
+        provider_kind="unipile",
+        unipile_account_id=f"unipile-{uuid.uuid4()}",
+        status=LinkedInAccountStatus.UNTESTED,
+    )
+    db_session.add(acc)
+    await db_session.commit()
+    await db_session.refresh(acc)
+    return acc
 
 
 # --------------------------------------------------------------------------
 # CRUD
 # --------------------------------------------------------------------------
-
-
-async def test_create_linkedin_account(client, db_session):
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    assert r.status_code == 201, r.text
-    body = r.json()
-    assert body["label"] == "throwaway"
-    assert body["linkedin_email"] == "throwaway@example.com"
-    assert body["status"] == "untested"
-    assert "password" not in body  # never echoed
-    # Verify password is encrypted in DB.
-    acc = await db_session.get(LinkedInAccount, uuid.UUID(body["id"]))
-    assert acc.password_encrypted != "test-password"
-    assert encryption.decrypt(acc.password_encrypted) == "test-password"
 
 
 async def test_list_empty(client):
@@ -47,39 +36,39 @@ async def test_list_empty(client):
     assert r.json() == []
 
 
-async def test_get_and_404(client):
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    aid = r.json()["id"]
-    r2 = await client.get(f"/linkedin-accounts/{aid}")
-    assert r2.status_code == 200
-    r3 = await client.get(f"/linkedin-accounts/{uuid.uuid4()}")
-    assert r3.status_code == 404
+async def test_list_returns_seeded_row(client, db_session):
+    acc = await _seed_account(db_session)
+    r = await client.get("/linkedin-accounts/")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["id"] == str(acc.id)
+    assert body[0]["linkedin_email"] == "throwaway@example.com"
 
 
-async def test_patch_password_clears_cookies(client, db_session):
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    aid = r.json()["id"]
-    acc = await db_session.get(LinkedInAccount, uuid.UUID(aid))
-    # Pretend a prior session existed.
-    acc.session_cookies_encrypted = encryption.encrypt("[]")
-    acc.status = LinkedInAccountStatus.OK
-    await db_session.commit()
-
-    r2 = await client.patch(f"/linkedin-accounts/{aid}", json={"password": "new-pass"})
-    assert r2.status_code == 200
-    await db_session.refresh(acc)
-    assert acc.session_cookies_encrypted is None
-    assert acc.status == LinkedInAccountStatus.UNTESTED
-    assert encryption.decrypt(acc.password_encrypted) == "new-pass"
+async def test_get_and_404(client, db_session):
+    acc = await _seed_account(db_session)
+    r = await client.get(f"/linkedin-accounts/{acc.id}")
+    assert r.status_code == 200
+    r2 = await client.get(f"/linkedin-accounts/{uuid.uuid4()}")
+    assert r2.status_code == 404
 
 
-async def test_delete(client):
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    aid = r.json()["id"]
-    r2 = await client.delete(f"/linkedin-accounts/{aid}")
-    assert r2.status_code == 204
-    r3 = await client.get(f"/linkedin-accounts/{aid}")
-    assert r3.status_code == 404
+async def test_patch_updates_label_only(client, db_session):
+    acc = await _seed_account(db_session)
+    r = await client.patch(
+        f"/linkedin-accounts/{acc.id}", json={"label": "renamed"},
+    )
+    assert r.status_code == 200
+    assert r.json()["label"] == "renamed"
+
+
+async def test_delete(client, db_session):
+    acc = await _seed_account(db_session)
+    r = await client.delete(f"/linkedin-accounts/{acc.id}")
+    assert r.status_code == 204
+    r2 = await client.get(f"/linkedin-accounts/{acc.id}")
+    assert r2.status_code == 404
 
 
 # --------------------------------------------------------------------------
@@ -88,16 +77,10 @@ async def test_delete(client):
 
 
 async def test_test_endpoint_success(client, db_session, monkeypatch):
-    """Provider returns OK → account flips to OK, cookies persisted."""
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    aid = r.json()["id"]
+    """Provider returns OK → account flips to OK."""
+    acc = await _seed_account(db_session)
 
-    # Patch at the router's get_provider call-site so this works regardless
-    # of which concrete provider is configured (Playwright or HTTP).
     async def fake_test_connection(account):
-        account.session_cookies_encrypted = encryption.encrypt(
-            '{"cookies":[{"name":"li_at","value":"x"}],"origins":[]}'
-        )
         return ActionResult(ok=True)
 
     from unittest.mock import MagicMock
@@ -107,20 +90,19 @@ async def test_test_endpoint_success(client, db_session, monkeypatch):
     import app.routers.linkedin_accounts as _router
     monkeypatch.setattr(_router, "get_provider", lambda: mock_prov)
 
-    rt = await client.post(f"/linkedin-accounts/{aid}/test")
+    rt = await client.post(f"/linkedin-accounts/{acc.id}/test")
     assert rt.status_code == 200, rt.text
     body = rt.json()
     assert body["ok"] is True
     assert body["status"] == "ok"
 
-    acc = await db_session.get(LinkedInAccount, uuid.UUID(aid))
-    assert acc.status == LinkedInAccountStatus.OK
-    assert acc.session_cookies_encrypted is not None
+    await db_session.refresh(acc)
+    refreshed = acc
+    assert refreshed.status == LinkedInAccountStatus.OK
 
 
 async def test_test_endpoint_challenged(client, db_session, monkeypatch):
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    aid = r.json()["id"]
+    acc = await _seed_account(db_session)
 
     async def fake_test_connection(account):
         raise ChallengeRequired(
@@ -134,28 +116,27 @@ async def test_test_endpoint_challenged(client, db_session, monkeypatch):
     import app.routers.linkedin_accounts as _router
     monkeypatch.setattr(_router, "get_provider", lambda: mock_prov)
 
-    rt = await client.post(f"/linkedin-accounts/{aid}/test")
+    rt = await client.post(f"/linkedin-accounts/{acc.id}/test")
     body = rt.json()
     assert body["ok"] is False
     assert body["status"] == "challenged"
     assert body["challenge_url"].startswith("https://www.linkedin.com/checkpoint")
 
-    acc = await db_session.get(LinkedInAccount, uuid.UUID(aid))
-    assert acc.status == LinkedInAccountStatus.CHALLENGED
-    assert acc.pending_challenge_url is not None
+    await db_session.refresh(acc)
+    refreshed = acc
+    assert refreshed.status == LinkedInAccountStatus.CHALLENGED
+    assert refreshed.pending_challenge_url is not None
 
 
 async def test_resolve_challenge_flips_back_to_untested(client, db_session):
-    r = await client.post("/linkedin-accounts/", json=_payload())
-    aid = r.json()["id"]
-    acc = await db_session.get(LinkedInAccount, uuid.UUID(aid))
+    acc = await _seed_account(db_session)
     acc.status = LinkedInAccountStatus.CHALLENGED
     acc.pending_challenge_url = "https://example.com/check"
     acc.last_error = "captcha required"
     await db_session.commit()
 
-    r2 = await client.post(f"/linkedin-accounts/{aid}/resolve-challenge", json={})
-    assert r2.status_code == 200
-    body = r2.json()
+    r = await client.post(f"/linkedin-accounts/{acc.id}/resolve-challenge", json={})
+    assert r.status_code == 200
+    body = r.json()
     assert body["status"] == "untested"
     assert body["pending_challenge_url"] is None

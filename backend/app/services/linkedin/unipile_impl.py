@@ -90,8 +90,10 @@ class UnipileLinkedInProvider(LinkedInProvider):
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._dsn = dsn or settings.UNIPILE_DSN
-        self._api_key = api_key or settings.UNIPILE_API_KEY
+        # `None` ⇒ fall back to settings; `""` ⇒ explicitly empty (tests use
+        # this to assert the "no DSN configured" error path).
+        self._dsn = dsn if dsn is not None else settings.UNIPILE_DSN
+        self._api_key = api_key if api_key is not None else settings.UNIPILE_API_KEY
         # Tests inject httpx.MockTransport here.
         self._transport = transport
 
@@ -101,7 +103,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
         if not self._dsn:
             raise UnipileError(
                 0, "config_missing",
-                "UNIPILE_DSN not set — required when LINKEDIN_PROVIDER=unipile.",
+                "UNIPILE_DSN not set — required for the Unipile provider.",
                 message="Unipile is not configured (UNIPILE_DSN missing).",
             )
         # DSN already includes the host (and usually a non-443 port).
@@ -114,7 +116,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
         if not self._api_key:
             raise UnipileError(
                 0, "config_missing",
-                "UNIPILE_API_KEY not set — required when LINKEDIN_PROVIDER=unipile.",
+                "UNIPILE_API_KEY not set — required for the Unipile provider.",
                 message="Unipile is not configured (UNIPILE_API_KEY missing).",
             )
         return {
@@ -140,12 +142,36 @@ class UnipileLinkedInProvider(LinkedInProvider):
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        data: list[tuple[str, Any]] | dict[str, Any] | None = None,
         long: bool = False,
     ) -> dict[str, Any] | list[Any]:
-        """Issue a single request and normalize Unipile's error envelope."""
+        """Issue a single request and normalize Unipile's error envelope.
+
+        Pass ``json=`` for JSON bodies, or ``data=`` for form-encoded
+        bodies (Unipile's InMail path requires form encoding with
+        bracket-notation keys like ``linkedin[inmail]``).  When ``data``
+        is set the Content-Type header is overridden accordingly.
+        """
+        headers = None
+        content_bytes: bytes | None = None
+        if data is not None:
+            # Pre-encode so httpx ships an AsyncByteStream (passing a raw
+            # dict/list to ``data=`` produces a sync ByteStream which the
+            # AsyncClient rejects).
+            from urllib.parse import urlencode
+            pairs = list(data.items()) if isinstance(data, dict) else list(data)
+            content_bytes = urlencode(pairs).encode("utf-8")
+            headers = dict(self._headers())
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
         async with self._client(long=long) as client:
             try:
-                resp = await client.request(method, path, params=params, json=json)
+                if content_bytes is not None:
+                    resp = await client.request(
+                        method, path, params=params,
+                        content=content_bytes, headers=headers,
+                    )
+                else:
+                    resp = await client.request(method, path, params=params, json=json)
             except httpx.RequestError as exc:
                 logger.warning("Unipile %s %s network error: %s", method, path, exc)
                 raise UnipileError(
@@ -190,21 +216,29 @@ class UnipileLinkedInProvider(LinkedInProvider):
     def _raise_for_special_codes(status: int, code: str | None, body: str) -> None:
         """Map Unipile error codes to our domain exceptions.
 
-        Unipile signals:
-          - checkpoint required: status 4xx + type/code mentioning "checkpoint"
-          - account disconnected / credentials invalid: type mentioning
-            "disconnected" or "credentials"
-          - account banned by provider: type/title mentioning "restricted"
-            or "banned"
+        We only match the ``code`` (Unipile's stable error-type identifier),
+        not the prose detail — earlier impls grepped the body which
+        false-positived on things like ``errors/resource_access_restricted``
+        (a Unipile plan/permission error, not a LinkedIn account state).
         """
-        haystack = " ".join(filter(None, [str(code or ""), body[:300].lower()]))
-        haystack = haystack.lower()
-        if "checkpoint" in haystack or "captcha" in haystack or "2fa" in haystack:
+        code_str = (code or "").lower()
+        if any(t in code_str for t in (
+            "checkpoint", "captcha", "2fa", "otp",
+        )):
             raise ChallengeRequired(
                 f"Unipile reports LinkedIn checkpoint required ({status})",
                 challenge_url="https://www.linkedin.com",
             )
-        if "restricted" in haystack or "banned" in haystack or "suspended" in haystack:
+        # Be precise: only the LinkedIn-account-state errors map to
+        # AccountRestricted.  ``errors/resource_access_restricted`` and
+        # similar API-access errors are plain UnipileErrors.
+        if code_str in {
+            "errors/account_restricted",
+            "errors/account_banned",
+            "errors/account_suspended",
+            "errors/linkedin_restricted",
+            "errors/linkedin_banned",
+        }:
             raise AccountRestricted(
                 f"Unipile reports LinkedIn account restricted ({status})"
             )
@@ -258,6 +292,20 @@ class UnipileLinkedInProvider(LinkedInProvider):
         result = await self._request("GET", f"/api/v1/accounts/{unipile_account_id}")
         return result if isinstance(result, dict) else {"raw": result}
 
+    async def list_accounts(self) -> list[dict[str, Any]]:
+        """Return every account currently linked to this Unipile tenant.
+
+        Used to import accounts that were connected via Unipile's dashboard
+        (outside our portal flow) — we can present them as "discoverable"
+        and let the user bind one to a fresh local ``LinkedInAccount`` row.
+        Filters to LinkedIn-typed accounts; ignores GOOGLE_OAUTH / IMAP / etc.
+        """
+        result = await self._request("GET", "/api/v1/accounts")
+        if not isinstance(result, dict):
+            return []
+        items = result.get("items") or []
+        return [a for a in items if str(a.get("type", "")).upper() == "LINKEDIN"]
+
     async def delete_account(self, unipile_account_id: str) -> None:
         """Tear down a linked account on Unipile's side (user removed it locally)."""
         await self._request("DELETE", f"/api/v1/accounts/{unipile_account_id}")
@@ -285,7 +333,20 @@ class UnipileLinkedInProvider(LinkedInProvider):
         #   "CREDENTIALS" / "DISCONNECTED"       — re-auth needed
         #   "CHECKPOINT"                         — challenge
         #   "BANNED" / "RESTRICTED"              — penalty box
-        srcstatus = str(status.get("status") or status.get("connection_status") or "").upper()
+        # GET /accounts/{id} returns the per-data-stream status under
+        # ``sources[].status`` rather than a top-level field, so we fall
+        # back to that when the rollup fields are missing.
+        srcstatus = (
+            status.get("status")
+            or status.get("connection_status")
+            or next(
+                (s.get("status") for s in (status.get("sources") or [])
+                 if isinstance(s, dict) and s.get("status")),
+                None,
+            )
+            or ""
+        )
+        srcstatus = str(srcstatus).upper()
         if srcstatus in {"OK", "CONNECTED", "ACTIVE"}:
             return ActionResult(ok=True, meta=status)
         if "CHECKPOINT" in srcstatus or "2FA" in srcstatus:
@@ -299,6 +360,41 @@ class UnipileLinkedInProvider(LinkedInProvider):
                 meta={"restricted": True, **status},
             )
         return ActionResult(ok=False, error=f"unipile status={srcstatus or 'unknown'}", meta=status)
+
+    async def _resolve_provider_id(
+        self, account_id: str, profile: ProfileRef
+    ) -> str | None:
+        """Turn a ProfileRef into Unipile's canonical member provider_id.
+
+        Many Unipile endpoints (``/users/invite``, ``/chats``,
+        ``/users/follow``, ``/users/{id}/posts``) reject LinkedIn public
+        slugs with ``errors/invalid_recipient`` or "User ID does not match
+        provider's expected format" — they require the
+        ``ACoAA...`` token returned by ``GET /users/{slug}``.
+
+        If the ProfileRef already carries a ``urn`` we trust it.  Otherwise
+        we resolve via a single profile fetch and return the
+        ``provider_id`` field from the response (caching the result on the
+        ProfileRef so a follow-up call in the same step doesn't re-fetch).
+        """
+        if profile.urn:
+            return profile.urn
+        if not profile.public_id:
+            return None
+        resolved = await self._request(
+            "GET", f"/api/v1/users/{profile.public_id}",
+            params={"account_id": account_id},
+        )
+        if isinstance(resolved, dict):
+            provider_id = (
+                resolved.get("provider_id")
+                or resolved.get("id")
+                or resolved.get("urn")
+            )
+            if provider_id:
+                profile.urn = provider_id
+                return provider_id
+        return None
 
     async def view_profile(self, account: Any, profile: ProfileRef) -> ActionResult:
         """Register a profile view (ghost view) via Unipile's user-fetch endpoint.
@@ -328,14 +424,37 @@ class UnipileLinkedInProvider(LinkedInProvider):
         return ActionResult(ok=True, external_id=urn, meta=data if isinstance(data, dict) else None)
 
     async def follow_profile(self, account: Any, profile: ProfileRef) -> ActionResult:
+        """Follow a LinkedIn profile.
+
+        Unipile doesn't package a follow endpoint — it has to go through
+        their raw Voyager passthrough at ``POST /api/v1/linkedin``, hitting
+        LinkedIn's ``followingStates`` patch URL with the member's
+        ``fsd_profile`` URN.  Confirmed against the Unipile developer docs
+        + their Node SDK source.
+        """
         try:
             aid = self._account_id(account)
-            provider_id = profile.public_id or profile.urn
+            provider_id = await self._resolve_provider_id(aid, profile)
             if not provider_id:
                 return ActionResult(ok=False, error="follow_profile requires a public_id or urn")
+            # Normalise — Unipile returns the bare member token; LinkedIn's
+            # followingStates URL needs the full ``urn:li:fsd_profile:`` URN.
+            if provider_id.startswith("urn:li:fsd_profile:"):
+                fsd_urn = provider_id
+            else:
+                fsd_urn = f"urn:li:fsd_profile:{provider_id}"
             data = await self._request(
-                "POST", f"/api/v1/users/{provider_id}/follow",
-                params={"account_id": aid},
+                "POST", "/api/v1/linkedin",
+                json={
+                    "account_id": aid,
+                    "method": "POST",
+                    "request_url": (
+                        "https://www.linkedin.com/voyager/api/feed/dash/"
+                        f"followingStates/urn:li:fsd_followingState:{fsd_urn}"
+                    ),
+                    "body": {"patch": {"$set": {"following": True}}},
+                    "encoding": False,
+                },
             )
         except ChallengeRequired as exc:
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
@@ -349,10 +468,16 @@ class UnipileLinkedInProvider(LinkedInProvider):
     ) -> ActionResult:
         try:
             aid = self._account_id(account)
+            # Body-based endpoint (no URN in path) — the `/posts/{urn}/reactions`
+            # path-style variant 404s.  Returns 201 ``{"object":"ReactionAdded"}``
+            # on success.
             data = await self._request(
-                "POST", f"/api/v1/posts/{post_urn}/reactions",
-                params={"account_id": aid},
-                json={"type": (reaction or "LIKE").upper()},
+                "POST", "/api/v1/posts/reaction",
+                json={
+                    "account_id": aid,
+                    "post_id": post_urn,
+                    "type": (reaction or "LIKE").upper(),
+                },
             )
         except ChallengeRequired as exc:
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
@@ -364,7 +489,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
     async def latest_post_urn(self, account: Any, profile: ProfileRef) -> str | None:
         try:
             aid = self._account_id(account)
-            provider_id = profile.public_id or profile.urn
+            provider_id = await self._resolve_provider_id(aid, profile)
             if not provider_id:
                 return None
             data = await self._request(
@@ -389,7 +514,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
     ) -> ActionResult:
         try:
             aid = self._account_id(account)
-            provider_id = profile.public_id or profile.urn
+            provider_id = await self._resolve_provider_id(aid, profile)
             if not provider_id:
                 return ActionResult(ok=False, error="send_connect_request requires a public_id or urn")
             payload: dict[str, Any] = {
@@ -415,7 +540,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
     async def send_dm(self, account: Any, profile: ProfileRef, text: str) -> ActionResult:
         try:
             aid = self._account_id(account)
-            provider_id = profile.public_id or profile.urn
+            provider_id = await self._resolve_provider_id(aid, profile)
             if not provider_id:
                 return ActionResult(ok=False, error="send_dm requires a public_id or urn")
             # Unipile's "start chat" endpoint takes the attendee provider_id and
@@ -443,41 +568,81 @@ class UnipileLinkedInProvider(LinkedInProvider):
     async def invite_to_page(
         self, account: Any, profile: ProfileRef, page_id: str
     ) -> ActionResult:
-        try:
-            aid = self._account_id(account)
-            provider_id = profile.public_id or profile.urn
-            if not provider_id:
-                return ActionResult(ok=False, error="invite_to_page requires a public_id or urn")
-            data = await self._request(
-                "POST", f"/api/v1/companies/{page_id}/invite",
-                params={"account_id": aid},
-                json={"provider_id": provider_id},
-            )
-        except ChallengeRequired as exc:
-            account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
-            raise
-        except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
-        return ActionResult(ok=True, external_id=provider_id, meta=data if isinstance(data, dict) else None)
+        """Invite a connection to follow a company page.
+
+        Blocked on Unipile's side, not ours.  The correct Voyager endpoint
+        was HAR-captured from LinkedIn's admin UI:
+
+            POST /voyager/api/voyagerRelationshipsDashInvitations
+                ?inviter=(organizationUrn:urn:li:fsd_company:<PAGE_ID>)
+            x-restli-method: batch_create
+            body: {"elements":[{"inviteeMember":"urn:li:fsd_profile:<MEMBER>",
+                                "genericInvitationType":"ORGANIZATION"}]}
+
+        and routed through Unipile's raw passthrough at
+        ``POST /api/v1/linkedin`` (the same passthrough ``follow_profile``
+        uses successfully).  Both the inlined-query and the documented
+        ``query_params`` forms return Unipile's
+        ``errors/malformed_request`` from their forwarder.  Direct probing
+        shows Unipile's passthrough rejects *any* request to
+        ``voyagerRelationshipsDashInvitations`` (and to other voyager
+        paths like ``identity/profiles/me``) — the passthrough whitelist
+        is narrower than the docs suggest.  ``follow_profile`` works only
+        because ``feed/dash/followingStates`` is on the allowlist.
+
+        To unblock: contact Unipile support and ask them to whitelist
+        ``voyagerRelationshipsDashInvitations`` for our workspace, or
+        request that they package the action natively.  Once they do,
+        re-add ``LINKEDIN_INVITE_TO_PAGE`` to ``PUBLISHABLE_KINDS_M1``
+        and restore the impl from git history (commit message will
+        mention "wire invite_to_page via Voyager passthrough").
+        """
+        return ActionResult(
+            ok=False,
+            error=(
+                "linkedin_invite_to_page is blocked on Unipile's passthrough "
+                "whitelist — the voyagerRelationshipsDashInvitations endpoint "
+                "is not allowlisted.  Contact Unipile support to enable."
+            ),
+            meta={"code": "unipile_passthrough_blocked", "page_id": page_id},
+        )
 
     async def send_inmail(
         self, account: Any, profile: ProfileRef, subject: str, body: str
     ) -> ActionResult:
+        """Send a LinkedIn InMail via Sales Navigator.
+
+        Unipile reuses ``POST /api/v1/chats`` for InMail but with three
+        wrinkles documented in their reference:
+          1. Body MUST be form-encoded (JSON is silently rewritten and the
+             ``linkedin[*]`` nested object never reaches LinkedIn).
+          2. The ``linkedin`` envelope uses bracket-notation form keys:
+             ``linkedin[api]=sales_navigator`` + ``linkedin[inmail]=true``.
+          3. The attendee id must be the **Sales Nav** flavour of the
+             provider_id (``ACw...``), not the classic feed provider_id
+             (``ACoAA...``).  We fetch it via
+             ``GET /users/{public_id}?linkedin_sections=sales_navigator``.
+        """
         try:
             aid = self._account_id(account)
-            provider_id = profile.public_id or profile.urn
-            if not provider_id:
+            sn_id = await self._resolve_provider_id(aid, profile)
+            if not sn_id:
                 return ActionResult(ok=False, error="send_inmail requires a public_id or urn")
+            # Pass the classic provider_id; Unipile resolves the Sales Nav
+            # variant internally when ``linkedin[api]=sales_navigator`` is
+            # set in the form body.  A separate ``linkedin_sections`` param
+            # accepts only profile-section enums (about/experience/etc.),
+            # not API flavours.
+            form = [
+                ("account_id", aid),
+                ("attendees_ids", sn_id),
+                ("text", body),
+                ("subject", subject),
+                ("linkedin[api]", "sales_navigator"),
+                ("linkedin[inmail]", "true"),
+            ]
             data = await self._request(
-                "POST", "/api/v1/chats",
-                json={
-                    "account_id": aid,
-                    "attendees_ids": [provider_id],
-                    "text": body,
-                    "subject": subject,
-                    "inmail": True,
-                },
-                long=True,
+                "POST", "/api/v1/chats", data=form, long=True,
             )
         except ChallengeRequired as exc:
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
@@ -492,17 +657,18 @@ class UnipileLinkedInProvider(LinkedInProvider):
                     meta={"premium_required": True, "code": exc.code},
                 )
             return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
-        return ActionResult(ok=True, external_id=provider_id, meta=data if isinstance(data, dict) else None)
+        return ActionResult(ok=True, external_id=sn_id, meta=data if isinstance(data, dict) else None)
 
     async def comment_on_post(
         self, account: Any, post_urn: str, comment: str
     ) -> ActionResult:
         try:
             aid = self._account_id(account)
+            # account_id goes in the body, not the query string — Unipile
+            # 400s with "Required property" otherwise.
             data = await self._request(
                 "POST", f"/api/v1/posts/{post_urn}/comments",
-                params={"account_id": aid},
-                json={"text": comment},
+                json={"account_id": aid, "text": comment},
             )
         except ChallengeRequired as exc:
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
@@ -522,7 +688,12 @@ class UnipileLinkedInProvider(LinkedInProvider):
         """
         try:
             aid = self._account_id(account)
-            since_iso = since.astimezone(timezone.utc).isoformat()
+            # Unipile's `after` param requires strict ISO-8601 with
+            # millisecond precision and a literal Z suffix
+            # (`YYYY-MM-DDTHH:MM:SS.sssZ`). Python's default isoformat()
+            # emits microseconds + `+00:00`, which Unipile 400s on.
+            utc = since.astimezone(timezone.utc)
+            since_iso = utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
             data = await self._request(
                 "GET", "/api/v1/chats",
                 params={"account_id": aid, "limit": 20, "after": since_iso},

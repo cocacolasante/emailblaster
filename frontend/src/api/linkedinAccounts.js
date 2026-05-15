@@ -10,11 +10,6 @@ export async function getLinkedInAccount(id) {
   return data;
 }
 
-export async function createLinkedInAccount(payload) {
-  const { data } = await client.post('/linkedin-accounts/', payload);
-  return data;
-}
-
 export async function updateLinkedInAccount(id, payload) {
   const { data } = await client.patch(`/linkedin-accounts/${id}`, payload);
   return data;
@@ -48,5 +43,20 @@ export async function connectViaUnipile(payload) {
 
 export async function syncUnipileStatus(id) {
   const { data } = await client.post(`/linkedin-accounts/${id}/sync-unipile`);
+  return data;
+}
+
+// --- Import existing Unipile accounts ---------------------------------
+// When the user connected LinkedIn via Unipile's dashboard (not our portal),
+// the account is in Unipile but not in our DB. `listDiscoverableUnipileAccounts`
+// surfaces those; `importFromUnipile` binds one to a fresh local row.
+
+export async function listDiscoverableUnipileAccounts() {
+  const { data } = await client.get('/linkedin-accounts/discoverable');
+  return data;
+}
+
+export async function importFromUnipile(payload) {
+  const { data } = await client.post('/linkedin-accounts/import-from-unipile', payload);
   return data;
 }

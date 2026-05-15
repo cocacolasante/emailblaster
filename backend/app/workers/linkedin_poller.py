@@ -125,9 +125,8 @@ async def _account_has_work(session: AsyncSession, account_id) -> bool:
       - CONNECTED — waiting on a reply to a DM we sent / could send
 
     If every lead in this account's campaigns is in UNKNOWN/DECLINED/WITHDRAWN
-    state, polling produces zero useful information and just burns playwright
-    launches against LinkedIn, which drifts the browser fingerprint and
-    invalidates the cookie.
+    state, polling produces zero useful information and just burns Unipile
+    API calls.
     """
     count = await session.scalar(
         select(func.count())
@@ -160,7 +159,7 @@ async def _poll_all_async() -> dict[str, int]:
             for acc in accounts:
                 if not await _account_has_work(session, acc.id):
                     # Nothing inbound could possibly be relevant — skip the
-                    # playwright launch entirely. Bump last_polled_at so we
+                    # Unipile poll entirely. Bump last_polled_at so we
                     # don't poll-spam on the next tick either.
                     acc.last_polled_at = datetime.now(timezone.utc)
                     totals["skipped_no_work"] += 1

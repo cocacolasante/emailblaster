@@ -55,7 +55,6 @@ from app.services import brevo
 from app.services.email_template import render_html, render_text
 from app.services.linkedin import get_provider as get_linkedin_provider
 from app.services.linkedin.base import (
-    AccountLockBusy,
     AccountRestricted,
     ChallengeRequired,
     ProfileRef,
@@ -572,7 +571,7 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     if not post_urn:
                         # M4: "latest" + "most_engaged" both fall back to
                         # latest_post_urn() — most_engaged would need a
-                        # ranked post fetch which isn't in linkedin-api's
+                        # ranked post fetch which isn't on the provider's
                         # surface. Documented as a known limitation.
                         post_urn = await provider.latest_post_urn(account, profile)
                     if not post_urn:
@@ -581,11 +580,6 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     result = await provider.comment_on_post(account, post_urn, comment_text)
                 else:
                     return {"status": "misconfigured", "error": f"unsupported kind: {kind.value}"}
-            except AccountLockBusy as exc:
-                # Another playwright op is already in flight for this LI
-                # account. Treat as transient — sequencer keeps the lead
-                # parked on this node and tries again in 5 min.
-                return {"status": "rate_limited", "error": str(exc)}
             except ChallengeRequired as exc:
                 account.status = LinkedInAccountStatus.CHALLENGED
                 account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
