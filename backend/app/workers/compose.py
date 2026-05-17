@@ -2,8 +2,14 @@
 
 Picks a generic or personalized prompt based on research quality, calls
 Anthropic without tools, parses the JSON response (retrying once with a
-stricter system prompt on parse failure), appends the unsubscribe footer,
-and enqueues send_lead when the campaign is in the running state.
+stricter system prompt on parse failure), sanitises stray em/en dashes
+out of the body, and enqueues send_lead when the campaign is in the
+running state.
+
+Outreach emails are sent as individual person-to-person messages, so we
+do NOT append a CAN-SPAM-style unsubscribe footer.  The
+``/unsubscribe/{lead_id}`` route + Brevo unsubscribed-event handler stay
+in place for any reply/bounce/complaint flow that touches them.
 """
 from __future__ import annotations
 
@@ -45,6 +51,16 @@ def _get_client() -> AsyncAnthropic:
 # --------------------------------------------------------------------------
 
 
+_STYLE_RULES = (
+    "STYLE RULES (strict):\n"
+    "- This is a person-to-person email written by the sender. Do NOT include "
+    "an unsubscribe link, footer, or any CAN-SPAM-style boilerplate.\n"
+    "- Do NOT use em dashes or en dashes (no '—', no '–'). Use commas, "
+    "periods, parentheses, or rephrase the sentence. This is non-negotiable.\n"
+    "- Plain text only. No markdown."
+)
+
+
 def _build_generic_prompt(
     goal: str, tone: str, sender_name: str,
     first_name: str, last_name: str, company: str,
@@ -60,9 +76,10 @@ def _build_generic_prompt(
         f"Name: {first_name} {last_name}\n"
         f"Company: {company}\n"
         f"{website_line}"
-        "\nResearch on this person was limited — use only their name and company.\n"
+        "\nResearch on this person was limited. Use only their name and company.\n"
         "Write a compelling subject line and email body under 150 words. Focus on "
         "value, not flattery.\n\n"
+        f"{_STYLE_RULES}\n\n"
         'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
     )
 
@@ -86,7 +103,7 @@ def _build_personalized_prompt(
             + "\n---\n".join(corrected_examples)
         )
     else:
-        style_block = "No style corrections yet — use your best judgment."
+        style_block = "No style corrections yet. Use your best judgment."
 
     return (
         "You are an expert cold email copywriter.\n"
@@ -105,6 +122,7 @@ def _build_personalized_prompt(
         "Write a personalized subject line and email body. Reference something "
         "specific and real from the research above. Keep under 200 words. No "
         "sycophancy. Do not mention doing research.\n\n"
+        f"{_STYLE_RULES}\n\n"
         'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
     )
 
@@ -112,6 +130,28 @@ def _build_personalized_prompt(
 # --------------------------------------------------------------------------
 # Anthropic call + parse
 # --------------------------------------------------------------------------
+
+
+def _strip_long_dashes(text: str) -> str:
+    """Belt-and-suspenders sanitiser for the prompt's no-em-dashes rule.
+
+    Models sometimes ignore style instructions on the first attempt.  Em
+    dashes (U+2014) and en dashes (U+2013) are replaced with ", " — which
+    reads naturally for the parenthetical-aside usage that most slipped
+    em dashes correspond to.  Standalone hyphens (U+002D) are left alone.
+    Collapses any accidental double-spaces that result.
+    """
+    if not text:
+        return text
+    for ch in ("—", "–"):
+        text = text.replace(f" {ch} ", ", ")
+        text = text.replace(ch, ", ")
+    # Collapse "X,, Y" or stray double-spaces from the replacements.
+    while ",," in text:
+        text = text.replace(",,", ",")
+    while "  " in text:
+        text = text.replace("  ", " ")
+    return text
 
 
 def _validate_email_json(parsed: Any) -> dict[str, str] | None:
@@ -146,8 +186,8 @@ async def _generate_email(system_prompt: str) -> dict[str, str]:
     stricter = (
         system_prompt
         + "\n\nCRITICAL: Your previous response was not valid JSON. "
-        'Respond with ONLY one JSON object: {"subject": "...", "body": "..."} '
-        "— no markdown fences, no preamble, no commentary, no trailing text."
+        'Respond with ONLY one JSON object: {"subject": "...", "body": "..."}. '
+        "No markdown fences, no preamble, no commentary, no trailing text."
     )
     text = await _call_anthropic(stricter)
     parsed = _validate_email_json(_parse_json(text))
@@ -180,8 +220,9 @@ def _build_linkedin_dm_prompt(
             f"Company: {company}\n"
             f"{website_line}"
             "\nWrite a brief, natural LinkedIn DM under 100 words. "
-            "Conversational — this is a direct message, not a formal email. "
+            "Conversational. This is a direct message, not a formal email. "
             "No sycophancy. No hollow flattery.\n\n"
+            f"{_STYLE_RULES}\n\n"
             'Respond ONLY with JSON: {"body": "..."}'
         )
     person_news = "; ".join(research_data.get("person_news") or []) or "(none)"
@@ -202,8 +243,9 @@ def _build_linkedin_dm_prompt(
         f"Company: {company_desc}\n\n"
         "Write a personalized LinkedIn DM under 100 words. "
         "Reference something specific and real from the research. "
-        "Conversational — this is a direct message on LinkedIn, not a formal email. "
+        "Conversational. This is a direct message on LinkedIn, not a formal email. "
         "No sycophancy. Do not mention doing research.\n\n"
+        f"{_STYLE_RULES}\n\n"
         'Respond ONLY with JSON: {"body": "..."}'
     )
 
@@ -224,16 +266,16 @@ async def generate_linkedin_dm_text(
     text = await _call_anthropic(system_prompt, "Write the LinkedIn DM now. Respond ONLY with the JSON object.")
     parsed = _parse_json(text)
     if isinstance(parsed, dict) and isinstance(parsed.get("body"), str) and parsed["body"].strip():
-        return parsed["body"].strip()
+        return _strip_long_dashes(parsed["body"].strip())
 
     stricter = (
         system_prompt
-        + '\n\nCRITICAL: Respond ONLY with {"body": "..."} — no markdown, no preamble, no trailing text.'
+        + '\n\nCRITICAL: Respond ONLY with {"body": "..."}. No markdown, no preamble, no trailing text.'
     )
     text = await _call_anthropic(stricter, "Write the LinkedIn DM now. Respond ONLY with the JSON object.")
     parsed = _parse_json(text)
     if isinstance(parsed, dict) and isinstance(parsed.get("body"), str) and parsed["body"].strip():
-        return parsed["body"].strip()
+        return _strip_long_dashes(parsed["body"].strip())
     raise ValueError("Anthropic returned unparseable response for LinkedIn DM after retry")
 
 
@@ -317,19 +359,19 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             await _mark_compose_failed(str(lid))
             return {"status": "parse_failed", "error": str(e)}
 
-        # Append unsubscribe footer.
-        unsub_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/unsubscribe/{lid}"
-        body_with_footer = (
-            f"{composed['body']}\n\n---\nTo unsubscribe: {unsub_url}"
-        )
+        # Sanitise stray em/en dashes (the prompt forbids them but models
+        # occasionally slip).  No unsubscribe footer — these are individual
+        # person-to-person messages, not bulk transactional mail.
+        subject_clean = _strip_long_dashes(composed["subject"])
+        body_clean = _strip_long_dashes(composed["body"])
 
         # Re-open session to persist the result.
         async with AsyncSession(engine, expire_on_commit=False) as session:
             lead = await session.get(Lead, lid)
             if lead is None:
                 return {"status": "not_found"}
-            lead.composed_subject = composed["subject"]
-            lead.composed_body = body_with_footer
+            lead.composed_subject = subject_clean
+            lead.composed_body = body_clean
             lead.compose_status = ComposeStatus.DONE
             await session.commit()
     finally:

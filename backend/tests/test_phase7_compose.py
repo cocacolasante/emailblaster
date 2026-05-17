@@ -267,15 +267,12 @@ async def test_rejects_empty_subject_or_body(db_session):
 
 
 # --------------------------------------------------------------------------
-# Persistence + footer
+# Persistence + style sanitisation
 # --------------------------------------------------------------------------
 
 
-async def test_appends_unsubscribe_footer_with_lead_id(db_session, monkeypatch):
-    monkeypatch.setattr(
-        "app.workers.compose.settings.WEBHOOK_BASE_URL",
-        "https://test.example.com",
-    )
+async def test_does_not_append_unsubscribe_footer(db_session):
+    """These are individual person-to-person messages; no CAN-SPAM footer."""
     campaign = await _make_campaign(db_session)
     lead = await _make_lead(db_session, campaign)
 
@@ -287,9 +284,45 @@ async def test_appends_unsubscribe_footer_with_lead_id(db_session, monkeypatch):
 
     refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
     await db_session.refresh(refreshed)
-    expected_footer = f"\n\n---\nTo unsubscribe: https://test.example.com/unsubscribe/{lead.id}"
-    assert refreshed.composed_body.endswith(expected_footer)
-    assert refreshed.composed_body.startswith("Hello there.")
+    assert refreshed.composed_body == "Hello there."
+    assert "unsubscribe" not in refreshed.composed_body.lower()
+    assert "---" not in refreshed.composed_body
+
+
+async def test_em_and_en_dashes_sanitised_from_body_and_subject(db_session):
+    """Model-emitted em/en dashes get rewritten to ', ' before persisting."""
+    campaign = await _make_campaign(db_session)
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '{"subject": "Quick idea \\u2014 worth a look",'
+        ' "body": "Hi Jane,\\n\\nLove the pivot \\u2014 the new pricing page is sharp. '
+        'Two weeks \\u2013 quick call?"}'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        await compose_mod.compose_lead_async(str(lead.id))
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert "—" not in refreshed.composed_body
+    assert "–" not in refreshed.composed_body
+    assert "—" not in refreshed.composed_subject
+    assert refreshed.composed_subject == "Quick idea, worth a look"
+    assert "Love the pivot, the new pricing page is sharp." in refreshed.composed_body
+    assert "Two weeks, quick call?" in refreshed.composed_body
+
+
+def test_strip_long_dashes_helper():
+    fn = compose_mod._strip_long_dashes
+    assert fn("a — b") == "a, b"
+    assert fn("a—b") == "a, b"
+    assert fn("a – b") == "a, b"
+    assert fn("multi — dashes — here") == "multi, dashes, here"
+    # Plain hyphens left alone.
+    assert fn("co-founder is in-house") == "co-founder is in-house"
+    # No accidental ",," from a model that already uses "—,"
+    assert fn("hi,— there") == "hi, there"
+    assert fn("") == ""
 
 
 async def test_status_transitions_to_done(db_session):

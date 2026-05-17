@@ -321,6 +321,20 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   is closed" on the second task.  `sequencer._li_redis()` still caches
   (legacy) — fine for tests that monkeypatch `_LI_REDIS_CLIENT=None`,
   but rewrite if it ever causes issues in production.
+- **Sequencer parks on async-event edges.** When an action step succeeds
+  but no outgoing edge condition currently matches, the sequencer
+  parks the lead on the current node instead of halting — as long as
+  at least one unmatched edge uses a "deferrable" op (one of
+  `linkedin_connection`, `replied`, `opened`, `clicked`, `bounced`,
+  `days_since_entered_node`).  Re-evaluation runs every
+  `EDGE_WAIT_RETRY_MINUTES` (30) up to `MAX_EDGE_WAIT_DAYS` (14), then
+  halts with a clear reason.  This is how `linkedin_connect → DM
+  (when linkedin_connection=connected)` waits for the prospect to
+  accept the invite before firing the DM.  Re-dispatch is suppressed
+  while parked via `_already_executed_this_visit` (checks for a SENT
+  `lead_step_executions` row since `entered_current_at`).  Negations
+  (`not replied`) and compound (`and`/`or`) conditions do NOT trigger
+  parking — they halt immediately, preserving the "skip on reply" pattern.
 - **Sequencer transient retries.** A `skipped` step normally advances
   the cursor immediately, but skips with `status` in
   `TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited"}`

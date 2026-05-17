@@ -387,3 +387,192 @@ async def test_transient_retry_cap_eventually_advances(db_session, monkeypatch):
     assert state.status == LeadSequenceStatus.COMPLETED
 
 
+# --------------------------------------------------------------------------
+# Connect → DM "wait for acceptance" parking semantics
+# --------------------------------------------------------------------------
+
+
+async def _build_connect_then_dm_sequence(db_session, campaign):
+    """email entry -> linkedin_connect -- linkedin_connection=connected --> linkedin_dm"""
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db_session.add(seq)
+    await db_session.flush()
+    entry = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+        config={"use_campaign_compose": True}, is_entry=True,
+    )
+    connect_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_CONNECT,
+        config={"note_template": "Hi {{first_name}}"}, is_entry=False,
+    )
+    dm_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_DM,
+        config={"body_template": "Thanks for connecting!"}, is_entry=False,
+    )
+    db_session.add_all([entry, connect_node, dm_node])
+    await db_session.flush()
+    db_session.add_all([
+        SequenceEdge(sequence_id=seq.id, from_node_id=entry.id,
+                     to_node_id=connect_node.id, condition={"op": "always"}),
+        # The gated edge: only traverse once the prospect accepts.
+        SequenceEdge(sequence_id=seq.id, from_node_id=connect_node.id,
+                     to_node_id=dm_node.id,
+                     condition={"op": "linkedin_connection", "value": "connected"}),
+        SequenceEdge(sequence_id=seq.id, from_node_id=dm_node.id,
+                     to_node_id=None, condition={"op": "always"}),
+    ])
+    await db_session.commit()
+    return seq, entry, connect_node, dm_node
+
+
+async def test_connect_then_dm_parks_when_invitation_pending(db_session, monkeypatch):
+    """After linkedin_connect fires the lead is INVITED, not CONNECTED.  The
+    gated DM edge does not match yet — the lead must stay on the connect
+    node and re-evaluate later, not halt."""
+    from app.workers import sequencer as seq_mod
+    from app.models import LinkedInConnectionStatus
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, connect_node, dm_node = await _build_connect_then_dm_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+
+    class _StubConnectOk:
+        async def send_connect_request(self, account, profile, note=None):
+            return ActionResult(ok=True, external_id="ACoAA-invite-1")
+        async def view_profile(self, *a, **k): return ActionResult(ok=True)
+        async def follow_profile(self, *a, **k): return ActionResult(ok=True)
+        async def react_to_post(self, *a, **k): return ActionResult(ok=True)
+        async def latest_post_urn(self, *a, **k): return None
+        async def test_connection(self, *a, **k): return ActionResult(ok=True)
+        async def inbox_recent_events(self, *a, **k): return []
+    monkeypatch.setattr(seq_mod, "get_linkedin_provider", lambda: _StubConnectOk())
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=connect_node.sequence_id,
+        current_node_id=connect_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    # Fire the connect step.
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(connect_node.id))
+    assert result["status"] == "sent"
+
+    # Flip the lead to INVITED — the real handler does this via
+    # _persist_invite_optimistic; we mimic it for the test.
+    lead.linkedin_connection_status = LinkedInConnectionStatus.INVITED
+    await db_session.commit()
+
+    await sequencer._record_execution_and_advance(lead.id, connect_node.id, result)
+    await db_session.refresh(state)
+
+    # Lead is parked on the connect node, NOT advanced to DM, NOT halted.
+    assert state.status == LeadSequenceStatus.ACTIVE
+    assert state.current_node_id == connect_node.id
+    assert state.next_run_at is not None
+    assert state.halt_reason is None
+
+    # The next scheduler tick (still pending) must NOT re-fire the connect step
+    # — the prior SENT execution row means we're parked, just re-eval edges.
+    dispatched: list[tuple[str, str]] = []
+    def fake_apply_async(*, args, **kw):
+        dispatched.append((args[0], args[1]))
+    monkeypatch.setattr(sequencer.send_linkedin_step, "apply_async", fake_apply_async)
+
+    # Move next_run_at into the past so the scheduler picks the row up.
+    state.next_run_at = _now() - timedelta(seconds=1)
+    await db_session.commit()
+
+    await sequencer._advance_sequences_async()
+    await db_session.refresh(state)
+    assert dispatched == []  # action did NOT re-fire
+    assert state.current_node_id == connect_node.id  # still parked
+
+
+async def test_connect_then_dm_advances_after_acceptance(db_session, monkeypatch):
+    """Once linkedin_connection flips to CONNECTED (Unipile webhook for
+    invitation.accepted) the parked lead advances to the DM node on the
+    next scheduler tick."""
+    from app.workers import sequencer as seq_mod
+    from app.models import LinkedInConnectionStatus
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, connect_node, dm_node = await _build_connect_then_dm_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    lead.linkedin_connection_status = LinkedInConnectionStatus.INVITED
+    await db_session.commit()
+
+    # Simulate the lead already parked on connect_node with a SENT exec row.
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=connect_node.sequence_id,
+        current_node_id=connect_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now() - timedelta(seconds=1),
+        entered_current_at=_now() - timedelta(minutes=45),
+    )
+    db_session.add(state)
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=connect_node.id,
+        result=LeadStepResult.SENT, external_id="ACoAA-invite-1",
+    ))
+    await db_session.commit()
+
+    # Acceptance lands (webhook would normally do this).
+    lead.linkedin_connection_status = LinkedInConnectionStatus.CONNECTED
+    await db_session.commit()
+
+    dispatched: list[tuple[str, str]] = []
+    def fake_apply_async(*, args, **kw):
+        dispatched.append((args[0], args[1]))
+    monkeypatch.setattr(sequencer.send_linkedin_step, "apply_async", fake_apply_async)
+
+    # Stub the provider so any dispatched step would succeed (we're only
+    # checking the cursor advances; the actual dispatch happens later).
+    _stub_provider(monkeypatch)
+
+    await sequencer._advance_sequences_async()
+    await db_session.refresh(state)
+
+    # Cursor walked from connect_node to dm_node; DM is queued for dispatch
+    # on the NEXT tick (this tick only advanced the cursor + re-eval).
+    assert state.current_node_id == dm_node.id
+    assert state.status == LeadSequenceStatus.ACTIVE
+
+
+async def test_connect_then_dm_halts_after_max_wait(db_session, monkeypatch):
+    """When the prospect never accepts, the lead halts after MAX_EDGE_WAIT_DAYS
+    with a clear reason so it surfaces in the halted-leads panel."""
+    from app.workers import sequencer as seq_mod
+    from app.models import LinkedInConnectionStatus
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, connect_node, dm_node = await _build_connect_then_dm_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    lead.linkedin_connection_status = LinkedInConnectionStatus.INVITED
+    await db_session.commit()
+
+    long_ago = _now() - timedelta(days=sequencer.MAX_EDGE_WAIT_DAYS + 1)
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=connect_node.sequence_id,
+        current_node_id=connect_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=long_ago,
+    )
+    db_session.add(state)
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=connect_node.id,
+        result=LeadStepResult.SENT, external_id="ACoAA-invite-1",
+        attempted_at=long_ago,
+    ))
+    await db_session.commit()
+
+    _stub_provider(monkeypatch)
+    await sequencer._advance_sequences_async()
+    await db_session.refresh(state)
+
+    assert state.status == LeadSequenceStatus.HALTED
+    assert state.halt_reason is not None
+    assert f"{sequencer.MAX_EDGE_WAIT_DAYS}d" in state.halt_reason
+

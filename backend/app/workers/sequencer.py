@@ -86,6 +86,33 @@ TRANSIENT_RETRY_MINUTES = 5
 # 10 retries × 5 min ≈ 50 minutes of grace.
 MAX_TRANSIENT_RETRIES = 10
 
+# When an action step succeeds but none of its outgoing edge conditions are
+# currently satisfied (e.g. linkedin_connect fired, lead is INVITED, the
+# DM branch is gated by linkedin_connection==connected), we PARK the lead
+# on the current node and re-evaluate the edges every EDGE_WAIT_RETRY_MINUTES.
+# This makes "connect, then DM after acceptance" the natural pattern users
+# expect from outreach platforms.  After MAX_EDGE_WAIT_DAYS the lead is
+# halted so a never-accepted invite doesn't hold a lead forever — users
+# wanting different timeout routing can add a `days_since_entered_node`
+# fallback edge alongside the conditional one.
+EDGE_WAIT_RETRY_MINUTES = 30
+MAX_EDGE_WAIT_DAYS = 14
+
+# Edge-condition top-level ops that legitimately wait on an asynchronous
+# signal flipping from false→true (a webhook arriving, time passing).  If
+# an unmatched edge uses one of these we park instead of halting.
+# Compound (and/or) and negation (not) edges still halt immediately — the
+# canonical "skip on reply" pattern uses `{op: not, child: {op: replied}}`
+# and users expect that to halt as soon as a reply lands, not after 14 days.
+DEFERRABLE_OPS = {
+    "linkedin_connection",
+    "replied",
+    "opened",
+    "clicked",
+    "bounced",
+    "days_since_entered_node",
+}
+
 _LI_REDIS_CLIENT: aioredis.Redis | None = None
 
 
@@ -259,6 +286,31 @@ async def _build_condition_context(
     )
 
 
+async def _already_executed_this_visit(
+    session: AsyncSession,
+    state: LeadSequenceState,
+    node_id: uuid.UUID,
+) -> bool:
+    """True if a SENT execution row exists for (lead, node) since the lead
+    entered this node — i.e. the action already fired and we're parked
+    waiting for an outgoing-edge condition to flip true.  Without this
+    check the scheduler would re-dispatch the action on every park tick.
+    """
+    if state.entered_current_at is None:
+        return False
+    row = await session.scalar(
+        select(LeadStepExecution.id)
+        .where(
+            LeadStepExecution.lead_id == state.lead_id,
+            LeadStepExecution.node_id == node_id,
+            LeadStepExecution.attempted_at >= state.entered_current_at,
+            LeadStepExecution.result == LeadStepResult.SENT,
+        )
+        .limit(1)
+    )
+    return row is not None
+
+
 async def _arm_next_run(
     session: AsyncSession, state: LeadSequenceState, node: SequenceNode
 ) -> None:
@@ -315,6 +367,31 @@ async def _advance_cursor(
             state.current_node_id = next_node.id
             await _arm_next_run(session, state, next_node)
             return next_node
+
+    # No edge matched.  If at least one edge has a deferrable condition
+    # (a positive op that flips false→true on an async signal), park the
+    # lead on the current node and re-evaluate later — connect→DM and
+    # similar flows depend on waiting for an event (the prospect
+    # accepting an invite, replying, opening, etc.).  Negations,
+    # compounds, and "always" edges fall through to immediate halt.
+    deferrable = [e for e in edges if (e.condition or {}).get("op") in DEFERRABLE_OPS]
+    if deferrable and state.entered_current_at is not None:
+        entered = state.entered_current_at
+        if entered.tzinfo is None:
+            entered = entered.replace(tzinfo=timezone.utc)
+        age = ctx.now - entered
+        if age < timedelta(days=MAX_EDGE_WAIT_DAYS):
+            state.status = LeadSequenceStatus.ACTIVE
+            state.halt_reason = None
+            state.next_run_at = ctx.now + timedelta(minutes=EDGE_WAIT_RETRY_MINUTES)
+            return None  # parked; caller treats this same as "not advanced"
+        state.status = LeadSequenceStatus.HALTED
+        state.halt_reason = (
+            f"waited {MAX_EDGE_WAIT_DAYS}d for an outgoing edge condition to "
+            "match (e.g. connection request never accepted)"
+        )
+        state.next_run_at = None
+        return None
 
     state.status = LeadSequenceStatus.HALTED
     state.halt_reason = "no outgoing edge matched"
@@ -769,8 +846,13 @@ async def _advance_sequences_async() -> dict[str, int]:
                             state.next_run_at = now + timedelta(minutes=5)
                         continue
 
-                # Follow-up email node: dispatch.
+                # Follow-up email node: dispatch unless already sent during
+                # this visit (parked, waiting for an edge condition).
                 if node.kind == SequenceNodeKind.EMAIL:
+                    if await _already_executed_this_visit(session, state, node.id):
+                        await _advance_cursor(session, state, node)
+                        counts["reevaluated_parked"] = counts.get("reevaluated_parked", 0) + 1
+                        continue
                     email_dispatch.append((str(state.lead_id), str(node.id)))
                     state.next_run_at = now + timedelta(minutes=10)
                     counts["dispatched_email"] += 1
@@ -778,6 +860,10 @@ async def _advance_sequences_async() -> dict[str, int]:
 
                 # M2: LinkedIn warm-up kinds.
                 if node.kind in LI_KINDS:
+                    if await _already_executed_this_visit(session, state, node.id):
+                        await _advance_cursor(session, state, node)
+                        counts["reevaluated_parked"] = counts.get("reevaluated_parked", 0) + 1
+                        continue
                     linkedin_dispatch.append((str(state.lead_id), str(node.id)))
                     # Push next_run_at out so a slow handler doesn't get
                     # double-dispatched on the next tick.
