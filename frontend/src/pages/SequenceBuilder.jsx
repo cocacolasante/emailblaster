@@ -63,6 +63,52 @@ function statsEqual(a, b) {
 }
 
 
+// ---- Wait-node duration helpers ----
+// Storage stays as `config.duration_minutes` (a single integer) so the backend
+// is untouched; the UI just lets the user think in minutes / hours / days /
+// weeks instead of doing mental math.
+
+const WAIT_UNITS = [
+  { key: 'minutes', label: 'minutes', minutes: 1 },
+  { key: 'hours',   label: 'hours',   minutes: 60 },
+  { key: 'days',    label: 'days',    minutes: 60 * 24 },
+  { key: 'weeks',   label: 'weeks',   minutes: 60 * 24 * 7 },
+];
+
+const WAIT_PRESETS = [
+  { label: 'Immediate', minutes: 0 },
+  { label: '1 hour',    minutes: 60 },
+  { label: '1 day',     minutes: 60 * 24 },
+  { label: '3 days',    minutes: 60 * 24 * 3 },
+  { label: '1 week',    minutes: 60 * 24 * 7 },
+];
+
+// Pick the largest unit that divides the duration cleanly so the input shows
+// "3 days" instead of "4320 minutes" when re-opened.  Falls back to minutes
+// when the duration doesn't evenly divide.
+function splitDuration(minutes) {
+  const m = Number.isFinite(minutes) ? Math.max(0, Math.floor(minutes)) : 0;
+  for (const u of [...WAIT_UNITS].reverse()) {
+    if (m >= u.minutes && m % u.minutes === 0) {
+      return { value: m / u.minutes, unit: u.key };
+    }
+  }
+  return { value: m, unit: 'minutes' };
+}
+
+function unitMinutes(unitKey) {
+  return (WAIT_UNITS.find((u) => u.key === unitKey) || WAIT_UNITS[0]).minutes;
+}
+
+function formatWaitLabel(minutes) {
+  if (minutes == null || Number.isNaN(minutes)) return 'Wait';
+  if (minutes <= 0) return 'Immediate';
+  const { value, unit } = splitDuration(minutes);
+  const label = value === 1 ? unit.replace(/s$/, '') : unit;
+  return `Wait ${value} ${label}`;
+}
+
+
 // Sensible per-kind defaults applied when the user first drops a node.
 function defaultsForKind(kind) {
   switch (kind) {
@@ -310,21 +356,58 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
         </>
       )}
 
-      {node.data.kind === 'wait' && (
-        <div>
-          <label className="block text-xs font-medium text-slate-600 mb-1">Duration (minutes)</label>
-          <input
-            type="number"
-            min="1"
-            value={cfg.duration_minutes ?? 4320}
-            onChange={(e) => setCfg({ duration_minutes: Number(e.target.value) })}
-            className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded"
-          />
-          <p className="mt-1 text-[11px] text-slate-500">
-            4320 = 3 days, 10080 = 1 week.
-          </p>
-        </div>
-      )}
+      {node.data.kind === 'wait' && (() => {
+        const totalMinutes = Number(cfg.duration_minutes ?? 4320);
+        const { value, unit } = splitDuration(totalMinutes);
+        const setMinutes = (m) => setCfg({ duration_minutes: Math.max(0, Math.floor(m)) });
+        return (
+          <div className="space-y-2">
+            <label className="block text-xs font-medium text-slate-600">Duration</label>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min="0"
+                value={value}
+                onChange={(e) => setMinutes(Number(e.target.value) * unitMinutes(unit))}
+                className="w-24 px-2 py-1.5 text-sm border border-slate-300 rounded"
+              />
+              <select
+                value={unit}
+                onChange={(e) => setMinutes(value * unitMinutes(e.target.value))}
+                className="flex-1 px-2 py-1.5 text-sm border border-slate-300 rounded bg-white"
+              >
+                {WAIT_UNITS.map((u) => (
+                  <option key={u.key} value={u.key}>{u.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {WAIT_PRESETS.map((p) => {
+                const active = totalMinutes === p.minutes;
+                return (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => setMinutes(p.minutes)}
+                    className={`text-[11px] px-2 py-0.5 rounded border ${
+                      active
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] text-slate-500">
+              {totalMinutes <= 0
+                ? 'No pause — the next step fires on the next scheduler tick.'
+                : `Stored as ${totalMinutes} minute${totalMinutes === 1 ? '' : 's'}.`}
+            </p>
+          </div>
+        );
+      })()}
 
       {(node.data.kind === 'linkedin_view_profile'
         || node.data.kind === 'linkedin_follow_profile') && (
@@ -904,7 +987,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
           title:
             (n.config && n.config.title)
             || (n.kind === 'wait'
-              ? `Wait ${n.config?.duration_minutes ?? '?'}m`
+              ? formatWaitLabel(n.config?.duration_minutes)
               : n.is_entry
               ? 'Initial email'
               : 'Follow-up email'),
