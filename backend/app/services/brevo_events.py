@@ -1,0 +1,147 @@
+"""Shared Brevo event normalisation + persistence.
+
+We pull transactional event data (delivered / opened / clicked / bounced /
+spam / unsubscribed) by polling Brevo's ``GET /v3/smtp/statistics/events``
+endpoint every few minutes — Brevo's outbound webhook would do the same
+job in real time, but it's behind a paid plan tier on some accounts and
+needs a public tunnel.  Polling is outbound-only (no tunnel for Brevo)
+and works on the free transactional API key.
+
+Both the (now-removed) webhook handler and the poller funnel events
+through ``process_event`` so the persistence logic stays in one place.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import (
+    EmailEvent,
+    EmailEventType,
+    Lead,
+    Suppression,
+    SuppressionReason,
+)
+
+
+# Brevo uses a few different spellings for the same conceptual event across
+# the webhook payload, the events API, and historical aliases.  Map any
+# known variant onto our internal ``EmailEventType``.
+EVENT_MAP: dict[str, EmailEventType] = {
+    # Delivery confirmations
+    "delivered": EmailEventType.DELIVERED,
+    "request": EmailEventType.DELIVERED,  # precedes delivery in webhook payloads
+    "requests": EmailEventType.DELIVERED,
+    # Opens
+    "opened": EmailEventType.OPENED,
+    "unique_opened": EmailEventType.OPENED,
+    # Clicks
+    "click": EmailEventType.CLICKED,
+    "clicked": EmailEventType.CLICKED,
+    "clicks": EmailEventType.CLICKED,
+    "unique_clicked": EmailEventType.CLICKED,
+    # Bounces
+    "soft_bounce": EmailEventType.SOFT_BOUNCE,
+    "softbounce": EmailEventType.SOFT_BOUNCE,
+    "softbounces": EmailEventType.SOFT_BOUNCE,
+    "hard_bounce": EmailEventType.HARD_BOUNCE,
+    "hardbounce": EmailEventType.HARD_BOUNCE,
+    "hardbounces": EmailEventType.HARD_BOUNCE,
+    # Reputation
+    "spam": EmailEventType.SPAM,
+    "unsubscribed": EmailEventType.UNSUBSCRIBED,
+}
+
+# Which event types automatically add the recipient to the suppression
+# list.  Soft bounces deliberately don't — they're transient.
+SUPPRESSION_MAP: dict[EmailEventType, SuppressionReason] = {
+    EmailEventType.HARD_BOUNCE: SuppressionReason.HARD_BOUNCE,
+    EmailEventType.SPAM: SuppressionReason.SPAM,
+    EmailEventType.UNSUBSCRIBED: SuppressionReason.UNSUBSCRIBED,
+}
+
+
+def extract_message_id(event: dict[str, Any]) -> str | None:
+    """Webhook used ``message-id`` (with a dash); the events API uses
+    ``messageId`` (camelCase).  Try both, strip the optional <...>
+    delimiters most mail systems still echo.
+    """
+    for key in ("messageId", "message-id", "message_id"):
+        v = event.get(key)
+        if v:
+            return str(v).strip("<>")
+    return None
+
+
+def normalise_event_name(raw: Any) -> str:
+    """Brevo emits names with mixed case and a couple of suffix styles
+    (``hardBounce`` from the API, ``hard_bounce`` from the webhook,
+    ``HARD_BOUNCE`` from some queue exports)."""
+    return str(raw or "").strip().lower().replace("-", "_")
+
+
+async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
+    """Persist a single Brevo event onto the matching Lead.
+
+    Returns True when a row was recorded (lead found, event mapped),
+    False when the event was a no-op (unknown event type, unknown
+    messageId).  Idempotent at the database layer: if the lead already
+    has an identical (event_type, brevo messageId) we skip the insert
+    so the poller can safely re-fetch the same day window without
+    duplicating event rows.
+    """
+    event_type = EVENT_MAP.get(normalise_event_name(event.get("event")))
+    if event_type is None:
+        return False
+
+    msg_id = extract_message_id(event)
+    if not msg_id:
+        return False
+
+    lead = await db.scalar(
+        select(Lead).where(Lead.brevo_message_id == msg_id)
+    )
+    if lead is None:
+        return False
+
+    # Dedup: if this lead already has an event of this type that came from
+    # the same Brevo messageId, treat it as already-processed.  The events
+    # API has day-level granularity on `startDate`/`endDate`, so each poll
+    # re-fetches today's events repeatedly — without this check we'd
+    # accumulate one EmailEvent per poll tick per real event.
+    existing = await db.scalar(
+        select(EmailEvent.id).where(
+            EmailEvent.lead_id == lead.id,
+            EmailEvent.event_type == event_type,
+        ).limit(1)
+    )
+    if existing is not None and event_type in {
+        EmailEventType.DELIVERED,
+        EmailEventType.HARD_BOUNCE,
+        EmailEventType.SOFT_BOUNCE,
+        EmailEventType.SPAM,
+        EmailEventType.UNSUBSCRIBED,
+    }:
+        # These are one-shot terminal events per lead — if we already saw
+        # one, do not record a second.  Opens and clicks legitimately
+        # recur (one per open/click), so we always record those.
+        return False
+
+    db.add(EmailEvent(
+        lead_id=lead.id,
+        campaign_id=lead.campaign_id,
+        event_type=event_type,
+        event_data=event,
+    ))
+
+    suppression_reason = SUPPRESSION_MAP.get(event_type)
+    if suppression_reason is not None:
+        existing_sup = await db.scalar(
+            select(Suppression).where(Suppression.email == lead.email)
+        )
+        if existing_sup is None:
+            db.add(Suppression(email=lead.email, reason=suppression_reason))
+
+    return True

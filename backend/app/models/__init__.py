@@ -16,6 +16,7 @@ from app.models.sequence import (
 )
 from app.models.style_correction import StyleCorrection
 from app.models.suppression import Suppression, SuppressionReason
+from app.models.webhook_event import WebhookEvent
 
 __all__ = [
     "Campaign",
@@ -43,4 +44,5 @@ __all__ = [
     "StyleCorrection",
     "Suppression",
     "SuppressionReason",
+    "WebhookEvent",
 ]

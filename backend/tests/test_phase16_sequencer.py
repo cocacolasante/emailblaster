@@ -271,3 +271,117 @@ async def test_send_email_step_records_execution_and_advances(db_session, monkey
     # Followup terminates the branch (edge to_node_id=None).
     assert state.status == LeadSequenceStatus.COMPLETED
     assert state.current_node_id is None
+
+
+# --------------------------------------------------------------------------
+# Follow-up email step honours pre-send gates (paused / scheduled / rate-limited)
+# --------------------------------------------------------------------------
+
+
+async def test_followup_step_defers_when_campaign_paused(db_session, monkeypatch):
+    """A paused campaign must NOT fire follow-up emails.  The step returns
+    `deferred`, the cursor stays on the followup node, and next_run_at is
+    pushed out by 5 minutes (default re-check interval for paused)."""
+    campaign = await _make_campaign(db_session)
+    campaign.status = CampaignStatus.PAUSED
+    _, entry, wait_node, followup = await _build_three_node_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    await db_session.commit()
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=followup.sequence_id,
+        current_node_id=followup.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    called = {"n": 0}
+    async def explode(**kwargs):
+        called["n"] += 1
+        raise AssertionError("Brevo should NOT be called when paused")
+    monkeypatch.setattr(sequencer.brevo, "send_email", explode)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(followup.id))
+    assert result["status"] == "deferred"
+    assert result["reason"] == "paused"
+    assert called["n"] == 0
+
+    await sequencer._record_execution_and_advance(lead.id, followup.id, result)
+    await db_session.refresh(state)
+    assert state.current_node_id == followup.id  # parked, not advanced
+    assert state.status == LeadSequenceStatus.ACTIVE
+    assert state.next_run_at is not None and state.next_run_at > _now()
+
+
+async def test_followup_step_defers_outside_schedule_window(db_session, monkeypatch):
+    """Out-of-window step returns deferred with retry_at; cursor pinned and
+    rescheduled to the window open time."""
+    from datetime import time as _time
+    campaign = await _make_campaign(db_session)
+    # Only allow Monday (weekday 0); force-close the window for "now" by
+    # giving a narrow time slot the test almost certainly isn't in.
+    campaign.schedule_days = [0]
+    campaign.schedule_time_start = _time(2, 0)
+    campaign.schedule_time_end = _time(2, 30)
+    _, entry, wait_node, followup = await _build_three_node_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    await db_session.commit()
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=followup.sequence_id,
+        current_node_id=followup.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    async def explode(**kwargs):
+        raise AssertionError("Brevo should NOT be called outside the window")
+    monkeypatch.setattr(sequencer.brevo, "send_email", explode)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(followup.id))
+    assert result["status"] == "deferred"
+    assert result["reason"] == "scheduled"
+    assert "retry_at" in result
+
+    await sequencer._record_execution_and_advance(lead.id, followup.id, result)
+    await db_session.refresh(state)
+    assert state.current_node_id == followup.id
+    # Should be in the future (the next open window).
+    assert state.next_run_at is not None and state.next_run_at > _now()
+
+
+async def test_followup_step_advances_on_suppression(db_session, monkeypatch):
+    """Suppression is permanent — the cursor advances past the followup
+    rather than getting stuck on a lead the user has unsubscribed."""
+    from app.models import Suppression, SuppressionReason
+    campaign = await _make_campaign(db_session)
+    _, entry, wait_node, followup = await _build_three_node_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    db_session.add(Suppression(email=lead.email, reason=SuppressionReason.UNSUBSCRIBED))
+    await db_session.commit()
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=followup.sequence_id,
+        current_node_id=followup.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    async def explode(**kwargs):
+        raise AssertionError("Brevo should NOT be called for suppressed lead")
+    monkeypatch.setattr(sequencer.brevo, "send_email", explode)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(followup.id))
+    assert result["status"] == "suppressed"
+
+    await sequencer._record_execution_and_advance(lead.id, followup.id, result)
+    await db_session.refresh(state)
+    # Suppression advances past the node (sequence terminates here since
+    # followup's outgoing edge is to None).
+    assert state.status == LeadSequenceStatus.COMPLETED

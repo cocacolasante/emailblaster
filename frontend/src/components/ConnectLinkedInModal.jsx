@@ -8,6 +8,7 @@ import {
   listDiscoverableUnipileAccounts,
   resolveLinkedInChallenge,
   syncUnipileStatus,
+  testLinkedInAccount,
 } from '../api/linkedinAccounts.js';
 
 // How often to poll /linkedin-accounts/{id}/sync-unipile while waiting for
@@ -24,6 +25,8 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
   const [error, setError] = useState(null);
   const [resolvingChallenge, setResolvingChallenge] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [testingNow, setTestingNow] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
 
   // ---- Unipile flow state ---------------------------------------------
   const [unipileLabel, setUnipileLabel] = useState('');
@@ -37,6 +40,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
   const [discoverable, setDiscoverable] = useState([]);
   const [importing, setImporting] = useState(null);  // unipile_account_id mid-import
   const [showImport, setShowImport] = useState(false);
+  const [discoverableError, setDiscoverableError] = useState(null);
 
   // ---- Effects --------------------------------------------------------
 
@@ -63,16 +67,42 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
   }, []);
 
   // Refresh the discoverable list on the "create new" screen. Cheap call —
-  // single GET, scoped to unbound rows.
+  // single GET, scoped to unbound rows.  503 means Unipile isn't wired up
+  // (DSN / API key missing); we surface that inline rather than silently
+  // showing an empty import panel that gives no feedback.
   useEffect(() => {
     if (editing) return;
     let cancelled = false;
     (async () => {
       try {
         const list = await listDiscoverableUnipileAccounts();
-        if (!cancelled) setDiscoverable(list || []);
-      } catch (_e) {
-        if (!cancelled) setDiscoverable([]);  // 503 if Unipile not configured — fine
+        if (cancelled) return;
+        setDiscoverable(list || []);
+        setDiscoverableError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setDiscoverable([]);
+        const status = e?.response?.status;
+        const detail = e?.response?.data?.detail || e?.message;
+        if (status === 503) {
+          setDiscoverableError(
+            "Unipile isn't configured for this workspace yet. Set "
+            + "UNIPILE_DSN + UNIPILE_API_KEY in .env and force-recreate "
+            + "the backend (see the Unipile setup runbook in CLAUDE.md). "
+            + "Once configured, both 'Connect via Unipile' and 'Already "
+            + "connected in Unipile?' will work."
+          );
+        } else if (status === 502) {
+          setDiscoverableError(
+            `Unipile returned an error while listing accounts: ${detail || 'see backend logs'}.`
+          );
+        } else if (status) {
+          setDiscoverableError(`Couldn't load discoverable accounts (${status}): ${detail || 'unknown error'}.`);
+        } else {
+          setDiscoverableError(
+            "Couldn't reach the backend while listing discoverable Unipile accounts."
+          );
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -93,6 +123,59 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
       setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
     } finally {
       setImporting(null);
+    }
+  }
+
+  async function handleTestExisting() {
+    if (!editing) return;
+    setError(null);
+    setTestingNow(true);
+    try {
+      const r = await testLinkedInAccount(account.id);
+      setTestResult(r);
+      if (onSaved) onSaved({ ...account, status: r.status });
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || 'Test failed';
+      setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } finally {
+      setTestingNow(false);
+    }
+  }
+
+  async function handleReconnect() {
+    /* Tear down the dead row + start a fresh hosted-auth flow.  Useful
+       when an account is FAILED / RESTRICTED — Unipile's session is
+       gone server-side and "Clear challenge state" alone won't help. */
+    if (!editing) return;
+    const ok = window.confirm(
+      `This will disconnect "${account.label}" from Unipile and restart `
+      + `the LinkedIn login.  You'll need to re-authorise in a new tab.  Continue?`
+    );
+    if (!ok) return;
+    setError(null);
+    setReconnecting(true);
+    try {
+      // 1. Drop the existing row (also calls Unipile delete_account
+      //    so the dead session is cleaned up on their side).
+      await deleteLinkedInAccount(account.id);
+      // 2. Start a fresh hosted-auth flow under the same label.
+      const successUrl = `${window.location.origin}/settings?unipile=success`;
+      const failureUrl = `${window.location.origin}/settings?unipile=failure`;
+      const { account_id, hosted_url } = await connectViaUnipile({
+        label: account.label,
+        success_redirect_url: successUrl,
+        failure_redirect_url: failureUrl,
+      });
+      window.open(hosted_url, '_blank', 'noopener,noreferrer');
+      // 3. Swap to "create new" mode by signalling the parent — the
+      //    polling flow takes over with the new id.
+      if (onSaved) onSaved({ id: account_id, status: 'untested' });
+      onClose?.();
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || 'Reconnect failed';
+      setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    } finally {
+      setReconnecting(false);
     }
   }
 
@@ -248,16 +331,49 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                 </button>
               </div>
             )}
+            {testResult && (
+              <div
+                data-testid="li-test-result"
+                className={`p-3 rounded-lg text-sm ${
+                  testResult.ok
+                    ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+                    : 'bg-red-50 border border-red-200 text-red-800'
+                }`}
+              >
+                {testResult.ok
+                  ? `Connection OK — status: ${testResult.status}.`
+                  : `Test failed: ${testResult.error || `status=${testResult.status}`}`}
+              </div>
+            )}
+
             {error && (
               <div data-testid="modal-error" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
                 {error}
               </div>
             )}
-            <div className="flex justify-end pt-4 border-t border-slate-100">
+
+            <div className="flex flex-wrap gap-2 justify-end pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={handleReconnect}
+                disabled={reconnecting || testingNow}
+                className="inline-flex items-center px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Disconnect this account and restart the Unipile hosted-auth flow"
+              >
+                {reconnecting ? 'Reconnecting…' : 'Reconnect via Unipile'}
+              </button>
+              <button
+                type="button"
+                onClick={handleTestExisting}
+                disabled={testingNow || reconnecting}
+                className="inline-flex items-center px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {testingNow ? 'Testing…' : 'Test connection'}
+              </button>
               <button
                 type="button"
                 onClick={onClose}
-                className="inline-flex items-center px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
+                className="inline-flex items-center px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium border border-slate-300 rounded-lg transition-colors"
               >
                 Close
               </button>
@@ -284,6 +400,18 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
                   />
                 </div>
+
+                {/* Unipile not configured / API error — show inline so the
+                    user knows why both buttons below won't work. */}
+                {discoverableError && (
+                  <div
+                    data-testid="unipile-config-error"
+                    className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3"
+                  >
+                    <div className="font-medium mb-1">Unipile unavailable</div>
+                    {discoverableError}
+                  </div>
+                )}
 
                 {/* Import existing Unipile accounts ----------------------- */}
                 {discoverable.length > 0 && (

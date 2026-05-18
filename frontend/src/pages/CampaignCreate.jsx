@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { listAccounts } from '../api/connectedAccounts.js';
@@ -321,13 +321,52 @@ function Step3({ campaignId, onComplete }) {
 // --------------------------------------------------------------------------
 
 export default function CampaignCreate() {
-  const [step, setStep] = useState(1);
+  // Wizard state lives partly in the URL so an accidental F5 mid-flow
+  // resumes where the user left off instead of restarting at step 1 and
+  // creating a duplicate campaign on the next submit.
+  //   /campaigns/new                    -> step 1, no campaign yet
+  //   /campaigns/new?id=<uuid>&step=2   -> resume at step 2 on that campaign
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlId = searchParams.get('id');
+  const urlStep = parseInt(searchParams.get('step') || '1', 10);
+
+  // Initial step: clamp to a valid range, and don't allow step 1 when we
+  // already have an id (the campaign was created — replaying step 1 would
+  // make a duplicate).
+  const initialStep = (() => {
+    const s = Number.isFinite(urlStep) ? urlStep : 1;
+    if (urlId && s < 2) return 2;
+    return Math.min(Math.max(s, 1), 4);
+  })();
+
+  const [step, setStepRaw] = useState(initialStep);
   const [form, setForm] = useState(DEFAULT_FORM);
-  const [campaignId, setCampaignId] = useState(null);
+  const [campaignId, setCampaignIdRaw] = useState(urlId || null);
   const [showInboxModal, setShowInboxModal] = useState(false);
   const [error, setError] = useState(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+
+  // Wrapped setters that also update the URL search params so refresh
+  // and the browser back/forward buttons just work.
+  const setStep = useCallback((nextStep) => {
+    setStepRaw(nextStep);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('step', String(nextStep));
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const setCampaignId = useCallback((nextId) => {
+    setCampaignIdRaw(nextId);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (nextId) next.set('id', String(nextId));
+      else next.delete('id');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['connected-accounts'],

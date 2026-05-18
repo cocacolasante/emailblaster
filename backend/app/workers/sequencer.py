@@ -123,6 +123,159 @@ def _li_redis() -> aioredis.Redis:
     return _LI_REDIS_CLIENT
 
 
+# Lua script: check every rate-limit gate AND claim the slot atomically.
+# Returns {ok=1} or {ok=0, reason=..., remaining=N} as a Redis array reply.
+# Running this server-side means two concurrent Celery ticks can't both
+# pass the cap and double-fire — Redis serialises scripts.  We pay the
+# slight downside of counting a slot against the cap even when the
+# action subsequently fails (network error mid-call); the alternative
+# (check-then-bump-after-success) was racy and let us exceed the cap.
+_LI_RATE_ACQUIRE_LUA = """
+-- KEYS[1] = last-action key
+-- KEYS[2] = daily total key
+-- KEYS[3] = per-kind subcap key (or empty string)
+-- KEYS[4] = per-page month key (or empty string)
+-- ARGV[1] = now (epoch seconds, float-string)
+-- ARGV[2] = min_delay_seconds
+-- ARGV[3] = daily total cap
+-- ARGV[4] = per-kind subcap (ignored when KEYS[3] is empty)
+-- ARGV[5] = per-page cap (ignored when KEYS[4] is empty)
+-- ARGV[6] = last-key TTL seconds
+-- ARGV[7] = daily-key TTL seconds (86400)
+-- ARGV[8] = monthly-key TTL seconds (30*86400)
+
+local now = tonumber(ARGV[1])
+local min_delay = tonumber(ARGV[2])
+local last = redis.call('GET', KEYS[1])
+if last then
+    local elapsed = now - tonumber(last)
+    if elapsed < min_delay then
+        local remaining = math.floor(min_delay - elapsed) + 1
+        return {0, 'min_delay', remaining}
+    end
+end
+
+local day = tonumber(redis.call('GET', KEYS[2])) or 0
+if day >= tonumber(ARGV[3]) then
+    return {0, 'daily_cap', 0}
+end
+
+if KEYS[3] ~= '' then
+    local sub = tonumber(redis.call('GET', KEYS[3])) or 0
+    if sub >= tonumber(ARGV[4]) then
+        return {0, 'subcap', 0}
+    end
+end
+
+if KEYS[4] ~= '' then
+    local page = tonumber(redis.call('GET', KEYS[4])) or 0
+    if page >= tonumber(ARGV[5]) then
+        return {0, 'page_invite_cap', 0}
+    end
+end
+
+-- All gates passed.  Claim the slot atomically.
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[6]))
+redis.call('INCR', KEYS[2])
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[7]), 'NX')
+if KEYS[3] ~= '' then
+    redis.call('INCR', KEYS[3])
+    redis.call('EXPIRE', KEYS[3], tonumber(ARGV[7]), 'NX')
+end
+if KEYS[4] ~= '' then
+    redis.call('INCR', KEYS[4])
+    redis.call('EXPIRE', KEYS[4], tonumber(ARGV[8]), 'NX')
+end
+return {1, '', 0}
+"""
+
+
+async def _li_rate_acquire(
+    account: LinkedInAccount,
+    kind: SequenceNodeKind | None = None,
+    page_id: str | None = None,
+) -> dict[str, Any]:
+    """Atomic check-and-bump.  Returns ``{"ok": True}`` when the slot is
+    claimed (counters already incremented), otherwise the same reason
+    dict shape ``_li_rate_check`` returned so callers don't need to
+    change their handling of skip statuses.
+
+    Server-side Lua makes the whole gate sequence single-step so two
+    concurrent invocations can't both pass when only one slot remains.
+    """
+    client = _li_redis()
+    aid = str(account.id)
+    last_key = f"li-rate:{aid}:last"
+    day_key = f"li-rate:{aid}:day"
+
+    sub_key = ""
+    sub_cap = 0
+    if kind == SequenceNodeKind.LINKEDIN_CONNECT:
+        sub_key = f"li-rate:{aid}:day:connect"
+        sub_cap = settings.LINKEDIN_DAILY_CONNECT_CAP
+    elif kind in (SequenceNodeKind.LINKEDIN_DM, SequenceNodeKind.LINKEDIN_INMAIL):
+        sub_key = f"li-rate:{aid}:day:dm"
+        sub_cap = settings.LINKEDIN_DAILY_DM_CAP
+
+    page_key = ""
+    page_cap = 0
+    if kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE:
+        if not page_id:
+            return {"ok": False, "reason": "misconfigured", "error": "page_id missing"}
+        page_key = f"li-rate:page:{page_id}:month"
+        page_cap = settings.LINKEDIN_MONTHLY_PAGE_INVITE_CAP
+
+    last_ttl = max(settings.LINKEDIN_MIN_ACTION_DELAY_SECONDS + 10, 60)
+    result = await client.eval(
+        _LI_RATE_ACQUIRE_LUA,
+        4,
+        last_key, day_key, sub_key, page_key,
+        str(time.time()),
+        str(settings.LINKEDIN_MIN_ACTION_DELAY_SECONDS),
+        str(settings.LINKEDIN_DAILY_ACTION_CAP),
+        str(sub_cap),
+        str(page_cap),
+        str(last_ttl),
+        str(86400),
+        str(60 * 60 * 24 * 30),
+    )
+    # Redis returns Lua arrays as Python lists.  Decoded with the
+    # `decode_responses=True` client, all elements come back as strings
+    # (Lua's integer return is auto-stringified by aioredis here).
+    ok_raw, reason, remaining = result[0], result[1], result[2]
+    ok = (str(ok_raw) in ("1", "true", "True", "OK"))
+    if ok:
+        return {"ok": True}
+    reason_str = str(reason or "")
+    payload: dict[str, Any] = {"ok": False, "reason": reason_str}
+    if reason_str == "min_delay":
+        try:
+            payload["remaining"] = int(remaining)
+            payload["error"] = f"under min delay ({payload['remaining']}s remaining)"
+        except (TypeError, ValueError):
+            payload["error"] = "under min delay"
+    elif reason_str == "daily_cap":
+        payload["error"] = (
+            f"daily cap reached ({settings.LINKEDIN_DAILY_ACTION_CAP})"
+        )
+    elif reason_str == "subcap":
+        if kind == SequenceNodeKind.LINKEDIN_CONNECT:
+            payload["reason"] = "connect_cap"
+            payload["error"] = (
+                f"daily connect cap reached ({settings.LINKEDIN_DAILY_CONNECT_CAP})"
+            )
+        else:
+            payload["reason"] = "dm_cap"
+            payload["error"] = (
+                f"daily DM/InMail cap reached ({settings.LINKEDIN_DAILY_DM_CAP})"
+            )
+    elif reason_str == "page_invite_cap":
+        payload["error"] = (
+            f"monthly page invite cap reached ({settings.LINKEDIN_MONTHLY_PAGE_INVITE_CAP})"
+        )
+    return payload
+
+
 async def _li_rate_check(
     account: LinkedInAccount,
     kind: SequenceNodeKind | None = None,
@@ -407,13 +560,22 @@ async def _advance_cursor(
 async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
     """Send a templated email for a non-entry email node.
 
-    Suppression / paused / schedule / rate limits get the same treatment as
-    the legacy send_lead, but the body comes from the node's config rather
-    than lead.composed_*.
+    Honours the same pre-send gates as the legacy ``send_lead`` (shared
+    via ``send.check_send_gates``): suppression list, campaign paused,
+    schedule window, Brevo rate limits.  The body comes from the node's
+    config rather than ``lead.composed_*``.
+
+    Gate trips return a status the sequencer treats as "deferred" —
+    `_record_execution_and_advance` parks the lead on the current node
+    and reschedules to the gate's ``retry_at`` (or ``+retry_in`` seconds)
+    without burning the transient-retry budget.
     """
+    from app.workers import send as _send_mod  # avoid circular import
+
     lid = uuid.UUID(str(lead_id))
     nid = uuid.UUID(str(node_id))
     engine = create_async_engine(settings.DATABASE_URL)
+    redis_client = _send_mod._new_redis()
     result: dict[str, Any] = {}
 
     try:
@@ -426,17 +588,28 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
             if campaign is None:
                 return {"status": "not_found"}
 
-            sup = await session.scalar(
-                select(Suppression).where(Suppression.email == lead.email)
-            )
-            if sup is not None:
-                return {"status": "suppressed"}
-
             cfg = node.config or {}
             subject_tpl = cfg.get("subject_template") or ""
             body_tpl = cfg.get("body_template") or ""
             if not subject_tpl or not body_tpl:
                 return {"status": "misconfigured", "error": "email node missing subject_template or body_template"}
+
+            gates = await _send_mod.check_send_gates(session, lead, campaign, redis_client)
+            if not gates.get("ok"):
+                reason = gates["reason"]
+                if reason == "suppressed":
+                    # Permanent — advance the cursor (don't re-try forever).
+                    return {"status": "suppressed"}
+                # paused / scheduled / min_delay / hourly_cap / daily_cap
+                deferred: dict[str, Any] = {
+                    "status": "deferred",
+                    "reason": reason,
+                }
+                if "retry_at" in gates:
+                    deferred["retry_at"] = gates["retry_at"]
+                if "retry_in" in gates:
+                    deferred["retry_in"] = gates["retry_in"]
+                return deferred
 
             subject = _substitute(subject_tpl, lead)
             body = _substitute(body_tpl, lead)
@@ -450,6 +623,7 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 "campaign_id": str(campaign.id),
                 "lead_id": str(lead.id),
             }
+            campaign_snap = campaign
 
         html_body = render_html(ctx["body"])
         text_body = render_text(ctx["body"])
@@ -464,9 +638,13 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
             campaign_id=ctx["campaign_id"],
             lead_id=ctx["lead_id"],
         )
+        # Bump Brevo rate counters so follow-ups are metered alongside
+        # legacy first-email sends.
+        await _send_mod.increment_rate_counters(campaign_snap, redis_client)
         result = {"status": "sent", "message_id": message_id}
     finally:
         await engine.dispose()
+        await redis_client.aclose()
 
     return result
 
@@ -556,7 +734,12 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     return {"status": "misconfigured", "error": "page_id missing on node"}
 
             rate_page_id = cfg.get("page_id") if kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE else None
-            rate = await _li_rate_check(account, kind=kind, page_id=rate_page_id)
+            # Atomic check-AND-bump.  On `ok=True` the daily / subcap /
+            # min-delay counters are already incremented server-side so a
+            # concurrent tick that races us reads the updated values and
+            # gets denied.  Trade-off: a subsequent action failure
+            # counts the slot anyway (no refund), bounded by the cap.
+            rate = await _li_rate_acquire(account, kind=kind, page_id=rate_page_id)
             if not rate.get("ok"):
                 if rate.get("reason") == "min_delay":
                     # Signal the Celery task to reschedule rather than skip.
@@ -673,7 +856,8 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             await session.commit()
 
         if result.ok:
-            await _li_rate_bump(account, kind=kind, page_id=rate_page_id)
+            # Slot was already claimed inside the atomic acquire above —
+            # no separate bump.
             return {"status": "sent", "external_id": result.external_id, "meta": result.meta}
         return {"status": "failed", "error": result.error or "unknown error"}
     finally:
@@ -703,7 +887,7 @@ async def _record_execution_and_advance(
                 mapped = LeadStepResult.SENT
             elif status in {"suppressed", "skipped", "paused", "rate_limited",
                             "misconfigured", "challenged", "restricted",
-                            "not_found"}:
+                            "not_found", "deferred"}:
                 mapped = LeadStepResult.SKIPPED
             else:
                 mapped = LeadStepResult.FAILED
@@ -729,7 +913,33 @@ async def _record_execution_and_advance(
             if state is not None:
                 node = await session.get(SequenceNode, node_id)
                 if node is not None and state.current_node_id == node_id:
-                    if status in TRANSIENT_SKIP_STATUSES:
+                    if status == "deferred":
+                        # Pre-send gate tripped (suppression already
+                        # advances; only paused / scheduled / rate-limited
+                        # arrive here).  Park on the current node and
+                        # reschedule to the exact retry time the gate
+                        # returned, NO budget consumed — a campaign paused
+                        # for a day shouldn't burn through retries and
+                        # silently advance past the follow-up.
+                        retry_at_str = result.get("retry_at")
+                        retry_in = result.get("retry_in")
+                        if retry_at_str:
+                            try:
+                                state.next_run_at = datetime.fromisoformat(retry_at_str)
+                            except ValueError:
+                                state.next_run_at = _now() + timedelta(minutes=5)
+                        elif retry_in:
+                            state.next_run_at = _now() + timedelta(seconds=int(retry_in))
+                        else:
+                            # Paused with no eta — recheck every 5 min.
+                            state.next_run_at = _now() + timedelta(minutes=5)
+                        state.halt_reason = None
+                        logger.info(
+                            "Deferred step on lead=%s node=%s (%s) — next attempt at %s",
+                            lead_id, node_id, result.get("reason"),
+                            state.next_run_at.isoformat() if state.next_run_at else "?",
+                        )
+                    elif status in TRANSIENT_SKIP_STATUSES:
                         # Count prior skips for THIS visit only (since we
                         # entered the node). Re-enrollment resets
                         # entered_current_at, giving the lead a fresh budget.

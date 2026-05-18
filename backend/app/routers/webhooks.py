@@ -25,110 +25,22 @@ from app.models import (
     LinkedInConnectionStatus,
     Suppression,
     SuppressionReason,
+    WebhookEvent,
 )
 
 logger = logging.getLogger(__name__)
 
-# No prefix — Brevo posts to /webhooks/brevo and the compose worker emits
-# unsubscribe links at /unsubscribe/{lead_id} (both at root).
+# No prefix — the unsubscribe page lives at /unsubscribe/{lead_id} and
+# Unipile posts to /webhooks/unipile (both at root).  We DON'T accept a
+# Brevo inbound webhook — that data comes via brevo_events_poller pulling
+# the /smtp/statistics/events API on a beat schedule, so we don't need a
+# public tunnel for Brevo (and don't have to pay for the inbound add-on).
 router = APIRouter(tags=["webhooks"])
 
 
 # --------------------------------------------------------------------------
-# Brevo event mapping
+# Unsubscribe page
 # --------------------------------------------------------------------------
-
-_BREVO_EVENT_MAP: dict[str, EmailEventType] = {
-    "delivered": EmailEventType.DELIVERED,
-    "request": EmailEventType.DELIVERED,  # Brevo "request" precedes delivery
-    "opened": EmailEventType.OPENED,
-    "unique_opened": EmailEventType.OPENED,
-    "click": EmailEventType.CLICKED,
-    "clicked": EmailEventType.CLICKED,
-    "unique_clicked": EmailEventType.CLICKED,
-    "soft_bounce": EmailEventType.SOFT_BOUNCE,
-    "hard_bounce": EmailEventType.HARD_BOUNCE,
-    "spam": EmailEventType.SPAM,
-    "unsubscribed": EmailEventType.UNSUBSCRIBED,
-}
-
-_SUPPRESSION_MAP: dict[EmailEventType, SuppressionReason] = {
-    EmailEventType.HARD_BOUNCE: SuppressionReason.HARD_BOUNCE,
-    EmailEventType.SPAM: SuppressionReason.SPAM,
-    EmailEventType.UNSUBSCRIBED: SuppressionReason.UNSUBSCRIBED,
-}
-
-
-def _extract_message_id(event: dict[str, Any]) -> str | None:
-    """Brevo's payload varies — try the documented field names."""
-    for key in ("message-id", "messageId", "message_id"):
-        v = event.get(key)
-        if v:
-            return str(v).strip("<>")
-    return None
-
-
-async def _process_event(db: AsyncSession, event: dict[str, Any]) -> None:
-    brevo_event = str(event.get("event") or "").lower()
-    event_type = _BREVO_EVENT_MAP.get(brevo_event)
-    if event_type is None:
-        return  # ignore unknown events
-
-    msg_id = _extract_message_id(event)
-    if not msg_id:
-        return
-
-    lead = await db.scalar(
-        select(Lead).where(Lead.brevo_message_id == msg_id)
-    )
-    if lead is None:
-        return
-
-    db.add(EmailEvent(
-        lead_id=lead.id,
-        campaign_id=lead.campaign_id,
-        event_type=event_type,
-        event_data=event,
-    ))
-
-    suppression_reason = _SUPPRESSION_MAP.get(event_type)
-    if suppression_reason is not None:
-        existing = await db.scalar(
-            select(Suppression).where(Suppression.email == lead.email)
-        )
-        if existing is None:
-            db.add(Suppression(email=lead.email, reason=suppression_reason))
-
-
-# --------------------------------------------------------------------------
-# Routes
-# --------------------------------------------------------------------------
-
-
-@router.post("/webhooks/brevo")
-async def brevo_webhook(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    try:
-        payload = await request.json()
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"invalid JSON: {e}")
-
-    events = payload if isinstance(payload, list) else [payload]
-    processed = 0
-    for ev in events:
-        if not isinstance(ev, dict):
-            continue
-        try:
-            await _process_event(db, ev)
-            processed += 1
-        except Exception:  # noqa: BLE001
-            # Swallow per-event errors so one malformed entry doesn't block
-            # the rest of the batch — Brevo will retry the whole webhook.
-            logger.exception("brevo webhook event failed: %s", ev.get("event"))
-    await db.commit()
-    return {"status": "ok", "processed": processed}
 
 
 _UNSUBSCRIBE_HTML = """<!DOCTYPE html>
@@ -155,12 +67,90 @@ _INVALID_UNSUB_HTML = """<!DOCTYPE html>
 </html>
 """
 
+_CONFIRM_UNSUB_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Unsubscribe</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 80px auto; padding: 20px; text-align: center; color: #333; line-height: 1.5;">
+<h1 style="font-size: 24px;">Unsubscribe from these emails?</h1>
+<p>Click the button below to stop receiving emails sent to <strong>__EMAIL__</strong>.</p>
+<form method="post" action="__ACTION__" style="margin-top: 24px;">
+<button type="submit" style="font-size: 16px; padding: 10px 24px; background: #b91c1c; color: white; border: 0; border-radius: 8px; cursor: pointer;">
+Confirm unsubscribe
+</button>
+</form>
+<p style="color: #888; font-size: 12px; margin-top: 32px;">
+If you didn't mean to click this link, you can close this tab and nothing will change.
+</p>
+</body>
+</html>
+"""
+
+
+def _unsubscribe_token(lead_id: uuid.UUID | str) -> str:
+    """HMAC-SHA256 truncated to 32 hex chars, signed with ``SECRET_KEY``.
+
+    Defends against (1) link-prefetchers like Outlook/Defender that GET
+    every link in an incoming email — without a per-lead signature any
+    automated scanner can mark every prospect on a campaign as
+    unsubscribed; (2) attackers who learn a lead_id from one email and
+    try to unsubscribe other leads on the same campaign (UUIDs aren't
+    secrets).
+    """
+    if isinstance(lead_id, uuid.UUID):
+        msg = lead_id.bytes
+    else:
+        msg = uuid.UUID(str(lead_id)).bytes
+    return hmac.new(
+        settings.SECRET_KEY.encode(), msg, hashlib.sha256,
+    ).hexdigest()[:32]
+
+
+def make_unsubscribe_url(lead_id: uuid.UUID | str) -> str:
+    """Build the tokenised one-click unsubscribe URL for a lead.  Email
+    templates that want an unsubscribe footer should use this helper so
+    every link carries a valid signature."""
+    return (
+        f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/unsubscribe/{lead_id}"
+        f"?t={_unsubscribe_token(lead_id)}"
+    )
+
 
 @router.get("/unsubscribe/{lead_id}", response_class=HTMLResponse)
-async def unsubscribe(
+async def unsubscribe_confirm_page(
     lead_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    """Render a confirmation page (no side effects).  Side effects move to
+    POST so email-scanner GET prefetches can't auto-unsubscribe leads."""
+    token = request.query_params.get("t") or ""
+    if not hmac.compare_digest(token, _unsubscribe_token(lead_id)):
+        return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
+    lead = await db.get(Lead, lead_id)
+    if lead is None:
+        return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
+    html = (_CONFIRM_UNSUB_HTML
+            .replace("__EMAIL__", lead.email)
+            .replace("__ACTION__", f"/unsubscribe/{lead_id}?t={token}"))
+    return HTMLResponse(html)
+
+
+@router.post("/unsubscribe/{lead_id}", response_class=HTMLResponse)
+async def unsubscribe(
+    lead_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """Apply the suppression.  Tokenised + POST-only — a scanner GET never
+    fires this branch.
+    """
+    token = request.query_params.get("t") or ""
+    if not hmac.compare_digest(token, _unsubscribe_token(lead_id)):
+        return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
     lead = await db.get(Lead, lead_id)
     if lead is None:
         return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
@@ -424,9 +414,16 @@ async def unipile_webhook(
     constant-time compare against ``settings.UNIPILE_WEBHOOK_SECRET``.
     Missing or wrong value → 401, no DB writes.
 
-    Idempotency: every event Unipile sends has an ``id``; if we've seen it
-    before we no-op.  (We don't currently persist seen ids; if duplicate
-    delivery becomes a real issue add a ``webhook_events`` table.)
+    Idempotency: Unipile delivers at-least-once.  Every payload has an
+    event id (in the ``id`` / ``event_id`` / ``webhook_id`` field
+    depending on the source); we insert that id + provider="unipile"
+    into the ``webhook_events`` table up front.  If the unique
+    constraint fires the event has already been processed and we
+    short-circuit with 200 + ``duplicate=true`` so Unipile stops
+    retrying.  When the id is missing we fall back to a SHA-256 of the
+    raw body — same-body duplicates dedup, but different payloads with
+    the same logical event will retry (acceptable; that pattern hasn't
+    been observed in practice).
     """
     raw = await request.body()
     # Header name is configurable so it can match whatever the user
@@ -448,7 +445,42 @@ async def unipile_webhook(
         or payload.get("event_name")
         or ""
     ).lower()
-    logger.info("Unipile webhook event=%r", event_type)
+
+    # Idempotency guard.  Try to claim the (provider, event_id) slot
+    # before running any handler — if another delivery already wrote it,
+    # the unique constraint trips and we return 200 without re-applying
+    # state-altering handlers.
+    event_id = (
+        str(payload.get("id"))
+        if payload.get("id") is not None
+        else str(payload.get("event_id"))
+        if payload.get("event_id") is not None
+        else str(payload.get("webhook_id"))
+        if payload.get("webhook_id") is not None
+        else None
+    )
+    if not event_id:
+        # Fallback: hash the body so byte-identical retries dedup.
+        event_id = "sha256:" + hashlib.sha256(raw).hexdigest()
+    # Commit the dedup INSERT eagerly so it's persistent regardless of
+    # whether we then route to a handler, ignore the event, or one of
+    # the handlers fails mid-flight.  The contract: "we've acknowledged
+    # this event id; don't deliver it again."  If a handler raises after
+    # this commit, the next retry from Unipile is silently dropped — at-
+    # most-once on our side.  Acceptable trade-off: at-least-once with
+    # double-apply (the prior behaviour) was the actual problem.
+    try:
+        db.add(WebhookEvent(provider="unipile", event_id=event_id))
+        await db.commit()
+    except Exception:  # noqa: BLE001
+        # UniqueViolation from a duplicate event_id.
+        await db.rollback()
+        logger.info(
+            "Unipile webhook: duplicate event_id=%r type=%r — skipping handler",
+            event_id, event_type,
+        )
+        return {"ok": True, "duplicate": True}
+    logger.info("Unipile webhook event=%r id=%r", event_type, event_id)
 
     # Route by event name.  Unipile occasionally varies the casing /
     # punctuation between versions (account.connected vs ACCOUNT_CONNECTED),

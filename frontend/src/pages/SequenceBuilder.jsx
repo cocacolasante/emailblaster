@@ -24,19 +24,22 @@ import {
   publishSequence,
 } from '../api/sequences.js';
 
-// Kinds the M1 publish step accepts. The full enum (incl. LinkedIn) is on the
-// backend; this list constrains the palette so users don't build sequences
-// they can't publish yet.
+// Kinds the publish step currently accepts.  The backend's full
+// SequenceNodeKind enum is wider (it still has linkedin_invite_to_page
+// for historical rows + future re-enable), but the palette only shows
+// what's actually runnable today — anything else just produces a publish
+// error.  linkedin_invite_to_page is deliberately omitted while Unipile's
+// passthrough whitelist blocks the underlying Voyager endpoint; see
+// CLAUDE.md.
 const PALETTE = [
   { kind: 'email', label: 'Email', hint: 'Send a templated email.' },
-  { kind: 'wait', label: 'Wait', hint: 'Pause N minutes before the next step.' },
+  { kind: 'wait', label: 'Wait', hint: 'Pause N minutes / hours / days before the next step.' },
   { kind: 'linkedin_view_profile', label: 'LI: View profile', hint: 'Ghost-view the lead’s profile (low-touch warm-up).' },
   { kind: 'linkedin_follow_profile', label: 'LI: Follow profile', hint: 'Follow the lead. They get a notification.' },
   { kind: 'linkedin_react_post', label: 'LI: React to post', hint: 'Like the lead’s most recent post.' },
-  { kind: 'linkedin_connect', label: 'LI: Connect', hint: 'Send a connection request, optionally with a 300-char note.' },
-  { kind: 'linkedin_dm', label: 'LI: DM', hint: 'Send a direct message — AI-composed or from a template. Only fires for accepted (1st-degree) connections.' },
-  { kind: 'linkedin_invite_to_page', label: 'LI: Invite to page', hint: 'Invite a 1st-degree connection to follow a company page.' },
-  { kind: 'linkedin_inmail', label: 'LI: InMail', hint: 'Send a paid InMail to a 2nd/3rd-degree prospect. Requires Premium / Sales Nav.' },
+  { kind: 'linkedin_connect', label: 'LI: Connect', hint: 'Send a connection request, optionally with a 200-char note. The next edge defaults to "if accepted" so a downstream DM waits for the prospect to accept.' },
+  { kind: 'linkedin_dm', label: 'LI: DM', hint: 'Send a direct message. Only fires for accepted (1st-degree) connections.' },
+  { kind: 'linkedin_inmail', label: 'LI: InMail', hint: 'Send a paid InMail to a 2nd/3rd-degree prospect. Requires Premium / Sales Nav on your Unipile account.' },
   { kind: 'linkedin_comment_post', label: 'LI: Comment on post', hint: 'Comment on the lead’s post — publicly visible. Use sparingly.' },
 ];
 
@@ -1035,16 +1038,49 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
     });
   }, [analytics]);
 
-  const onNodesChange = useCallback((changes) => setNodes((ns) => applyNodeChanges(changes, ns)), []);
+  const onNodesChange = useCallback(
+    (changes) => {
+      setNodes((ns) => applyNodeChanges(changes, ns));
+      // xyflow doesn't auto-clean edges when a node is removed.  Without
+      // this, deleting a node leaves dangling edges with source/target
+      // pointing at the removed node — they pass save() unchecked and
+      // fail at publish-validate with a confusing error.
+      const removed = new Set(
+        changes.filter((c) => c.type === 'remove').map((c) => c.id),
+      );
+      if (removed.size) {
+        setEdges((es) => es.filter(
+          (e) => !removed.has(e.source) && !removed.has(e.target),
+        ));
+      }
+    },
+    [],
+  );
   const onEdgesChange = useCallback((changes) => setEdges((es) => applyEdgeChanges(changes, es)), []);
   const onConnect = useCallback(
     (params) =>
-      setEdges((es) =>
-        addEdge(
+      setEdges((es) => {
+        // Default a new edge's condition based on what kind the source
+        // node is.  For ``linkedin_connect`` we seed
+        // {op: linkedin_connection, value: connected} so the downstream
+        // step (DM, etc.) waits for the prospect to accept before firing —
+        // the sequencer's "parking" behaviour relies on a deferrable
+        // condition being on the edge.  Without this default the edge
+        // would be ``always`` and the DM would fire on the next tick
+        // whether the prospect accepted or not.
+        const sourceNode = nodes.find((n) => n.id === params.source);
+        const sourceKind = sourceNode?.data?.kind;
+        let condition = { op: 'always' };
+        let label = 'always';
+        if (sourceKind === 'linkedin_connect') {
+          condition = { op: 'linkedin_connection', value: 'connected' };
+          label = 'if accepted';
+        }
+        return addEdge(
           {
             ...params,
-            data: { condition: { op: 'always' }, priority: 0 },
-            label: 'always',
+            data: { condition, priority: 0 },
+            label,
             markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: '#475569' },
             style: { stroke: '#475569', strokeWidth: 1.5 },
             labelBgPadding: [6, 4],
@@ -1053,9 +1089,9 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
             labelStyle: { fill: '#334155', fontSize: 11 },
           },
           es,
-        ),
-      ),
-    [],
+        );
+      }),
+    [nodes],
   );
 
   const onDragOver = useCallback((e) => {
@@ -1124,8 +1160,70 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
     );
   }
 
+  // Client-side preflight — catches structural issues (missing entry,
+  // unreachable nodes, dangling edges) BEFORE we hit the backend, and
+  // returns them in the same shape the publish validator does so the
+  // error banner has one consistent renderer.
+  const runClientPreflight = useCallback(() => {
+    const errs = [];
+    const nodeIds = new Set(nodes.map((n) => n.id));
+
+    // Dangling edges (xyflow + our delete handler should prevent these
+    // but defence-in-depth — there are still paths where a graph loaded
+    // from a stale cache could carry one).
+    const danglingEdges = edges.filter(
+      (e) => !nodeIds.has(e.source) || !nodeIds.has(e.target),
+    );
+    danglingEdges.forEach((e) => {
+      errs.push(`Edge ${e.id} points at a node that no longer exists — delete and redraw it.`);
+    });
+
+    // Entry node: must have exactly one.
+    const entryNodes = nodes.filter((n) => n.data.isEntry);
+    if (entryNodes.length === 0) {
+      errs.push("No entry node. Mark one node as the entry (Set as entry button on the node card).");
+    } else if (entryNodes.length > 1) {
+      errs.push(`Multiple entry nodes (${entryNodes.length}). Only one node can be the entry.`);
+    }
+
+    // Reachability: every non-entry node must be reachable from an entry.
+    if (entryNodes.length === 1 && nodes.length > 1) {
+      const adj = new Map();
+      edges.forEach((e) => {
+        if (!adj.has(e.source)) adj.set(e.source, []);
+        adj.get(e.source).push(e.target);
+      });
+      const reachable = new Set([entryNodes[0].id]);
+      const stack = [entryNodes[0].id];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const next of (adj.get(cur) || [])) {
+          if (next && !reachable.has(next)) {
+            reachable.add(next);
+            stack.push(next);
+          }
+        }
+      }
+      nodes.forEach((n) => {
+        if (!reachable.has(n.id)) {
+          errs.push(`Node "${n.data.title || n.data.kind}" is unreachable from the entry — wire it in or delete it.`);
+        }
+      });
+    }
+
+    return errs;
+  }, [nodes, edges]);
+
   const saveMut = useMutation({
     mutationFn: async () => {
+      // Drop any orphan edges silently — the cleanup is purely about
+      // making the payload acceptable.  Structural problems (missing
+      // entry / unreachable nodes) are reported via runClientPreflight
+      // on the Save / Publish buttons, not silently fixed.
+      const nodeIds = new Set(nodes.map((n) => n.id));
+      const liveEdges = edges.filter(
+        (e) => nodeIds.has(e.source) && nodeIds.has(e.target),
+      );
       const payload = {
         nodes: nodes.map((n) => ({
           client_id: n.id,
@@ -1135,7 +1233,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
           position_y: Math.round(n.position.y),
           is_entry: !!n.data.isEntry,
         })),
-        edges: edges.map((e) => ({
+        edges: liveEdges.map((e) => ({
           from_client_id: e.source,
           to_client_id: e.target,
           condition: e.data?.condition || { op: 'always' },
@@ -1196,7 +1294,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
         ))}
         <p className="text-[11px] text-slate-400 pt-2">
           Connect a LinkedIn account in Settings → LinkedIn accounts before
-          using LI nodes. Connect / DM / InMail ship next milestone.
+          using LI nodes.
         </p>
       </aside>
 
@@ -1245,7 +1343,15 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
           <div className="flex-1" />
           <button
             type="button"
-            onClick={() => saveMut.mutate()}
+            onClick={() => {
+              const pre = runClientPreflight();
+              if (pre.length) {
+                setErrors(pre);
+                setStatusMsg(null);
+                return;
+              }
+              saveMut.mutate();
+            }}
             disabled={saveMut.isPending}
             className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50"
           >
@@ -1253,7 +1359,15 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
           </button>
           <button
             type="button"
-            onClick={() => validateMut.mutate()}
+            onClick={() => {
+              const pre = runClientPreflight();
+              if (pre.length) {
+                setErrors(pre);
+                setStatusMsg(null);
+                return;
+              }
+              validateMut.mutate();
+            }}
             disabled={validateMut.isPending}
             className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50"
           >
@@ -1263,6 +1377,12 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
             <button
               type="button"
               onClick={async () => {
+                const pre = runClientPreflight();
+                if (pre.length) {
+                  setErrors(pre);
+                  setStatusMsg(null);
+                  return;
+                }
                 await saveMut.mutateAsync();
                 publishMut.mutate();
               }}
@@ -1285,8 +1405,14 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
               <button
                 type="button"
                 onClick={async () => {
-                  // Save + publish + advance the wizard. If publish fails,
-                  // surface errors inline; don't advance.
+                  // Save + publish + advance the wizard. If preflight or
+                  // publish fails, surface errors inline; don't advance.
+                  const pre = runClientPreflight();
+                  if (pre.length) {
+                    setErrors(pre);
+                    setStatusMsg(null);
+                    return;
+                  }
                   await saveMut.mutateAsync();
                   const result = await publishMut.mutateAsync();
                   if (result?.ok && onContinue) onContinue();
@@ -1299,21 +1425,27 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
             </>
           )}
         </div>
-        {(statusMsg || errors.length > 0) && (
+        {/* Error banner — top of the canvas, prominent.  Single source
+            of truth for both server-side and client-preflight errors. */}
+        {errors.length > 0 && (
+          <div className="absolute top-12 left-3 right-3 z-10">
+            <div className="px-3 py-2 text-sm rounded-lg bg-red-50 border border-red-300 text-red-800 shadow-sm">
+              <div className="font-semibold mb-1">
+                {errors.length === 1 ? "1 issue to fix:" : `${errors.length} issues to fix:`}
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-xs">
+                {errors.map((e, i) => (
+                  <li key={i}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+        {statusMsg && errors.length === 0 && (
           <div className="absolute bottom-3 left-3 right-3 z-10 space-y-1">
-            {statusMsg && (
-              <div className="px-3 py-2 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800">
-                {statusMsg}
-              </div>
-            )}
-            {errors.map((e, i) => (
-              <div
-                key={i}
-                className="px-3 py-2 text-xs rounded-lg bg-red-50 border border-red-200 text-red-800 font-mono"
-              >
-                {e}
-              </div>
-            ))}
+            <div className="px-3 py-2 text-xs rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800">
+              {statusMsg}
+            </div>
           </div>
         )}
       </div>

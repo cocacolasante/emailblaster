@@ -321,6 +321,70 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   is closed" on the second task.  `sequencer._li_redis()` still caches
   (legacy) — fine for tests that monkeypatch `_LI_REDIS_CLIENT=None`,
   but rewrite if it ever causes issues in production.
+- **Follow-up email step honours send gates.**  `_send_email_step_async`
+  reuses `send.check_send_gates` so suppression / paused / schedule /
+  Brevo rate-limit checks behave identically to the legacy first-email
+  path.  A tripped gate returns `{"status": "deferred", "reason": "...",
+  "retry_at" | "retry_in": ...}`; `_record_execution_and_advance` parks
+  the lead on the current node and reschedules to the exact retry time
+  the gate returned WITHOUT consuming `MAX_TRANSIENT_RETRIES`.  A
+  campaign paused for a day no longer silently advances past every
+  follow-up.  Brevo rate counters bump on the follow-up step too so
+  steps are metered together with the first email.
+- **`send_lead_async` holds a row-level lock through the Brevo POST.**
+  `select(...).with_for_update()` on the lead row keeps a concurrent
+  invocation (rate-limit retry colliding with a beat-dispatched task)
+  blocked on the lock until the commit; the second one then reads
+  `SendStatus.SENT` and short-circuits.  Defends against the duplicate-
+  send race the audit flagged.
+- **Unsubscribe link is HMAC-signed + POST-confirm.**  GET renders a
+  confirm page (no side effect), POST applies the suppression.  Token is
+  `hmac_sha256(SECRET_KEY, lead.id.bytes)[:32]` so email-scanner GET
+  prefetchers (Outlook/Defender) can't auto-unsubscribe leads, and
+  knowing one lead's URL doesn't let an attacker forge another's.
+  `make_unsubscribe_url(lead_id)` is the helper for templates that
+  embed the link.
+- **Unipile webhook is now idempotent.**  ``webhook_events(provider,
+  event_id)`` table (migration 0007) records every incoming Unipile
+  event id and acts as the dedup guard.  The route inserts the row in
+  its own transaction up front; UniqueViolation → ``{"ok": True,
+  "duplicate": True}`` with no handler dispatch.  When Unipile sends a
+  payload with no id we fall back to a SHA-256 of the raw body so
+  byte-identical retries still dedup.  Trade-off: a handler crash
+  after the dedup commit drops Unipile's retry — at-most-once on our
+  side — which is intentional and replaces the previous at-least-once
+  with double-apply.
+- **Stuck RUNNING leads get swept back to PENDING.**  ``lead_sweeper``
+  beat task every 5 min flips ``compose_status`` / ``research_status``
+  RUNNING rows whose ``updated_at`` is older than
+  ``STALE_AFTER_MINUTES`` (15) back to PENDING and re-enqueues the
+  matching Celery worker.  Defends against the "worker crashed
+  between RUNNING-commit and final-commit" pattern that previously
+  left rows invisible to ``/retry-failed`` (which only sees FAILED).
+- **LinkedIn rate-limit acquire is atomic.**  ``_li_rate_acquire``
+  runs a Lua script in Redis that does min-delay + daily-cap + per-kind
+  subcap + per-page-monthly check + counter bump as ONE operation.
+  Two concurrent ticks can no longer both pass under a cap of one.
+  Trade-off: a failed action still counts the slot (no refund) — a
+  cleaner over-count than the previous race that double-fired.
+- **Brevo events come from polling, not a webhook.**  The inbound
+  `/webhooks/brevo` route was removed; events are pulled from
+  `GET /v3/smtp/statistics/events` by `brevo_events_poller.poll` every
+  `BREVO_EVENTS_POLL_INTERVAL_MINUTES` (default 10).  Trade-off: up to
+  10 min lag from event-at-Brevo to event-row-in-DB.  Reasoning:
+  Brevo's outbound event webhook is gated behind paid plans on some
+  tiers + needs a public tunnel; polling is free with the regular API
+  key and works behind the localhost-only port binding.  Shared
+  ``app.services.brevo_events.process_event`` does the lead lookup +
+  suppression-table write + event-row insert; the poller is the only
+  caller now.  Watermark is in Redis at `brevo:events:last_polled_at`
+  with a 24h lookback floor and 5-min overlap between polls.  Per-event
+  dedup is built into ``process_event`` so re-fetching the same day
+  window (day-granularity API) doesn't double-insert.
+- **All four ports bound to `127.0.0.1` only.**  `docker-compose.yml`
+  uses `"127.0.0.1:8000:8000"` etc. so the unauthenticated API can't
+  be reached from LAN.  Tunnel (ngrok/cloudflared) still works because
+  it forwards via the host loopback.
 - **Sequencer parks on async-event edges.** When an action step succeeds
   but no outgoing edge condition currently matches, the sequencer
   parks the lead on the current node instead of halting — as long as

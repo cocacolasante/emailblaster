@@ -234,7 +234,10 @@ function LinkedInAccountsTab() {
                 )}
                 {acc.pending_challenge_url && (
                   <div className="text-xs text-amber-700 mt-1">
-                    Pending challenge — open this account in your browser, solve it, then click "I've resolved it" in the edit modal.
+                    Pending challenge — finish the verification in Unipile's
+                    hosted browser, then open this account's <strong>Edit</strong>
+                    button and click <strong>Clear challenge state</strong>.
+                    Then hit Test to confirm.
                   </div>
                 )}
                 {acc.last_polled_at && (

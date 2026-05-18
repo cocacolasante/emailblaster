@@ -25,6 +25,19 @@ class Settings(BaseSettings):
     BREVO_API_KEY: str = ""
     BREVO_SENDER_EMAIL: str = "noreply@example.com"
     BREVO_SENDER_NAME: str = "Email Blaster"
+    # How often (minutes) to poll Brevo's transactional events API for
+    # delivered/opened/clicked/bounced/spam/unsubscribed.  We poll
+    # instead of taking the inbound webhook because the webhook needs a
+    # public tunnel + paid plan on some Brevo tiers; polling is free
+    # with the regular API key.  Trade-off: up to this many minutes of
+    # lag from event-at-Brevo to event-row-in-our-DB.
+    BREVO_EVENTS_POLL_INTERVAL_MINUTES: int = 10
+    # Legacy: the (now-deleted) /webhooks/brevo route used this as a
+    # shared-secret gate.  No longer referenced anywhere; keep the
+    # setting for one release so anybody whose .env still has it doesn't
+    # see a load-time error from pydantic-settings extra=forbid.  Safe
+    # to delete in a follow-up after .env templates are scrubbed.
+    BREVO_WEBHOOK_SECRET: str = ""
 
     # Enrichment (optional)
     APOLLO_API_KEY: str = ""

@@ -76,7 +76,7 @@ async def _engine():
             "sequence_edges, sequence_nodes, sequences, "
             "email_events, leads, style_corrections, "
             "suppression_list, campaigns, connected_accounts, "
-            "linkedin_accounts "
+            "linkedin_accounts, webhook_events "
             "RESTART IDENTITY CASCADE"
         ))
     try:

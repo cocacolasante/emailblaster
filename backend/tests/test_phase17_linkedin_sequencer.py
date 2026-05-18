@@ -541,6 +541,49 @@ async def test_connect_then_dm_advances_after_acceptance(db_session, monkeypatch
     assert state.status == LeadSequenceStatus.ACTIVE
 
 
+async def test_rate_acquire_is_atomic_under_concurrency(db_session, monkeypatch):
+    """Two concurrent _li_rate_acquire calls for the same account must not
+    both pass when only one slot remains under the daily cap.  The Lua
+    script runs server-side as a single atomic operation."""
+    import asyncio
+    from app.workers import sequencer as seq_mod
+
+    acc = await _make_li_account(db_session)
+    # Make the cap exactly 1 so the race is observable.
+    monkeypatch.setattr(seq_mod.settings, "LINKEDIN_DAILY_ACTION_CAP", 1)
+    monkeypatch.setattr(seq_mod.settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 0)
+
+    # Two coroutines try to claim simultaneously.
+    a, b = await asyncio.gather(
+        seq_mod._li_rate_acquire(acc),
+        seq_mod._li_rate_acquire(acc),
+    )
+    # Exactly one wins; the other gets daily_cap.
+    winners = [r for r in (a, b) if r.get("ok")]
+    losers = [r for r in (a, b) if not r.get("ok")]
+    assert len(winners) == 1
+    assert len(losers) == 1
+    assert losers[0].get("reason") == "daily_cap"
+
+
+async def test_rate_acquire_enforces_min_delay(db_session, monkeypatch):
+    """min_delay denies the second action when it's too close to the first."""
+    from app.workers import sequencer as seq_mod
+
+    acc = await _make_li_account(db_session)
+    monkeypatch.setattr(seq_mod.settings, "LINKEDIN_DAILY_ACTION_CAP", 100)
+    monkeypatch.setattr(seq_mod.settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 60)
+
+    first = await seq_mod._li_rate_acquire(acc)
+    assert first.get("ok") is True
+
+    second = await seq_mod._li_rate_acquire(acc)
+    assert second.get("ok") is False
+    assert second.get("reason") == "min_delay"
+    assert isinstance(second.get("remaining"), int)
+    assert second["remaining"] > 0
+
+
 async def test_connect_then_dm_halts_after_max_wait(db_session, monkeypatch):
     """When the prospect never accepts, the lead halts after MAX_EDGE_WAIT_DAYS
     with a clear reason so it surfaces in the halted-leads panel."""

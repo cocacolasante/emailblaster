@@ -174,6 +174,46 @@ async def _mark_send_failed(lead_id: str) -> None:
         await engine.dispose()
 
 
+async def check_send_gates(
+    session: AsyncSession,
+    lead: Lead,
+    campaign: Campaign,
+    redis_client: aioredis.Redis,
+) -> dict[str, Any]:
+    """Shared pre-send checks for both the legacy first-email path and the
+    sequencer's follow-up-email step.
+
+    Returns one of:
+      ``{"ok": True}`` — green light, caller may render + send.
+      ``{"ok": False, "reason": "suppressed"}`` — permanent skip.
+      ``{"ok": False, "reason": "paused"}`` — defer indefinitely while
+          the campaign is paused.
+      ``{"ok": False, "reason": "scheduled", "retry_at": <ISO>}`` —
+          defer until the next valid send window.
+      ``{"ok": False, "reason": "min_delay" | "hourly_cap" | "daily_cap",
+          "retry_in": <int seconds>}`` or ``"retry_at": <ISO>`` — defer
+          per Brevo / per-campaign rate-limit policy.
+    """
+    sup = await session.scalar(
+        select(Suppression).where(Suppression.email == lead.email)
+    )
+    if sup is not None:
+        return {"ok": False, "reason": "suppressed"}
+
+    if campaign.status == CampaignStatus.PAUSED:
+        return {"ok": False, "reason": "paused"}
+
+    eta = compute_next_send_window(campaign)
+    if eta is not None:
+        return {"ok": False, "reason": "scheduled", "retry_at": eta.isoformat()}
+
+    rate = await check_rate_limits(campaign, redis_client)
+    if not rate.get("ok"):
+        return {"ok": False, **rate}
+
+    return {"ok": True}
+
+
 async def send_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
     engine = create_async_engine(settings.DATABASE_URL)
@@ -181,7 +221,14 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
 
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
-            lead = await session.get(Lead, lid)
+            # Row-level lock prevents two concurrent invocations (e.g. a
+            # rate-limit retry colliding with a late beat-dispatched run)
+            # from both reading PENDING and double-POSTing to Brevo.  We
+            # acquire the lock on the Lead row only — the Campaign read
+            # below is a snapshot read.
+            lead = await session.scalar(
+                select(Lead).where(Lead.id == lid).with_for_update()
+            )
             if lead is None:
                 return {"status": "not_found"}
             campaign = await session.get(Campaign, lead.campaign_id)
@@ -191,28 +238,27 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             if lead.send_status == SendStatus.SENT:
                 return {"status": "already_sent"}
 
-            # 1. Suppression list
-            sup = await session.scalar(
-                select(Suppression).where(Suppression.email == lead.email)
-            )
-            if sup is not None:
-                lead.send_status = SendStatus.FAILED
-                await session.commit()
-                return {"status": "suppressed"}
+            gates = await check_send_gates(session, lead, campaign, redis_client)
+            if not gates.get("ok"):
+                reason = gates["reason"]
+                if reason == "suppressed":
+                    lead.send_status = SendStatus.FAILED
+                    await session.commit()
+                    return {"status": "suppressed"}
+                if reason == "paused":
+                    return {"status": "paused"}
+                if reason == "scheduled":
+                    lead.send_status = SendStatus.SCHEDULED
+                    # ``compute_next_send_window`` returned a tz-aware dt;
+                    # round-trip via ISO so the gate dict + the model
+                    # value match exactly.
+                    lead.scheduled_send_at = datetime.fromisoformat(gates["retry_at"])
+                    await session.commit()
+                    return {"status": "scheduled", "eta": gates["retry_at"]}
+                # rate-limit family (min_delay / hourly_cap / daily_cap)
+                return {"status": "rate_limited", **{k: v for k, v in gates.items() if k != "ok"}}
 
-            # 2. Campaign paused
-            if campaign.status == CampaignStatus.PAUSED:
-                return {"status": "paused"}
-
-            # 3. Schedule window
-            eta = compute_next_send_window(campaign)
-            if eta is not None:
-                lead.send_status = SendStatus.SCHEDULED
-                lead.scheduled_send_at = eta
-                await session.commit()
-                return {"status": "scheduled", "eta": eta.isoformat()}
-
-            # Snapshot for use after the session closes.
+            # Snapshot for the Brevo call (avoid holding ORM-detached refs).
             full_name = " ".join(
                 filter(None, [lead.first_name, lead.last_name])
             ) or None
@@ -226,40 +272,34 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
                 "campaign_id": str(campaign.id),
                 "lead_id": str(lead.id),
             }
-            campaign_snap = campaign  # safe to use outside session for read-only attrs
+            campaign_snap = campaign
 
-        # 4. Rate limits
-        rate = await check_rate_limits(campaign_snap, redis_client)
-        if not rate.get("ok"):
-            return {"status": "rate_limited", **rate}
+            # Render + Brevo POST happen INSIDE the locked session.  A
+            # concurrent send_lead_async for the same lead is blocked on
+            # the row lock; when it unblocks (after our commit below) it
+            # reads SendStatus.SENT and short-circuits, preventing the
+            # double-send the audit flagged.
+            html_body = render_html(ctx["body"])
+            text_body = render_text(ctx["body"])
+            message_id = await brevo.send_email(
+                to_email=ctx["to_email"],
+                to_name=ctx["to_name"],
+                subject=ctx["subject"],
+                html_body=html_body,
+                text_body=text_body,
+                sender_name=ctx["sender_name"],
+                sender_email=ctx["sender_email"],
+                campaign_id=ctx["campaign_id"],
+                lead_id=ctx["lead_id"],
+            )
 
-        # 5. Render
-        html_body = render_html(ctx["body"])
-        text_body = render_text(ctx["body"])
-
-        # 6. Send via Brevo
-        message_id = await brevo.send_email(
-            to_email=ctx["to_email"],
-            to_name=ctx["to_name"],
-            subject=ctx["subject"],
-            html_body=html_body,
-            text_body=text_body,
-            sender_name=ctx["sender_name"],
-            sender_email=ctx["sender_email"],
-            campaign_id=ctx["campaign_id"],
-            lead_id=ctx["lead_id"],
-        )
-
-        # 7. Persist sent state
-        async with AsyncSession(engine, expire_on_commit=False) as session:
-            lead = await session.get(Lead, lid)
-            if lead is None:
-                return {"status": "not_found"}
             lead.brevo_message_id = message_id
             lead.send_status = SendStatus.SENT
             await session.commit()
 
-        # 8. Bump rate counters
+        # Bump rate counters AFTER the row lock is released (commit at
+        # session-exit).  Counter bump errors must not roll back the
+        # persisted SENT state.
         await increment_rate_counters(campaign_snap, redis_client)
     finally:
         await engine.dispose()

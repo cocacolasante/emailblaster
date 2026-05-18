@@ -6,7 +6,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emailblaster}
       POSTGRES_DB: ${POSTGRES_DB:-emailblaster}
     ports:
-      - "5432:5432"
+      # localhost-only — db/redis/backend are unauthenticated; LAN exposure
+      # = unauthenticated lead access + token spend.  Tunnel
+      # (ngrok/cloudflared) still reaches /webhooks/* because it forwards
+      # via the host loopback.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -52,7 +56,7 @@ services:
       UNIPILE_WEBHOOK_AUTH_HEADER: ${UNIPILE_WEBHOOK_AUTH_HEADER:-X-Unipile-Auth}
       PYTHONPATH: /app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./backend:/app
     depends_on:
@@ -126,7 +130,7 @@ services:
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
