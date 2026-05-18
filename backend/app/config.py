@@ -86,3 +86,60 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+class ConfigurationError(RuntimeError):
+    """Raised by ``validate_required_settings`` when a load-bearing env
+    var is empty or set to a known-bad default.  Surfaced at app boot so
+    a half-configured ``.env`` fails immediately rather than mid-campaign.
+    """
+
+
+# Settings whose absence we deliberately tolerate but loudly warn about.
+# These either have safe defaults (`FRONTEND_URL`, `WEBHOOK_BASE_URL`) or
+# only matter for optional features (`UNIPILE_*`, `APOLLO_*`, `HUNTER_*`).
+_HARD_REQUIRED = (
+    # Without these the first compose / send / IMAP test crashes
+    # unrecoverably with `RuntimeError: ... is not configured`.
+    "ANTHROPIC_API_KEY",
+    "BREVO_API_KEY",
+    "BREVO_SENDER_EMAIL",
+    "ENCRYPTION_KEY",
+    "SECRET_KEY",
+)
+_DANGEROUS_DEFAULTS = {
+    "SECRET_KEY": "dev-secret-change-me",
+    "BREVO_SENDER_EMAIL": "noreply@example.com",
+}
+
+
+def validate_required_settings(*, raise_on_missing: bool = True) -> list[str]:
+    """Inspect the loaded settings and return a list of human-readable
+    error strings (``[]`` when everything's healthy).  Called from
+    ``app.main`` at startup; raises on missing hard requirements so the
+    container fails fast at ``docker compose up`` instead of running for
+    minutes and only erroring at first send/compose attempt.
+
+    Returns the error list either way (test-friendly), and raises
+    ``ConfigurationError`` when ``raise_on_missing=True`` (the default).
+    """
+    errors: list[str] = []
+    for key in _HARD_REQUIRED:
+        val = getattr(settings, key, "")
+        if not val or not str(val).strip():
+            errors.append(
+                f"{key} is empty.  Set it in .env before starting the backend."
+            )
+            continue
+        bad = _DANGEROUS_DEFAULTS.get(key)
+        if bad is not None and str(val) == bad:
+            errors.append(
+                f"{key} is still set to the insecure default ({bad!r}). "
+                "Replace it in .env before sending any real campaign."
+            )
+    if errors and raise_on_missing:
+        raise ConfigurationError(
+            "Refusing to start with missing / insecure-default config:\n  - "
+            + "\n  - ".join(errors)
+        )
+    return errors

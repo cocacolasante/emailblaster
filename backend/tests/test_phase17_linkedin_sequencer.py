@@ -549,6 +549,11 @@ async def test_rate_acquire_is_atomic_under_concurrency(db_session, monkeypatch)
     from app.workers import sequencer as seq_mod
 
     acc = await _make_li_account(db_session)
+    # Clear any leftover Redis counters for this account from a prior
+    # test (the fakeredis instance is shared across the file).
+    rc = seq_mod._li_redis()
+    aid = str(acc.id)
+    await rc.delete(f"li-rate:{aid}:last", f"li-rate:{aid}:day")
     # Make the cap exactly 1 so the race is observable.
     monkeypatch.setattr(seq_mod.settings, "LINKEDIN_DAILY_ACTION_CAP", 1)
     monkeypatch.setattr(seq_mod.settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 0)
@@ -571,6 +576,9 @@ async def test_rate_acquire_enforces_min_delay(db_session, monkeypatch):
     from app.workers import sequencer as seq_mod
 
     acc = await _make_li_account(db_session)
+    rc = seq_mod._li_redis()
+    aid = str(acc.id)
+    await rc.delete(f"li-rate:{aid}:last", f"li-rate:{aid}:day")
     monkeypatch.setattr(seq_mod.settings, "LINKEDIN_DAILY_ACTION_CAP", 100)
     monkeypatch.setattr(seq_mod.settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 60)
 

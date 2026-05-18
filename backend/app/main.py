@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import settings
+from app.config import settings, validate_required_settings
 from app.routers import (
     analytics,
     campaigns,
@@ -28,6 +28,18 @@ app = FastAPI(
     title="Email Blaster",
     version="0.1.0",
 )
+
+
+# Fail fast on missing API keys / insecure defaults.  Without this the
+# app boots happily with an empty ANTHROPIC_API_KEY and only errors at
+# the first compose attempt — long after the user has uploaded leads
+# and started a campaign.  Running this at import time means
+# ``docker compose up`` prints the problem and exits non-zero.
+try:
+    validate_required_settings()
+except Exception as exc:  # noqa: BLE001
+    logger.critical("Config validation failed: %s", exc)
+    raise
 
 app.add_middleware(
     CORSMiddleware,

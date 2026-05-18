@@ -167,7 +167,12 @@ PUBLISHABLE_KINDS_M1 = {
     # tried returns ``errors/malformed_request`` from their forwarder.
     # Re-enable once Unipile support allowlists the endpoint OR ships a
     # packaged "invite-to-follow-page" action.
-    SequenceNodeKind.LINKEDIN_INMAIL,
+    #
+    # LINKEDIN_INMAIL excluded: the impl is correct (HAR-verified form-
+    # encoded body with linkedin[inmail]=true) but Unipile returns 403
+    # ``errors/resource_access_restricted`` until Sales Nav API access
+    # is enabled on the workspace.  Re-enable once Unipile support
+    # turns that on.
     SequenceNodeKind.LINKEDIN_COMMENT_POST,
 }
 

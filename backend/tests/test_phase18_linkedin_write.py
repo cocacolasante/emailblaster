@@ -503,6 +503,41 @@ async def test_publish_rejects_linkedin_invite_to_page(client):
     assert any("linkedin_invite_to_page" in e for e in body["errors"])
 
 
+async def test_publish_rejects_linkedin_inmail(client):
+    """linkedin_inmail is gated out of PUBLISHABLE_KINDS until Unipile
+    Sales Nav API access is enabled on the workspace — otherwise the
+    step would silently skip on every lead with `resource_access_restricted`.
+    Better to refuse to publish a sequence the user can't actually run."""
+    cid_resp = await client.post("/campaigns/", json={
+        "name": "x", "goal": "g", "tone": "Direct",
+        "sender_name": "A", "sender_email": "a@example.com",
+        "research_mode": "fast",
+        "schedule_days": [0, 1, 2, 3, 4],
+        "schedule_time_start": "09:00:00",
+        "schedule_time_end": "17:00:00",
+        "schedule_timezone": "UTC",
+    })
+    cid = cid_resp.json()["id"]
+
+    payload = {
+        "nodes": [
+            {"client_id": "e", "kind": "email", "is_entry": True, "config": {}},
+            {
+                "client_id": "im", "kind": "linkedin_inmail", "is_entry": False,
+                "config": {"subject_template": "Hey", "body_template": "Hi {{first_name}}"},
+            },
+        ],
+        "edges": [
+            {"from_client_id": "e", "to_client_id": "im", "condition": {"op": "always"}},
+        ],
+    }
+    await client.put(f"/campaigns/{cid}/sequence", json=payload)
+    pub = await client.post(f"/campaigns/{cid}/sequence/publish")
+    body = pub.json()
+    assert body["ok"] is False
+    assert any("linkedin_inmail" in e for e in body["errors"])
+
+
 # test_publish_rejects_non_numeric_page_id removed — linkedin_invite_to_page
 # is currently gated out of PUBLISHABLE_KINDS, so the numeric-page_id check
 # is unreachable from the publish path.  Restore alongside re-enabling the

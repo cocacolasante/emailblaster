@@ -332,24 +332,11 @@ async def _make_campaign_via_api(client) -> str:
     return r.json()["id"]
 
 
-async def test_publish_requires_inmail_subject(client):
-    cid = await _make_campaign_via_api(client)
-    await client.put(f"/campaigns/{cid}/sequence", json={
-        "nodes": [
-            {"client_id": "e", "kind": "email", "is_entry": True, "config": {}},
-            {
-                "client_id": "i", "kind": "linkedin_inmail", "is_entry": False,
-                "config": {"body_template": "hi"},  # missing subject
-            },
-        ],
-        "edges": [
-            {"from_client_id": "e", "to_client_id": "i", "condition": {"op": "always"}},
-        ],
-    })
-    pub = await client.post(f"/campaigns/{cid}/sequence/publish")
-    body = pub.json()
-    assert body["ok"] is False
-    assert any("subject_template" in e for e in body["errors"])
+# test_publish_requires_inmail_subject removed — linkedin_inmail is
+# currently gated out of PUBLISHABLE_KINDS while Unipile's Sales Nav API
+# access is locked down on the workspace.  Publish rejects the kind
+# before the per-config subject check fires; restore this test alongside
+# re-enabling the kind in sequence_service.PUBLISHABLE_KINDS_M1.
 
 
 async def test_publish_rejects_invalid_comment_target(client):

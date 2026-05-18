@@ -26,11 +26,14 @@ import {
 
 // Kinds the publish step currently accepts.  The backend's full
 // SequenceNodeKind enum is wider (it still has linkedin_invite_to_page
-// for historical rows + future re-enable), but the palette only shows
-// what's actually runnable today — anything else just produces a publish
-// error.  linkedin_invite_to_page is deliberately omitted while Unipile's
-// passthrough whitelist blocks the underlying Voyager endpoint; see
-// CLAUDE.md.
+// + linkedin_inmail for historical rows / future re-enable), but the
+// palette only shows what's actually runnable today — anything else
+// just produces a publish error.
+//   - linkedin_invite_to_page: Unipile's passthrough whitelist blocks
+//     the Voyager endpoint we need.
+//   - linkedin_inmail: blocked until Sales Nav API access is enabled
+//     on the Unipile workspace.
+// Both are tracked in CLAUDE.md "Next up".
 const PALETTE = [
   { kind: 'email', label: 'Email', hint: 'Send a templated email.' },
   { kind: 'wait', label: 'Wait', hint: 'Pause N minutes / hours / days before the next step.' },
@@ -39,7 +42,6 @@ const PALETTE = [
   { kind: 'linkedin_react_post', label: 'LI: React to post', hint: 'Like the lead’s most recent post.' },
   { kind: 'linkedin_connect', label: 'LI: Connect', hint: 'Send a connection request, optionally with a 200-char note. The next edge defaults to "if accepted" so a downstream DM waits for the prospect to accept.' },
   { kind: 'linkedin_dm', label: 'LI: DM', hint: 'Send a direct message. Only fires for accepted (1st-degree) connections.' },
-  { kind: 'linkedin_inmail', label: 'LI: InMail', hint: 'Send a paid InMail to a 2nd/3rd-degree prospect. Requires Premium / Sales Nav on your Unipile account.' },
   { kind: 'linkedin_comment_post', label: 'LI: Comment on post', hint: 'Comment on the lead’s post — publicly visible. Use sparingly.' },
 ];
 
