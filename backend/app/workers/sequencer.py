@@ -155,22 +155,29 @@ if last then
     end
 end
 
+-- For cap rejections, also return the TTL of the counter key so the
+-- caller can defer to the exact reset time (instead of using the short
+-- 5-min transient-retry interval and burning the lead's retry budget
+-- before the daily window rolls over).
 local day = tonumber(redis.call('GET', KEYS[2])) or 0
 if day >= tonumber(ARGV[3]) then
-    return {0, 'daily_cap', 0}
+    local ttl = redis.call('TTL', KEYS[2])
+    return {0, 'daily_cap', ttl}
 end
 
 if KEYS[3] ~= '' then
     local sub = tonumber(redis.call('GET', KEYS[3])) or 0
     if sub >= tonumber(ARGV[4]) then
-        return {0, 'subcap', 0}
+        local ttl = redis.call('TTL', KEYS[3])
+        return {0, 'subcap', ttl}
     end
 end
 
 if KEYS[4] ~= '' then
     local page = tonumber(redis.call('GET', KEYS[4])) or 0
     if page >= tonumber(ARGV[5]) then
-        return {0, 'page_invite_cap', 0}
+        local ttl = redis.call('TTL', KEYS[4])
+        return {0, 'page_invite_cap', ttl}
     end
 end
 
@@ -242,22 +249,29 @@ async def _li_rate_acquire(
     # Redis returns Lua arrays as Python lists.  Decoded with the
     # `decode_responses=True` client, all elements come back as strings
     # (Lua's integer return is auto-stringified by aioredis here).
-    ok_raw, reason, remaining = result[0], result[1], result[2]
+    ok_raw, reason, third = result[0], result[1], result[2]
     ok = (str(ok_raw) in ("1", "true", "True", "OK"))
     if ok:
         return {"ok": True}
     reason_str = str(reason or "")
+    # ``third`` is min_delay's remaining seconds, OR the Redis TTL of the
+    # cap-counter key (whichever the Lua hit).  Both are non-negative
+    # ints when meaningful; -1 means "no expiry" (shouldn't happen with
+    # our keys); -2 means "key not found".
+    try:
+        third_int = int(third)
+    except (TypeError, ValueError):
+        third_int = 0
     payload: dict[str, Any] = {"ok": False, "reason": reason_str}
     if reason_str == "min_delay":
-        try:
-            payload["remaining"] = int(remaining)
-            payload["error"] = f"under min delay ({payload['remaining']}s remaining)"
-        except (TypeError, ValueError):
-            payload["error"] = "under min delay"
+        payload["remaining"] = max(third_int, 1)
+        payload["error"] = f"under min delay ({payload['remaining']}s remaining)"
     elif reason_str == "daily_cap":
         payload["error"] = (
             f"daily cap reached ({settings.LINKEDIN_DAILY_ACTION_CAP})"
         )
+        if third_int > 0:
+            payload["retry_in"] = third_int
     elif reason_str == "subcap":
         if kind == SequenceNodeKind.LINKEDIN_CONNECT:
             payload["reason"] = "connect_cap"
@@ -269,10 +283,14 @@ async def _li_rate_acquire(
             payload["error"] = (
                 f"daily DM/InMail cap reached ({settings.LINKEDIN_DAILY_DM_CAP})"
             )
+        if third_int > 0:
+            payload["retry_in"] = third_int
     elif reason_str == "page_invite_cap":
         payload["error"] = (
             f"monthly page invite cap reached ({settings.LINKEDIN_MONTHLY_PAGE_INVITE_CAP})"
         )
+        if third_int > 0:
+            payload["retry_in"] = third_int
     return payload
 
 
@@ -741,9 +759,26 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             # counts the slot anyway (no refund), bounded by the cap.
             rate = await _li_rate_acquire(account, kind=kind, page_id=rate_page_id)
             if not rate.get("ok"):
-                if rate.get("reason") == "min_delay":
+                reason = rate.get("reason")
+                if reason == "min_delay":
                     # Signal the Celery task to reschedule rather than skip.
                     return {"status": "min_delay_retry", "countdown": rate["remaining"]}
+                if reason in {"daily_cap", "connect_cap", "dm_cap", "page_invite_cap"}:
+                    # Cap-style skips: defer to the exact reset time the
+                    # Lua returned via Redis TTL (no retry-budget burn).
+                    # MAX_TRANSIENT_RETRIES is calibrated for fast-resolve
+                    # issues (account challenge, min-delay) — without
+                    # this branch a lead that hit the daily cap mid-day
+                    # would burn through 10 × 5 min and silently advance
+                    # past the connect step before midnight.
+                    deferred: dict[str, Any] = {
+                        "status": "deferred",
+                        "reason": reason,
+                        "error": rate.get("error"),
+                    }
+                    if rate.get("retry_in"):
+                        deferred["retry_in"] = rate["retry_in"]
+                    return deferred
                 return {"status": "rate_limited", "error": rate.get("error")}
 
             profile = ProfileRef.from_url(lead.linkedin_url)

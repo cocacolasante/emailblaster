@@ -383,7 +383,10 @@ async def test_connect_cap_blocks_after_subcap_hit(db_session, monkeypatch):
     assert r1["status"] == "sent", r1
 
     r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
-    assert r2["status"] == "rate_limited"
+    # Cap-style skips now defer to the exact reset time (Redis TTL)
+    # instead of consuming the transient-retry budget.
+    assert r2["status"] == "deferred"
+    assert r2["reason"] == "connect_cap"
     assert "connect" in r2["error"]
 
 
@@ -424,7 +427,8 @@ async def test_page_invite_cap_is_per_page(db_session, monkeypatch):
     assert r_a1["status"] == "sent"
 
     r_a2 = await sequencer._send_linkedin_step_async(str(lead.id), str(node_a.id))
-    assert r_a2["status"] == "rate_limited"
+    assert r_a2["status"] == "deferred"
+    assert r_a2["reason"] == "page_invite_cap"
     assert "page invite" in r_a2["error"]
 
     r_b1 = await sequencer._send_linkedin_step_async(str(lead.id), str(node_b.id))

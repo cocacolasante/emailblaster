@@ -223,8 +223,15 @@ async def test_skips_when_account_challenged(db_session, monkeypatch):
 # --------------------------------------------------------------------------
 
 
-async def test_daily_cap_triggers_rate_limited(db_session, monkeypatch):
-    """Force the daily cap to 1, then run two actions in a row."""
+async def test_daily_cap_triggers_deferred_with_reset_eta(db_session, monkeypatch):
+    """Force the daily cap to 1, then run two actions in a row.
+
+    Cap-style skips return ``status=deferred`` with a ``retry_in`` that
+    matches the Redis TTL of the day counter — NOT ``rate_limited``,
+    because the transient-retry budget (10 × 5 min) is way too short to
+    survive until the daily cap resets ~24h later.  Without this, leads
+    that hit the cap mid-day silently advance past the action before
+    midnight."""
     from app.config import settings
 
     monkeypatch.setattr(settings, "LINKEDIN_DAILY_ACTION_CAP", 1)
@@ -249,8 +256,71 @@ async def test_daily_cap_triggers_rate_limited(db_session, monkeypatch):
     assert r1["status"] == "sent"
 
     r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
-    assert r2["status"] == "rate_limited"
+    assert r2["status"] == "deferred"
+    assert r2["reason"] == "daily_cap"
     assert "daily cap" in r2["error"]
+    # TTL should be close to 24h (just bumped on the first acquire).
+    assert 86000 < r2["retry_in"] <= 86400
+
+
+async def test_deferred_cap_skip_does_not_burn_retry_budget(db_session, monkeypatch):
+    """The whole point of routing cap-skips through `deferred` is that
+    the lead waits the full Redis TTL and DOESN'T consume
+    MAX_TRANSIENT_RETRIES.  We assert: after a cap-deferred skip, the
+    lead is parked on the same node with next_run_at ~24h out, NOT
+    cleared in 5 min."""
+    from app.config import settings
+    from datetime import timedelta
+
+    monkeypatch.setattr(settings, "LINKEDIN_DAILY_ACTION_CAP", 1)
+    monkeypatch.setattr(settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 0)
+
+    import app.workers.sequencer as seq_mod
+    monkeypatch.setattr(seq_mod, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    _stub_provider(monkeypatch)
+
+    rc = seq_mod._li_redis()
+    await rc.delete(f"li-rate:{acc.id}:day", f"li-rate:{acc.id}:last")
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=li_node.sequence_id,
+        current_node_id=li_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    # First call claims the only slot.
+    r1 = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert r1["status"] == "sent"
+    await sequencer._record_execution_and_advance(lead.id, li_node.id, r1)
+
+    # Reset state to simulate the next attempt landing on the same node.
+    await db_session.refresh(state)
+    state.current_node_id = li_node.id
+    state.next_run_at = _now()
+    state.entered_current_at = _now()
+    state.status = LeadSequenceStatus.ACTIVE
+    await db_session.commit()
+
+    # Second call hits the cap.
+    r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert r2["status"] == "deferred"
+    await sequencer._record_execution_and_advance(lead.id, li_node.id, r2)
+
+    await db_session.refresh(state)
+    # Lead is parked on the same node, status ACTIVE, next_run_at ~24h.
+    assert state.current_node_id == li_node.id
+    assert state.status == LeadSequenceStatus.ACTIVE
+    assert state.next_run_at is not None
+    delta = state.next_run_at - _now()
+    # Big enough to be clearly the TTL-based defer, not the 5-min retry.
+    assert delta > timedelta(hours=1)
 
 
 # --------------------------------------------------------------------------
@@ -295,8 +365,15 @@ async def test_challenged_skip_keeps_lead_on_node(db_session, monkeypatch):
     assert rows[0].result == LeadStepResult.SKIPPED
 
 
-async def test_rate_limited_skip_keeps_lead_on_node(db_session, monkeypatch):
-    """rate_limited is also a transient skip — same retry behavior."""
+async def test_daily_cap_deferred_skip_keeps_lead_on_node(db_session, monkeypatch):
+    """A daily_cap skip keeps the lead parked on the current node.
+
+    (Previously asserted ``status == rate_limited``; now cap-style skips
+    are routed to ``status == deferred`` instead so MAX_TRANSIENT_RETRIES
+    doesn't burn through the lead's budget before the cap resets.  The
+    parking semantics — lead stays on node, next_run_at pushed out — are
+    identical from the user's standpoint.)
+    """
     from app.config import settings
 
     monkeypatch.setattr(settings, "LINKEDIN_DAILY_ACTION_CAP", 0)  # cap=0 → instant skip
@@ -322,7 +399,8 @@ async def test_rate_limited_skip_keeps_lead_on_node(db_session, monkeypatch):
     await db_session.commit()
 
     result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
-    assert result["status"] == "rate_limited"
+    assert result["status"] == "deferred"
+    assert result["reason"] == "daily_cap"
 
     await sequencer._record_execution_and_advance(lead.id, li_node.id, result)
     await db_session.refresh(state)

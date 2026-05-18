@@ -309,7 +309,10 @@ async def test_inmail_counts_against_dm_cap(db_session, monkeypatch):
     assert r1["status"] == "sent"
 
     r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(inmail_node.id))
-    assert r2["status"] == "rate_limited"
+    # Cap-style skips defer to the cap-reset time (Redis TTL) instead of
+    # burning the transient-retry budget.
+    assert r2["status"] == "deferred"
+    assert r2["reason"] == "dm_cap"
     assert "DM/InMail" in r2["error"]
 
 
