@@ -28,6 +28,16 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Celery on the Redis broker holds future-ETA tasks in worker
+    # process MEMORY until the ETA arrives.  If the worker dies before
+    # then, the task sits in ``unacked`` until visibility_timeout
+    # expires and a live worker reclaims it.  The default is 1 hour;
+    # 5 min is much friendlier when we ``apply_async(countdown=60)`` for
+    # rate-limit retries.  Side note: the timeout MUST be >= the
+    # longest realistic task runtime, or in-progress tasks can get
+    # double-delivered.  300 s comfortably exceeds any task we run
+    # (longest is Brevo POST + DB write, well under 30 s).
+    broker_transport_options={"visibility_timeout": 300},
 )
 
 celery_app.conf.beat_schedule = {
