@@ -94,6 +94,15 @@ async def _make_lead(db_session, campaign, *, linkedin_url="https://www.linkedin
 
 
 async def _build_view_profile_sequence(db_session, campaign) -> tuple[Sequence, SequenceNode, SequenceNode]:
+    return await _build_li_node_sequence(db_session, campaign, SequenceNodeKind.LINKEDIN_VIEW_PROFILE)
+
+
+async def _build_li_node_sequence(
+    db_session, campaign, kind: SequenceNodeKind,
+) -> tuple[Sequence, SequenceNode, SequenceNode]:
+    """Generic ``email entry -> <kind>`` sequence used by tests that need
+    a specific LinkedIn action node — daily-cap tests in particular need
+    a non-exempt kind (view_profile bypasses the cap)."""
     seq = Sequence(campaign_id=campaign.id, is_published=True)
     db_session.add(seq)
     await db_session.flush()
@@ -102,7 +111,7 @@ async def _build_view_profile_sequence(db_session, campaign) -> tuple[Sequence, 
         config={"use_campaign_compose": True}, is_entry=True,
     )
     li_node = SequenceNode(
-        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
+        sequence_id=seq.id, kind=kind,
         config={}, is_entry=False,
     )
     db_session.add_all([entry, li_node])
@@ -244,7 +253,10 @@ async def test_daily_cap_triggers_deferred_with_reset_eta(db_session, monkeypatc
 
     acc = await _make_li_account(db_session)
     campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
-    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    # follow_profile, not view_profile — views are exempt from the daily cap.
+    _, entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
+    )
     lead = await _make_lead(db_session, campaign)
     _stub_provider(monkeypatch)
 
@@ -280,7 +292,10 @@ async def test_deferred_cap_skip_does_not_burn_retry_budget(db_session, monkeypa
 
     acc = await _make_li_account(db_session)
     campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
-    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    # follow_profile counts against the day cap; view_profile is exempt.
+    _, entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
+    )
     lead = await _make_lead(db_session, campaign)
     _stub_provider(monkeypatch)
 
@@ -383,7 +398,10 @@ async def test_daily_cap_deferred_skip_keeps_lead_on_node(db_session, monkeypatc
 
     acc = await _make_li_account(db_session)
     campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
-    _, entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    # follow_profile counts against the day cap; view_profile is exempt.
+    _, entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
+    )
     lead = await _make_lead(db_session, campaign)
     _stub_provider(monkeypatch)
 
@@ -619,6 +637,64 @@ async def test_connect_then_dm_advances_after_acceptance(db_session, monkeypatch
     assert state.status == LeadSequenceStatus.ACTIVE
 
 
+async def test_view_profile_is_exempt_from_daily_cap(db_session, monkeypatch):
+    """view_profile is a read action with negligible bot-detection risk
+    and a doubling effect on throughput when sequences are
+    ``view → connect → DM``.  It deliberately doesn't count against
+    ``LINKEDIN_DAILY_ACTION_CAP``: even with day_cap=1 (effectively
+    zero remaining capacity) the acquire still succeeds for view_profile."""
+    from app.config import settings
+    from app.workers import sequencer as seq_mod
+
+    monkeypatch.setattr(settings, "LINKEDIN_DAILY_ACTION_CAP", 1)
+    monkeypatch.setattr(settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 0)
+    monkeypatch.setattr(seq_mod, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    rc = seq_mod._li_redis()
+    aid = str(acc.id)
+    await rc.delete(f"li-rate:{aid}:last", f"li-rate:{aid}:day")
+
+    # Burn the (already minimal) day cap with one CONNECT.
+    r1 = await seq_mod._li_rate_acquire(acc, kind=SequenceNodeKind.LINKEDIN_CONNECT)
+    assert r1["ok"] is True
+
+    # A regular kind should now be rejected.
+    r2 = await seq_mod._li_rate_acquire(acc, kind=SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE)
+    assert r2["ok"] is False
+    assert r2["reason"] == "daily_cap"
+
+    # But view_profile is exempt from the day cap.
+    r3 = await seq_mod._li_rate_acquire(acc, kind=SequenceNodeKind.LINKEDIN_VIEW_PROFILE)
+    assert r3["ok"] is True
+
+    # And the day counter STAYED at 1 — view_profile didn't bump it.
+    day_count = int(await rc.get(f"li-rate:{aid}:day") or 0)
+    assert day_count == 1
+
+
+async def test_view_profile_still_respects_min_delay(db_session, monkeypatch):
+    """Exempting from the cap doesn't mean we burst-view 100 profiles in
+    a minute.  Min-delay still applies to every LinkedIn action."""
+    from app.config import settings
+    from app.workers import sequencer as seq_mod
+
+    monkeypatch.setattr(settings, "LINKEDIN_DAILY_ACTION_CAP", 1000)
+    monkeypatch.setattr(settings, "LINKEDIN_MIN_ACTION_DELAY_SECONDS", 60)
+    monkeypatch.setattr(seq_mod, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    rc = seq_mod._li_redis()
+    aid = str(acc.id)
+    await rc.delete(f"li-rate:{aid}:last", f"li-rate:{aid}:day")
+
+    r1 = await seq_mod._li_rate_acquire(acc, kind=SequenceNodeKind.LINKEDIN_VIEW_PROFILE)
+    assert r1["ok"] is True
+    r2 = await seq_mod._li_rate_acquire(acc, kind=SequenceNodeKind.LINKEDIN_VIEW_PROFILE)
+    assert r2["ok"] is False
+    assert r2["reason"] == "min_delay"
+
+
 async def test_rate_acquire_is_atomic_under_concurrency(db_session, monkeypatch):
     """Two concurrent _li_rate_acquire calls for the same account must not
     both pass when only one slot remains under the daily cap.  The Lua
@@ -704,4 +780,94 @@ async def test_connect_then_dm_halts_after_max_wait(db_session, monkeypatch):
     assert state.status == LeadSequenceStatus.HALTED
     assert state.halt_reason is not None
     assert f"{sequencer.MAX_EDGE_WAIT_DAYS}d" in state.halt_reason
+
+
+# --------------------------------------------------------------------------
+# Schedule window + paused gates apply to LinkedIn steps too
+# --------------------------------------------------------------------------
+
+
+async def test_linkedin_step_defers_outside_schedule_window(db_session, monkeypatch):
+    """LinkedIn steps used to run 24/7; that meant a connect cap-reset
+    landing at 3 AM ET would fire 40 connects in the middle of the
+    night.  Now the same window gate the email path uses applies to
+    LinkedIn too — outside the window we defer to the next window open.
+    """
+    from datetime import time as _time
+    from app.workers import sequencer as seq_mod
+
+    monkeypatch.setattr(seq_mod, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # Force a window the test is almost certainly not inside (Mon only,
+    # 02:00–02:30 UTC).  Whatever the test clock says, we'll be out of
+    # this window unless we're running at the precise 30-minute
+    # Monday-night slot.
+    campaign.schedule_days = [0]
+    campaign.schedule_time_start = _time(2, 0)
+    campaign.schedule_time_end = _time(2, 30)
+    await db_session.commit()
+
+    _, entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
+    )
+    lead = await _make_lead(db_session, campaign)
+
+    # Provider must NOT be invoked.
+    class _Explode:
+        async def send_connect_request(self, *a, **kw):
+            raise AssertionError("LinkedIn provider called outside window")
+        async def view_profile(self, *a, **kw): return ActionResult(ok=True)
+        async def follow_profile(self, *a, **kw): return ActionResult(ok=True)
+        async def react_to_post(self, *a, **kw): return ActionResult(ok=True)
+        async def latest_post_urn(self, *a, **kw): return None
+        async def test_connection(self, *a, **kw): return ActionResult(ok=True)
+        async def inbox_recent_events(self, *a, **kw): return []
+    monkeypatch.setattr(seq_mod, "get_linkedin_provider", lambda: _Explode())
+
+    result = await seq_mod._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "deferred"
+    assert result["reason"] == "scheduled"
+    assert "retry_at" in result
+
+    # The rate-limit counter should NOT have been bumped — we deferred
+    # before _li_rate_acquire ran.
+    rc = seq_mod._li_redis()
+    aid = str(acc.id)
+    day_count = await rc.get(f"li-rate:{aid}:day")
+    assert day_count is None or int(day_count) == 0
+
+
+async def test_linkedin_step_defers_when_campaign_paused(db_session, monkeypatch):
+    from app.workers import sequencer as seq_mod
+    from app.models import CampaignStatus
+
+    monkeypatch.setattr(seq_mod, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    campaign.status = CampaignStatus.PAUSED
+    await db_session.commit()
+
+    _, entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
+    )
+    lead = await _make_lead(db_session, campaign)
+
+    class _Explode:
+        async def send_connect_request(self, *a, **kw):
+            raise AssertionError("LinkedIn provider called while paused")
+        async def view_profile(self, *a, **kw): return ActionResult(ok=True)
+        async def follow_profile(self, *a, **kw): return ActionResult(ok=True)
+        async def react_to_post(self, *a, **kw): return ActionResult(ok=True)
+        async def latest_post_urn(self, *a, **kw): return None
+        async def test_connection(self, *a, **kw): return ActionResult(ok=True)
+        async def inbox_recent_events(self, *a, **kw): return []
+    monkeypatch.setattr(seq_mod, "get_linkedin_provider", lambda: _Explode())
+
+    result = await seq_mod._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "deferred"
+    assert result["reason"] == "paused"
+    assert "retry_at" not in result  # paused has no eta — recheck in 5 min
 

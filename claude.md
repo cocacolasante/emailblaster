@@ -321,6 +321,16 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   is closed" on the second task.  `sequencer._li_redis()` still caches
   (legacy) — fine for tests that monkeypatch `_LI_REDIS_CLIENT=None`,
   but rewrite if it ever causes issues in production.
+- **LinkedIn steps honour the campaign schedule window + paused state.**
+  `_send_linkedin_step_async` checks `campaign.status == PAUSED` and
+  `compute_next_send_window(campaign)` up front; outside-window /
+  paused → returns `{"status": "deferred", "reason": "scheduled"|"paused",
+  "retry_at": ...}` BEFORE `_li_rate_acquire` runs, so a deferred lead
+  doesn't burn a LinkedIn rate slot.  `view_profile` respects the
+  window too — even though it's exempt from the daily-action cap, an
+  account that only operates in business hours should "look human" to
+  LinkedIn's behavioural scorer.  Defers to the next window-open ETA
+  the same way the email step does.
 - **Follow-up email step honours send gates.**  `_send_email_step_async`
   reuses `send.check_send_gates` so suppression / paused / schedule /
   Brevo rate-limit checks behave identically to the legacy first-email

@@ -132,7 +132,8 @@ def _li_redis() -> aioredis.Redis:
 # (check-then-bump-after-success) was racy and let us exceed the cap.
 _LI_RATE_ACQUIRE_LUA = """
 -- KEYS[1] = last-action key
--- KEYS[2] = daily total key
+-- KEYS[2] = daily total key, OR empty string for kinds excluded from
+--          the total cap (e.g. view_profile — see _li_rate_acquire).
 -- KEYS[3] = per-kind subcap key (or empty string)
 -- KEYS[4] = per-page month key (or empty string)
 -- ARGV[1] = now (epoch seconds, float-string)
@@ -159,10 +160,12 @@ end
 -- caller can defer to the exact reset time (instead of using the short
 -- 5-min transient-retry interval and burning the lead's retry budget
 -- before the daily window rolls over).
-local day = tonumber(redis.call('GET', KEYS[2])) or 0
-if day >= tonumber(ARGV[3]) then
-    local ttl = redis.call('TTL', KEYS[2])
-    return {0, 'daily_cap', ttl}
+if KEYS[2] ~= '' then
+    local day = tonumber(redis.call('GET', KEYS[2])) or 0
+    if day >= tonumber(ARGV[3]) then
+        local ttl = redis.call('TTL', KEYS[2])
+        return {0, 'daily_cap', ttl}
+    end
 end
 
 if KEYS[3] ~= '' then
@@ -183,8 +186,10 @@ end
 
 -- All gates passed.  Claim the slot atomically.
 redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[6]))
-redis.call('INCR', KEYS[2])
-redis.call('EXPIRE', KEYS[2], tonumber(ARGV[7]), 'NX')
+if KEYS[2] ~= '' then
+    redis.call('INCR', KEYS[2])
+    redis.call('EXPIRE', KEYS[2], tonumber(ARGV[7]), 'NX')
+end
 if KEYS[3] ~= '' then
     redis.call('INCR', KEYS[3])
     redis.call('EXPIRE', KEYS[3], tonumber(ARGV[7]), 'NX')
@@ -195,6 +200,19 @@ if KEYS[4] ~= '' then
 end
 return {1, '', 0}
 """
+
+
+# Kinds that don't count against ``LINKEDIN_DAILY_ACTION_CAP``.  Views
+# are read-only and don't move LinkedIn's bot scorer at human-scale
+# volumes; counting them halves throughput on a typical
+# ``view_profile → connect`` sequence for no risk reduction.  Other
+# warm-ups (follow_profile, react_to_post) DO still count because they
+# generate visible notifications/feed activity that LinkedIn polices
+# more closely.  Min-delay still applies to keep us from burst-viewing
+# 100 profiles in a minute (which IS detectable).
+_DAILY_CAP_EXEMPT_KINDS = frozenset({
+    SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
+})
 
 
 async def _li_rate_acquire(
@@ -213,7 +231,9 @@ async def _li_rate_acquire(
     client = _li_redis()
     aid = str(account.id)
     last_key = f"li-rate:{aid}:last"
-    day_key = f"li-rate:{aid}:day"
+    # Exempt low-risk reads from the daily-total cap (see _DAILY_CAP_EXEMPT_KINDS).
+    # Empty key = Lua skips the daily-cap GET, the >= check, and the INCR.
+    day_key = "" if kind in _DAILY_CAP_EXEMPT_KINDS else f"li-rate:{aid}:day"
 
     sub_key = ""
     sub_cap = 0
@@ -709,6 +729,28 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             account = await session.get(LinkedInAccount, campaign.linkedin_account_id)
             if account is None:
                 return {"status": "not_found", "error": "linkedin account missing"}
+
+            # Honour the campaign's schedule window + paused state.  Same
+            # treatment as the email path — defer to the next valid
+            # moment via ``next_run_at`` instead of burning a LinkedIn
+            # rate-limit slot or firing a public action (connect / DM /
+            # comment) at 3 AM.  Even no-touch reads like view_profile
+            # respect the window so an account that only operates during
+            # business hours stays "looks like a human" to LinkedIn's
+            # behavioural scorer.
+            from app.models import CampaignStatus  # local — avoid circular
+            from app.workers.send import compute_next_send_window
+            if campaign.status == CampaignStatus.PAUSED:
+                return {"status": "deferred", "reason": "paused",
+                        "error": "campaign paused"}
+            window_eta = compute_next_send_window(campaign)
+            if window_eta is not None:
+                return {
+                    "status": "deferred",
+                    "reason": "scheduled",
+                    "error": f"outside campaign send window — next opens {window_eta.isoformat()}",
+                    "retry_at": window_eta.isoformat(),
+                }
 
             # Skip if account is in a bad state — don't burn the user's
             # attempts when we know it'll fail. Use distinct status values
