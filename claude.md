@@ -321,6 +321,24 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   is closed" on the second task.  `sequencer._li_redis()` still caches
   (legacy) — fine for tests that monkeypatch `_LI_REDIS_CLIENT=None`,
   but rewrite if it ever causes issues in production.
+- **Activity tab dedupes consecutive same-(lead, node) rows.**  The
+  `/campaigns/{id}/activity` endpoint pulls 100 raw rows from
+  `lead_step_executions`, clusters them by `(lead_id, node_id)`
+  preserving desc-by-time order, then returns up to 30 clusters with
+  an `attempt_count` field.  The UI shows a small ``×N`` badge next to
+  the step name and a tooltip with the earliest + latest attempt time.
+  Spec / wire format in `SequenceStepEvent` schema; tests in
+  `test_phase29_activity_clustering.py`.
+- **LinkedIn step has a stale-dispatch guard.**  After a worker restart
+  (or a manual ``next_run_at`` nudge while a Celery task was in
+  ``unacked``), the same ``send_linkedin_step`` task could re-deliver
+  with its original ``node_id`` even though the lead's cursor had
+  advanced.  Without a guard, this fired Unipile a second time (real
+  duplicate ghost-view / connect / DM).  Fix: ``_send_linkedin_step_async``
+  checks ``state.current_node_id == node_id`` at the top; mismatch →
+  returns ``{"status": "stale_dispatch"}``, no API call, no rate-slot
+  burn.  ``_record_execution_and_advance`` recognises that status and
+  writes no execution row + leaves the cursor untouched.
 - **LinkedIn steps honour the campaign schedule window + paused state.**
   `_send_linkedin_step_async` checks `campaign.status == PAUSED` and
   `compute_next_send_window(campaign)` up front; outside-window /

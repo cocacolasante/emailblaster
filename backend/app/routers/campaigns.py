@@ -422,29 +422,63 @@ async def get_campaign_activity(
     sequence_completed = seq_by_status.get(LeadSequenceStatus.COMPLETED, 0)
     sequence_pending = seq_by_status.get(LeadSequenceStatus.PENDING, 0)
 
-    # Recent sequence step executions (includes LinkedIn + follow-up emails)
-    step_exec_rows = (await db.execute(
+    # Recent sequence step executions (includes LinkedIn + follow-up emails).
+    # Pull a wider window than we display so we can dedupe consecutive
+    # same-(lead, node) retry rows into a single cluster — typical case
+    # is a LinkedIn step that hit a transient rate-limit and retried 4
+    # times before sending; the UI surfaces only the latest row + an "Nx"
+    # badge instead of cluttering the list with the retry chain.
+    raw_step_rows = (await db.execute(
         select(LeadStepExecution, Lead, SequenceNode)
         .join(Lead, Lead.id == LeadStepExecution.lead_id)
         .join(SequenceNode, SequenceNode.id == LeadStepExecution.node_id)
         .where(Lead.campaign_id == campaign_id)
         .order_by(LeadStepExecution.attempted_at.desc())
-        .limit(30)
+        .limit(100)
     )).all()
+
+    # Cluster by (lead_id, node_id), preserving the desc-by-time
+    # iteration order.  The FIRST time we see a key we keep its row as
+    # the cluster's canonical "latest"; subsequent rows with the same
+    # key just bump the count + slide the earliest timestamp back.
+    clusters: dict[tuple[uuid.UUID, uuid.UUID], dict[str, Any]] = {}
+    cluster_order: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for exec_row, lead_row, node_row in raw_step_rows:
+        key = (lead_row.id, node_row.id)
+        c = clusters.get(key)
+        if c is None:
+            clusters[key] = {
+                "exec": exec_row,
+                "lead": lead_row,
+                "node": node_row,
+                "attempt_count": 1,
+                "earliest_attempted_at": exec_row.attempted_at,
+            }
+            cluster_order.append(key)
+        else:
+            c["attempt_count"] += 1
+            # iterating DESC, so each subsequent row is older.
+            c["earliest_attempted_at"] = exec_row.attempted_at
 
     recent_sequence_steps = [
         SequenceStepEvent(
-            lead_id=row[1].id,
-            email=row[1].email,
-            first_name=row[1].first_name,
-            last_name=row[1].last_name,
-            company=row[1].company,
-            node_kind=row[2].kind.value,
-            result=row[0].result.value,
-            error=row[0].error,
-            attempted_at=row[0].attempted_at,
+            lead_id=clusters[key]["lead"].id,
+            email=clusters[key]["lead"].email,
+            first_name=clusters[key]["lead"].first_name,
+            last_name=clusters[key]["lead"].last_name,
+            company=clusters[key]["lead"].company,
+            node_kind=clusters[key]["node"].kind.value,
+            result=clusters[key]["exec"].result.value,
+            error=clusters[key]["exec"].error,
+            attempted_at=clusters[key]["exec"].attempted_at,
+            attempt_count=clusters[key]["attempt_count"],
+            earliest_attempted_at=(
+                clusters[key]["earliest_attempted_at"]
+                if clusters[key]["attempt_count"] > 1
+                else None
+            ),
         )
-        for row in step_exec_rows
+        for key in cluster_order[:30]
     ]
 
     # Halted leads (leads whose sequence cursor points at a deleted/blocked node)

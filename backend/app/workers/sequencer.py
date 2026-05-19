@@ -720,6 +720,28 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             node = await session.get(SequenceNode, nid)
             if lead is None or node is None:
                 return {"status": "not_found"}
+
+            # Stale-dispatch guard.  Celery tasks that orphan during a
+            # worker restart re-deliver after ``visibility_timeout``
+            # (300 s) carrying their original ``node_id``.  If the
+            # lead's cursor has advanced past that node in the meantime
+            # the action is stale — fire it now and we double-execute
+            # the prior step's API call (a real ghost-view, connect
+            # invite, DM, etc.).  Bail before any API call or rate-slot
+            # acquisition.  Return a status the Celery wrapper +
+            # ``_record_execution_and_advance`` will recognise as a
+            # no-op (no execution row written, no cursor change).
+            state = await session.scalar(
+                select(LeadSequenceState).where(LeadSequenceState.lead_id == lid)
+            )
+            if state is not None and state.current_node_id != nid:
+                logger.info(
+                    "send_linkedin_step: stale dispatch for lead=%s node=%s "
+                    "(current cursor is %s) — skipping",
+                    lid, nid, state.current_node_id,
+                )
+                return {"status": "stale_dispatch"}
+
             campaign = await session.get(Campaign, lead.campaign_id)
             if campaign is None or campaign.linkedin_account_id is None:
                 return {
@@ -959,6 +981,18 @@ async def _record_execution_and_advance(
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             status = result.get("status", "failed")
+            # Stale dispatch — the upstream handler bailed without firing
+            # the action because the cursor had moved on.  We deliberately
+            # don't write an execution row (would pollute the audit log
+            # with phantom "attempts" that never actually called Unipile)
+            # and we don't touch the cursor (the live current_node_id is
+            # by definition different from node_id).
+            if status == "stale_dispatch":
+                logger.info(
+                    "record_execution: skipping stale dispatch for "
+                    "lead=%s node=%s", lead_id, node_id,
+                )
+                return
             mapped: LeadStepResult
             if status == "sent":
                 mapped = LeadStepResult.SENT

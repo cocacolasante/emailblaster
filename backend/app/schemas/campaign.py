@@ -171,6 +171,14 @@ class SequenceStepEvent(BaseModel):
     result: str
     error: str | None
     attempted_at: datetime
+    # Activity-tab view dedupes consecutive same-(lead, node) rows so the
+    # list isn't polluted by 10 transient-retry skip rows in a row.
+    # ``attempt_count`` is the size of the collapsed cluster (>=1; 1 means
+    # a normal single row, >1 means we're showing only the latest of N
+    # attempts and the UI should surface that fact).
+    attempt_count: int = 1
+    # First attempt in the cluster.  None when attempt_count == 1.
+    earliest_attempted_at: datetime | None = None
 
 
 class SequenceLeadStateInfo(BaseModel):

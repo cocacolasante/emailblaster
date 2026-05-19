@@ -839,6 +839,91 @@ async def test_linkedin_step_defers_outside_schedule_window(db_session, monkeypa
     assert day_count is None or int(day_count) == 0
 
 
+async def test_stale_dispatch_skips_api_call_when_cursor_moved(db_session, monkeypatch):
+    """A Celery task that orphaned during a worker restart re-delivers
+    after visibility_timeout carrying its original node_id.  If the
+    lead's cursor has advanced past that node in the meantime, firing
+    the task would double-execute the prior step (e.g. a second ghost-
+    view, a second connect invite).  Bail at the top of
+    _send_linkedin_step_async with status=stale_dispatch — NO provider
+    call, NO execution row, NO cursor change."""
+    from app.workers import sequencer as seq_mod
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # Two-step sequence so we have two distinct LI node ids.
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db_session.add(seq)
+    await db_session.flush()
+    entry = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+        config={"use_campaign_compose": True}, is_entry=True,
+    )
+    view_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
+        config={}, is_entry=False,
+    )
+    connect_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_CONNECT,
+        config={}, is_entry=False,
+    )
+    db_session.add_all([entry, view_node, connect_node])
+    await db_session.flush()
+    db_session.add_all([
+        SequenceEdge(sequence_id=seq.id, from_node_id=entry.id,
+                     to_node_id=view_node.id, condition={"op": "always"}),
+        SequenceEdge(sequence_id=seq.id, from_node_id=view_node.id,
+                     to_node_id=connect_node.id, condition={"op": "always"}),
+        SequenceEdge(sequence_id=seq.id, from_node_id=connect_node.id,
+                     to_node_id=None, condition={"op": "always"}),
+    ])
+    await db_session.commit()
+
+    lead = await _make_lead(db_session, campaign)
+    # Cursor is already PAST view_node (on connect_node).  A stale Celery
+    # task targeting view_node should be a no-op.
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id,
+        current_node_id=connect_node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now() + timedelta(minutes=10),
+        entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    class _Explode:
+        async def view_profile(self, *a, **kw):
+            raise AssertionError("provider called for stale-dispatch view_profile")
+        async def follow_profile(self, *a, **kw): return ActionResult(ok=True)
+        async def react_to_post(self, *a, **kw): return ActionResult(ok=True)
+        async def latest_post_urn(self, *a, **kw): return None
+        async def test_connection(self, *a, **kw): return ActionResult(ok=True)
+        async def inbox_recent_events(self, *a, **kw): return []
+        async def send_connect_request(self, *a, **kw): return ActionResult(ok=True)
+    monkeypatch.setattr(seq_mod, "get_linkedin_provider", lambda: _Explode())
+
+    result = await seq_mod._send_linkedin_step_async(str(lead.id), str(view_node.id))
+    assert result == {"status": "stale_dispatch"}
+
+    # And running it through _record_execution_and_advance must NOT
+    # write a row (audit log stays clean).
+    before = (await db_session.execute(
+        select(LeadStepExecution).where(LeadStepExecution.lead_id == lead.id)
+    )).scalars().all()
+    assert len(before) == 0
+
+    await seq_mod._record_execution_and_advance(lead.id, view_node.id, result)
+
+    after = (await db_session.execute(
+        select(LeadStepExecution).where(LeadStepExecution.lead_id == lead.id)
+    )).scalars().all()
+    assert len(after) == 0, "stale_dispatch must not write an execution row"
+
+    # Cursor unchanged.
+    await db_session.refresh(state)
+    assert state.current_node_id == connect_node.id
+
+
 async def test_linkedin_step_defers_when_campaign_paused(db_session, monkeypatch):
     from app.workers import sequencer as seq_mod
     from app.models import CampaignStatus

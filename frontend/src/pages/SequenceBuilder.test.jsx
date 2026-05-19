@@ -98,7 +98,13 @@ describe('SequenceBuilder', () => {
     expect(screen.getByText('Wait')).toBeInTheDocument();
     expect(screen.getByText('LI: View profile')).toBeInTheDocument();
     expect(screen.getByText('LI: Connect')).toBeInTheDocument();
-    expect(screen.getByText('LI: InMail')).toBeInTheDocument();
+    // LI: InMail used to be in the palette but it's gated out while
+    // Unipile's Sales-Nav API access is locked down on our workspace —
+    // publishing a sequence with it would fail.  Same for LI: Invite to
+    // page (passthrough whitelist).  Test the currently-publishable set.
+    expect(screen.getByText('LI: DM')).toBeInTheDocument();
+    expect(screen.queryByText('LI: InMail')).not.toBeInTheDocument();
+    expect(screen.queryByText('LI: Invite to page')).not.toBeInTheDocument();
   });
 
   it('Save draft button calls updateSequence with the campaign id', async () => {

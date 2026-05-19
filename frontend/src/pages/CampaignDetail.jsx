@@ -599,17 +599,37 @@ function ActivityTab({ campaignId, campaign }) {
               </tr>
             </thead>
             <tbody>
-              {activity.recent_sequence_steps.map((s, i) => (
-                <tr key={`${s.lead_id}-${s.attempted_at}-${i}`} className="border-t border-slate-100 hover:bg-slate-50">
-                  <td className="px-4 py-2.5"><LeadName ev={s} /></td>
-                  <td className="px-4 py-2.5"><NodeKindBadge kind={s.node_kind} /></td>
-                  <td className="px-4 py-2.5"><MiniPill value={s.result} /></td>
-                  <td className="px-4 py-2.5 text-xs text-red-500 max-w-[200px] truncate" title={s.error || ''}>
-                    {s.error || '—'}
-                  </td>
-                  <td className="px-4 py-2.5 text-xs text-slate-400">{fmtRelative(s.attempted_at)}</td>
-                </tr>
-              ))}
+              {activity.recent_sequence_steps.map((s, i) => {
+                const isCluster = (s.attempt_count ?? 1) > 1;
+                const clusterTitle = isCluster
+                  ? `${s.attempt_count} attempts — earliest ${fmtRelative(s.earliest_attempted_at)}, latest ${fmtRelative(s.attempted_at)}`
+                  : '';
+                return (
+                  <tr key={`${s.lead_id}-${s.attempted_at}-${i}`} className="border-t border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-2.5"><LeadName ev={s} /></td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <NodeKindBadge kind={s.node_kind} />
+                        {isCluster && (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-100 text-slate-600 border border-slate-200"
+                            title={clusterTitle}
+                          >
+                            ×{s.attempt_count}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5"><MiniPill value={s.result} /></td>
+                    <td className="px-4 py-2.5 text-xs text-red-500 max-w-[200px] truncate" title={s.error || ''}>
+                      {s.error || '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-slate-400" title={clusterTitle}>
+                      {fmtRelative(s.attempted_at)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
