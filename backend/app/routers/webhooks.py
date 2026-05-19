@@ -311,19 +311,59 @@ async def _handle_account_status_change(
 
 
 async def _find_lead_for_event(
-    db: AsyncSession, account: LinkedInAccount, body: dict[str, Any],
+    db: AsyncSession, account: LinkedInAccount, payload: dict[str, Any],
 ) -> Lead | None:
-    """Match a Unipile event payload to one of our leads by public_identifier."""
-    sender = body.get("sender") or body.get("from") or body.get("attendee") or {}
-    public_id = (
-        sender.get("provider_id")
-        or sender.get("public_identifier")
-        or sender.get("public_id")
-        or body.get("provider_id")
-    )
-    if not public_id:
+    """Match a Unipile event payload to one of our leads.
+
+    Unipile event shapes differ by source.  ``new_relation`` events
+    (which we treat as ``invitation.accepted``) put the user data at
+    the top level: ``user_provider_id``, ``user_public_identifier``,
+    ``user_profile_url``.  ``message_received`` events nest it under
+    ``sender``/``from``/``attendee``.  We try both.
+
+    Matching is by slug — extracted from whichever field has the public
+    identifier (slug, full profile URL) — compared against each lead's
+    ``linkedin_url`` slug.  Falls back to comparing against the raw
+    provider id (``ACoAA...``) if the lead carries one, in case the
+    payload only exposes the canonical id.
+    """
+    if not isinstance(payload, dict):
         return None
-    slug = str(public_id).strip("/").split("/")[-1].lower()
+
+    # Pull every plausible identifier out of the payload — top-level and
+    # nested under sender/from/attendee/user/data.
+    candidates: list[str] = []
+    sender = payload.get("sender") or payload.get("from") or payload.get("attendee") or {}
+    user = payload.get("user") or {}
+    nested = payload.get("data") or payload.get("invitation") or payload.get("message") or {}
+    if not isinstance(nested, dict):
+        nested = {}
+
+    for src in (payload, sender, user, nested):
+        if not isinstance(src, dict):
+            continue
+        for key in (
+            "user_public_identifier", "user_provider_id", "user_profile_url",
+            "public_identifier", "provider_id", "public_id",
+            "profile_url", "url",
+        ):
+            v = src.get(key)
+            if v:
+                candidates.append(str(v))
+
+    if not candidates:
+        return None
+
+    # Normalise each candidate to its bare slug (last path segment, lower,
+    # query stripped).  Keep the originals too so we can match against
+    # raw provider ids.
+    norm_set: set[str] = set()
+    for c in candidates:
+        norm_set.add(c.lower())
+        slug = c.rstrip("/").split("/")[-1].split("?")[0].lower()
+        if slug:
+            norm_set.add(slug)
+
     lead_rows = (await db.execute(
         select(Lead)
         .join(Campaign, Campaign.id == Lead.campaign_id)
@@ -333,31 +373,58 @@ async def _find_lead_for_event(
         if not l.linkedin_url:
             continue
         their_slug = l.linkedin_url.rstrip("/").split("/")[-1].split("?")[0].lower()
-        if their_slug == slug:
+        if their_slug and their_slug in norm_set:
             return l
+    return None
+
+
+def _extract_unipile_account_id(payload: dict[str, Any]) -> str | None:
+    """Pull the Unipile account_id from a webhook payload.  Unipile puts
+    it at the top level (most event sources), occasionally nested under
+    ``data``/``message``/``invitation``, and (rarely) under ``account.id``.
+    """
+    if not isinstance(payload, dict):
+        return None
+    candidates: list[Any] = [
+        payload.get("account_id"),
+        (payload.get("account") or {}).get("id") if isinstance(payload.get("account"), dict) else None,
+    ]
+    for nested_key in ("data", "message", "invitation"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            candidates.extend([
+                nested.get("account_id"),
+                (nested.get("account") or {}).get("id") if isinstance(nested.get("account"), dict) else None,
+            ])
+    for v in candidates:
+        if v:
+            return str(v)
     return None
 
 
 async def _handle_message_received(
     db: AsyncSession, payload: dict[str, Any],
 ) -> None:
-    body = payload.get("data") or payload.get("message") or payload
-    unipile_id = (
-        body.get("account_id")
-        or (body.get("account") or {}).get("id")
-        or payload.get("account_id")
-    )
+    unipile_id = _extract_unipile_account_id(payload)
     if not unipile_id:
         return
     acc = await db.scalar(
-        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == str(unipile_id))
+        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == unipile_id)
     )
     if acc is None:
         return
-    lead = await _find_lead_for_event(db, acc, body)
+    lead = await _find_lead_for_event(db, acc, payload)
     if lead is None:
+        logger.info(
+            "Unipile message.received: no matching lead under account %s",
+            unipile_id,
+        )
         return
-    ts_raw = body.get("timestamp") or body.get("created_at")
+    # Timestamp may live at top-level or in a nested message/data dict.
+    ts_raw = None
+    for src in (payload, payload.get("data"), payload.get("message")):
+        if isinstance(src, dict):
+            ts_raw = ts_raw or src.get("timestamp") or src.get("created_at")
     lead.linkedin_last_reply_at = _parse_iso(ts_raw) or datetime.now(timezone.utc)
     # First inbound message implies 1st-degree connection.
     if lead.linkedin_connection_status != LinkedInConnectionStatus.CONNECTED:
@@ -367,23 +434,26 @@ async def _handle_message_received(
 async def _handle_invitation_accepted(
     db: AsyncSession, payload: dict[str, Any],
 ) -> None:
-    body = payload.get("data") or payload.get("invitation") or payload
-    unipile_id = (
-        body.get("account_id")
-        or (body.get("account") or {}).get("id")
-        or payload.get("account_id")
-    )
+    unipile_id = _extract_unipile_account_id(payload)
     if not unipile_id:
         return
     acc = await db.scalar(
-        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == str(unipile_id))
+        select(LinkedInAccount).where(LinkedInAccount.unipile_account_id == unipile_id)
     )
     if acc is None:
         return
-    lead = await _find_lead_for_event(db, acc, body)
+    lead = await _find_lead_for_event(db, acc, payload)
     if lead is None:
+        logger.info(
+            "Unipile invitation.accepted: no matching lead under account %s",
+            unipile_id,
+        )
         return
     lead.linkedin_connection_status = LinkedInConnectionStatus.CONNECTED
+    logger.info(
+        "Unipile invitation.accepted: lead=%s flipped to CONNECTED",
+        lead.email,
+    )
 
 
 def _parse_iso(value: Any) -> datetime | None:

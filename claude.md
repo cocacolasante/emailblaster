@@ -22,7 +22,32 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Validated every Unipile endpoint live + fixed 7 endpoint-shape bugs.**
+- **Last completed:** **Fixed silent webhook drop of `new_relation` events + reconciled 5 historically-stuck leads.**
+  Symptom: 51 leads parked on `linkedin_connect` indefinitely, no DMs
+  ever firing.  Root cause was two bugs in `app/routers/webhooks.py`:
+  (1) `_find_lead_for_event` only inspected nested
+  `sender`/`from`/`attendee` blocks, missing the top-level
+  `user_public_identifier` / `user_provider_id` / `user_profile_url`
+  fields Unipile sends on `new_relation`; (2) `_handle_message_received`
+  and `_handle_invitation_accepted` called `.get()` on
+  `payload["data"]`/`payload["message"]` unconditionally, which raised
+  `AttributeError` when Unipile sent a string there.  Both were dedup'd
+  by the `webhook_events` table so the failures looked like quiet
+  no-ops.  Fix: new `_extract_unipile_account_id()` helper with
+  `isinstance(x, dict)` guards; rewrote `_find_lead_for_event` to scan
+  top-level + nested for 8 slug/URL/provider-id keys, normalise to bare
+  slug, match against each lead's `linkedin_url` slug.  5 new
+  regression tests in `test_phase30_unipile_webhook_matching.py`
+  covering both bugs + the no-match-leaves-lead-alone contract.
+  Historical reconciliation script
+  `backend/scripts/reconcile_linkedin_connections.py` pulls
+  `GET /api/v1/users/relations` (paginated, ~1885 connections returned
+  per page through `cursor`) and flips matching INVITED/UNKNOWN leads
+  to CONNECTED — single bulk call, no ghost-view notifications.  Run
+  flipped 5 leads; sequencer advanced all 5 from `linkedin_connect`
+  to `linkedin_dm` on the next 60s tick.  Tests: **backend 463 passed**.
+
+- **Previously:** **Validated every Unipile endpoint live + fixed 7 endpoint-shape bugs.**
   Ran the full action suite against a real Unipile account
   (`Anthony Colasante`, Sales Nav premium, unipile_id
   `eU5rAYqAQo-6yDRdjgNAiw`) targeting the throwaway profile
@@ -481,12 +506,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-14 — Stripped the dead DIY/Playwright code paths.
-Unipile is the sole LinkedIn provider; the `LinkedInProvider` ABC stays in
-place so a second hosted provider could slot in later without disturbing
-callers._
+_Last updated: 2026-05-19 — Fixed `new_relation` lead-matching in the
+Unipile webhook handler + shipped a relations-list-based reconciliation
+script for historical INVITED leads.  Sequencer is now progressing
+accepted invites to the DM step._
 
-_Backend tests: **405 passing**.  Frontend tests: **150 passing**._
+_Backend tests: **463 passing**.  Frontend tests: **150 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
