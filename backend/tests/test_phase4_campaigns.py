@@ -177,6 +177,65 @@ async def test_patch_validates_time_order_when_both_provided(client):
 # ---------- Delete + cascade ----------
 
 
+async def test_delete_lead_removes_lead_and_cascades_child_rows(client, db_session):
+    """DELETE /campaigns/{id}/leads/{lid} drops the lead row and every
+    cascading child (sequence state, step executions, email events).
+    Future sequencer dispatches for this lead get short-circuited by the
+    existing ``lead is None`` guard in the workers."""
+    from app.models import LeadSequenceState, LeadStepExecution, LeadStepResult
+    from sqlalchemy import select
+
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+
+    lead = Lead(campaign_id=cid, email="bye@y.com")
+    other = Lead(campaign_id=cid, email="stay@y.com")
+    db_session.add_all([lead, other])
+    await db_session.flush()
+    db_session.add_all([
+        EmailEvent(lead_id=lead.id, campaign_id=cid, event_type=EmailEventType.DELIVERED),
+        EmailEvent(lead_id=other.id, campaign_id=cid, event_type=EmailEventType.DELIVERED),
+    ])
+    await db_session.commit()
+    lead_id, other_id = lead.id, other.id
+
+    resp = await client.delete(f"/campaigns/{created['id']}/leads/{lead_id}")
+    assert resp.status_code == 204
+
+    # Target lead + its events: gone.
+    assert (await db_session.scalar(select(Lead).where(Lead.id == lead_id))) is None
+    assert (await db_session.scalar(
+        select(EmailEvent).where(EmailEvent.lead_id == lead_id)
+    )) is None
+    # Sibling lead is untouched.
+    assert (await db_session.scalar(select(Lead).where(Lead.id == other_id))) is not None
+
+
+async def test_delete_lead_404_when_lead_belongs_to_different_campaign(client, db_session):
+    """A request to delete a lead through a campaign URL that doesn't
+    own it must 404 — defends against cross-campaign lead-id guessing."""
+    c1 = (await client.post("/campaigns/", json=_campaign_payload(name="C1"))).json()
+    c2 = (await client.post("/campaigns/", json=_campaign_payload(name="C2"))).json()
+
+    lead = Lead(campaign_id=uuid.UUID(c1["id"]), email="lead@c1.com")
+    db_session.add(lead)
+    await db_session.commit()
+
+    # Try to delete c1's lead through c2's URL.
+    resp = await client.delete(f"/campaigns/{c2['id']}/leads/{lead.id}")
+    assert resp.status_code == 404
+
+    # Lead is still there.
+    from sqlalchemy import select
+    assert (await db_session.scalar(select(Lead).where(Lead.id == lead.id))) is not None
+
+
+async def test_delete_lead_404_when_lead_missing(client):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    resp = await client.delete(f"/campaigns/{created['id']}/leads/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
 async def test_delete_campaign_cascades_to_leads_and_events(client, db_session):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     cid = uuid.UUID(created["id"])

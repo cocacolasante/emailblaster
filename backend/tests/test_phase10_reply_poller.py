@@ -72,13 +72,14 @@ async def test_poll_account_matches_reply_and_records_event(db_session):
 
     fake_message = {
         "uid": "10",
+        "message_id": "mid-orig-reply",
         "in_reply_to": "msg-orig",
         "references": [],
         "subject": "Re: Hi",
         "from_email": "lead@external.com",
     }
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         return_value=[fake_message],
     ):
         result = await poll_account_for_replies(acc, [campaign.id], db_session)
@@ -104,11 +105,12 @@ async def test_poll_account_no_match_no_event(db_session):
     await db_session.commit()
 
     fake_message = {
-        "uid": "1", "in_reply_to": "unrelated", "references": [],
+        "uid": "1", "message_id": "mid-stranger",
+        "in_reply_to": "unrelated", "references": [],
         "subject": "Re: something else", "from_email": "stranger@x.com",
     }
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         return_value=[fake_message],
     ):
         result = await poll_account_for_replies(acc, [campaign.id], db_session)
@@ -121,7 +123,7 @@ async def test_poll_account_imap_failure_marks_account_failed(db_session):
     campaign = await _make_campaign(db_session, acc.id)
 
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         side_effect=Exception("auth failed"),
     ):
         result = await poll_account_for_replies(acc, [campaign.id], db_session)
@@ -139,13 +141,101 @@ async def test_poll_account_updates_last_polled_at_on_success(db_session):
     assert acc.last_polled_at is None
 
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         return_value=[],
     ):
         await poll_account_for_replies(acc, [campaign.id], db_session)
 
     assert acc.last_polled_at is not None
     assert acc.last_polled_at.tzinfo is not None
+
+
+async def test_poll_account_records_processed_message_ids(db_session):
+    """Every fetched message's Message-ID is appended to the account's
+    processed list (regardless of whether it matched a lead) so the next
+    poll cycle short-circuits and doesn't re-create a REPLIED event."""
+    acc = await _make_account(db_session)
+    campaign = await _make_campaign(db_session, acc.id)
+    db_session.add(Lead(
+        campaign_id=campaign.id, email="lead@external.com",
+        brevo_message_id="msg-X", composed_subject="Hi",
+    ))
+    await db_session.commit()
+
+    messages = [
+        {"uid": "1", "message_id": "mid-matched",
+         "in_reply_to": "msg-X", "references": [],
+         "subject": "Re: Hi", "from_email": "lead@external.com"},
+        {"uid": "2", "message_id": "mid-unmatched",
+         "in_reply_to": "", "references": [],
+         "subject": "Newsletter", "from_email": "list@elsewhere.com"},
+    ]
+    with patch(
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
+        return_value=messages,
+    ):
+        result = await poll_account_for_replies(acc, [campaign.id], db_session)
+    await db_session.commit()
+
+    assert result == {"ok": True, "replies_found": 1}
+    # Both Message-IDs are remembered — even the unmatched one — so we
+    # don't re-fetch and re-parse it forever.
+    assert "mid-matched" in acc.processed_imap_message_ids
+    assert "mid-unmatched" in acc.processed_imap_message_ids
+
+
+async def test_poll_account_passes_processed_set_to_imap_client(db_session):
+    """The previously-recorded Message-IDs flow back to the IMAP
+    fetcher as the dedup set, so messages stay unread for the user but
+    we don't reprocess them."""
+    acc = await _make_account(db_session)
+    acc.processed_imap_message_ids = ["old-id-1", "old-id-2"]
+    await db_session.commit()
+    await _make_campaign(db_session, acc.id)
+
+    captured: dict = {}
+
+    def fake(account, since, processed):
+        captured["processed"] = processed
+        return []
+
+    with patch(
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
+        side_effect=fake,
+    ):
+        await poll_account_for_replies(acc, [], db_session)
+
+    assert captured["processed"] == {"old-id-1", "old-id-2"}
+
+
+async def test_poll_account_trims_processed_ids_to_max(db_session):
+    """The processed list is bounded so the JSON column doesn't grow
+    unbounded across years of polling."""
+    from app.workers.reply_poller import MAX_PROCESSED_IDS
+
+    acc = await _make_account(db_session)
+    # Pre-fill the list well past the cap.
+    acc.processed_imap_message_ids = [f"old-{i}" for i in range(MAX_PROCESSED_IDS + 50)]
+    await db_session.commit()
+    await _make_campaign(db_session, acc.id)
+
+    fresh = [
+        {"uid": str(i), "message_id": f"new-{i}",
+         "in_reply_to": "", "references": [],
+         "subject": "", "from_email": ""}
+        for i in range(10)
+    ]
+    with patch(
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
+        return_value=fresh,
+    ):
+        await poll_account_for_replies(acc, [], db_session)
+
+    ids = acc.processed_imap_message_ids
+    assert len(ids) == MAX_PROCESSED_IDS
+    # The most recent additions survive; oldest get trimmed.
+    assert "new-9" in ids
+    assert "old-0" not in ids
 
 
 # --------------------------------------------------------------------------
@@ -162,7 +252,7 @@ async def test_poll_all_replies_skips_failed_accounts(db_session):
     await _make_campaign(db_session, failed_acc.id)
 
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         return_value=[],
     ) as fetch:
         result = await poll_all_replies_async()
@@ -177,7 +267,7 @@ async def test_poll_all_replies_skips_account_with_no_active_campaigns(db_sessio
     await _make_campaign(db_session, acc.id, status=CampaignStatus.DRAFT)
 
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         return_value=[],
     ) as fetch:
         result = await poll_all_replies_async()
@@ -192,7 +282,7 @@ async def test_poll_all_replies_includes_paused_and_complete_campaigns(db_sessio
     await _make_campaign(db_session, acc.id, status=CampaignStatus.COMPLETE)
 
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         return_value=[],
     ) as fetch:
         result = await poll_all_replies_async()
@@ -212,15 +302,17 @@ async def test_poll_all_replies_aggregates_counts_across_accounts(db_session):
     db_session.add_all([lead1, lead2])
     await db_session.commit()
 
-    def fake_fetch(host, port, ssl, user, pw, since, mark):
-        if user == "one@x.com":
-            return [{"uid": "1", "in_reply_to": "msg-1", "references": [],
+    def fake_fetch(account, since, processed):
+        if account.username == "one@x.com":
+            return [{"uid": "1", "message_id": "id-1",
+                     "in_reply_to": "msg-1", "references": [],
                      "subject": "Re: A", "from_email": "r1@y.com"}]
-        return [{"uid": "2", "in_reply_to": "msg-2", "references": [],
+        return [{"uid": "2", "message_id": "id-2",
+                 "in_reply_to": "msg-2", "references": [],
                  "subject": "Re: B", "from_email": "r2@y.com"}]
 
     with patch(
-        "app.workers.reply_poller.imap_client.fetch_unseen_messages",
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
         side_effect=fake_fetch,
     ):
         result = await poll_all_replies_async()

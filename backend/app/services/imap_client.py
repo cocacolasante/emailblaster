@@ -2,7 +2,7 @@
 
 SECURITY INVARIANT: This is the *only* module that ever holds a decrypted
 inbox password. Higher-level callers pass a ConnectedAccount (encrypted) to
-``test_imap_with_account`` / ``fetch_unseen_with_account``; the plaintext is
+``test_imap_with_account`` / ``fetch_recent_with_account`` / ``unmark_seen_uids``; the plaintext is
 created in a local variable, used immediately, and deleted before the wrapper
 returns. The plaintext is never logged, persisted, or returned to callers.
 """
@@ -74,8 +74,9 @@ def test_imap_connection(
 _SUBJECT_PREFIX_RE = re.compile(r"^\s*(?:re|fwd?|fw):\s*", re.IGNORECASE)
 
 
-class FetchedMessage(TypedDict):
+class FetchedMessage(TypedDict, total=False):
     uid: str
+    message_id: str
     in_reply_to: str
     references: list[str]
     subject: str
@@ -97,42 +98,67 @@ def _clean_subject(subject: str) -> str:
         cleaned = new
 
 
-def fetch_unseen_messages(
+def fetch_recent_messages(
     host: str,
     port: int,
     use_ssl: bool,
     username: str,
     password: str,
     since: datetime,
-    mark_seen: bool = True,
+    processed_message_ids: set[str] | None = None,
 ) -> list[FetchedMessage]:
-    """Sync IMAP fetch: pull UNSEEN headers since `since` and (optionally)
-    mark each processed message as Seen. Raises on any IMAP failure so the
-    caller can record the account as broken.
+    """Sync IMAP fetch: pull header metadata for INBOX messages dated
+    ``since`` or later, skipping any whose ``Message-ID`` is already in
+    ``processed_message_ids``.
+
+    Crucially, this function does NOT touch the user's read/unread state:
+    - ``INBOX`` is selected ``readonly=True`` so any flag mutation would
+      fail loudly rather than silently dirtying the user's mailbox.
+    - We fetch via ``BODY.PEEK[HEADER]`` so the IMAP server can't
+      auto-flag Seen as a side effect of FETCH (RFC 3501 §6.4.5 spells
+      this out — plain ``BODY[]`` sets ``\\Seen``; ``BODY.PEEK[]`` is
+      explicitly side-effect-free).
+    - No ``STORE +FLAGS \\Seen`` is ever issued.
+
+    Replaces the previous ``fetch_unseen_messages`` which used
+    ``UNSEEN SINCE`` + auto-Seen-flagging.  That worked but burned the
+    user's unread badge on every reply.
+
+    Raises on any IMAP failure so the caller can record the account as
+    broken.
     """
     cls = IMAP4_SSL if use_ssl else IMAP4
     client = cls(host=host, port=port, timeout=IMAP_TIMEOUT_SECONDS)
     out: list[FetchedMessage] = []
+    skip_set = processed_message_ids or set()
     try:
         client.login(username, password)
-        # readonly=False so we can flag messages as Seen.
-        typ, _ = client.select("INBOX", readonly=False)
+        # Read-only — never mutate the user's mailbox state.
+        typ, _ = client.select("INBOX", readonly=True)
         if typ != "OK":
             raise RuntimeError("INBOX select failed")
 
         since_str = since.strftime("%d-%b-%Y")
-        typ, data = client.search(None, f"(UNSEEN SINCE {since_str})")
+        typ, data = client.search(None, f"(SINCE {since_str})")
         if typ != "OK" or not data or data[0] is None:
             return out
 
         uids = data[0].split()
         for uid in uids:
-            typ, msg_data = client.fetch(uid, "(RFC822.HEADER)")
+            # BODY.PEEK[HEADER] is the side-effect-free fetch variant.
+            typ, msg_data = client.fetch(uid, "(BODY.PEEK[HEADER])")
             if typ != "OK" or not msg_data:
                 continue
             for part in msg_data:
                 if isinstance(part, tuple) and len(part) > 1:
                     headers = email.message_from_bytes(part[1])
+                    message_id = _clean_message_id(
+                        headers.get("Message-ID", "") or headers.get("Message-Id", "") or ""
+                    )
+                    if message_id and message_id in skip_set:
+                        # Already processed this one in a previous poll
+                        # — don't reparse and don't surface to the caller.
+                        break
                     from_raw = headers.get("From", "") or ""
                     _, from_email_addr = email.utils.parseaddr(from_raw)
                     refs_raw = headers.get("References", "") or ""
@@ -143,17 +169,13 @@ def fetch_unseen_messages(
                     ]
                     out.append(FetchedMessage(
                         uid=uid.decode() if isinstance(uid, bytes) else str(uid),
+                        message_id=message_id,
                         in_reply_to=_clean_message_id(headers.get("In-Reply-To", "") or ""),
                         references=refs,
                         subject=headers.get("Subject", "") or "",
                         from_email=(from_email_addr or "").lower(),
                     ))
                     break
-            if mark_seen:
-                try:
-                    client.store(uid, "+FLAGS", "\\Seen")
-                except Exception:  # noqa: BLE001
-                    pass
         return out
     finally:
         try:
@@ -259,26 +281,79 @@ def test_imap_with_account(account: Any) -> ImapTestResult:
         del password
 
 
-def fetch_unseen_with_account(
-    account: Any, since: datetime, mark_seen: bool = True
+def fetch_recent_with_account(
+    account: Any,
+    since: datetime,
+    processed_message_ids: set[str] | None = None,
 ) -> list[FetchedMessage]:
-    """Fetch unseen messages for a ConnectedAccount. Decrypts the password
-    only for the duration of the call. Raises on decrypt failure or any IMAP
+    """Fetch recent INBOX messages for a ConnectedAccount, skipping any
+    Message-IDs we've already processed.  Decrypts the password only for
+    the duration of the call.  Raises on decrypt failure or any IMAP
     error — caller is responsible for marking the account failed.
+
+    Replaces the old ``fetch_unseen_with_account`` (which auto-flagged
+    fetched messages as Seen, dirtying the user's mailbox).
     """
     from app.services import encryption  # local import to avoid cycles
 
     password = encryption.decrypt(account.password_encrypted)
     try:
-        return fetch_unseen_messages(
+        return fetch_recent_messages(
             account.imap_host,
             account.imap_port,
             account.imap_use_ssl,
             account.username,
             password,
             since,
-            mark_seen,
+            processed_message_ids,
         )
     finally:
         del password
+
+
+def unmark_seen_uids(account: Any, uids: list[str]) -> dict[str, Any]:
+    """Clear the ``\\Seen`` flag on a list of UIDs in INBOX.
+
+    One-shot remediation for replies that the previous poller wrongly
+    auto-marked as read.  Decrypts the account password only for the
+    duration of the call.  Returns ``{"ok": bool, "cleared": int,
+    "errors": int}``; never raises.
+    """
+    from app.services import encryption  # local import to avoid cycles
+
+    if not uids:
+        return {"ok": True, "cleared": 0, "errors": 0}
+
+    try:
+        password = encryption.decrypt(account.password_encrypted)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"decrypt failed: {exc}", "cleared": 0, "errors": 0}
+
+    cls = IMAP4_SSL if account.imap_use_ssl else IMAP4
+    cleared = 0
+    errors = 0
+    try:
+        client = cls(host=account.imap_host, port=account.imap_port, timeout=IMAP_TIMEOUT_SECONDS)
+        try:
+            client.login(account.username, password)
+            typ, _ = client.select("INBOX", readonly=False)
+            if typ != "OK":
+                return {"ok": False, "error": "INBOX select failed", "cleared": 0, "errors": 0}
+            for uid in uids:
+                try:
+                    typ, _ = client.store(uid, "-FLAGS", "\\Seen")
+                    if typ == "OK":
+                        cleared += 1
+                    else:
+                        errors += 1
+                except Exception:  # noqa: BLE001
+                    errors += 1
+        finally:
+            try:
+                client.logout()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        del password
+    return {"ok": True, "cleared": cleared, "errors": errors}
 

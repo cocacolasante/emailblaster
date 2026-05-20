@@ -5,6 +5,7 @@ import LeadTable from './LeadTable.jsx';
 
 vi.mock('../api/campaigns.js', () => ({
   listCampaignLeads: vi.fn(),
+  deleteCampaignLead: vi.fn(),
 }));
 
 import * as api from '../api/campaigns.js';
@@ -104,5 +105,65 @@ describe('LeadTable', () => {
     api.listCampaignLeads.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, total_pages: 0 });
     renderTable();
     expect(await screen.findByText(/no leads/i)).toBeInTheDocument();
+  });
+
+  it('Delete button opens a confirmation modal', async () => {
+    renderTable();
+    await screen.findByText('Alice Apple');
+
+    fireEvent.click(screen.getByTestId('delete-lead-l1'));
+    const modal = await screen.findByTestId('delete-lead-modal');
+    // Modal body explains the cascade so the user knows what they're agreeing to.
+    expect(screen.getByText(/halts every future step/i)).toBeInTheDocument();
+    // Scope the email lookup to the modal — the lead's email also appears in
+    // the table row.
+    expect(modal.textContent).toContain('a@x.com');
+  });
+
+  it('Confirm Delete fires deleteCampaignLead and closes the modal', async () => {
+    api.deleteCampaignLead.mockResolvedValue(undefined);
+    renderTable();
+    await screen.findByText('Alice Apple');
+
+    fireEvent.click(screen.getByTestId('delete-lead-l1'));
+    await screen.findByTestId('delete-lead-modal');
+    fireEvent.click(screen.getByTestId('confirm-delete-lead'));
+
+    await waitFor(() => {
+      expect(api.deleteCampaignLead).toHaveBeenCalledWith('c1', 'l1');
+    });
+    // Modal closes on success.
+    await waitFor(() => {
+      expect(screen.queryByTestId('delete-lead-modal')).not.toBeInTheDocument();
+    });
+  });
+
+  it('Cancel closes the modal without firing the delete', async () => {
+    renderTable();
+    await screen.findByText('Alice Apple');
+
+    fireEvent.click(screen.getByTestId('delete-lead-l1'));
+    await screen.findByTestId('delete-lead-modal');
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(screen.queryByTestId('delete-lead-modal')).not.toBeInTheDocument();
+    expect(api.deleteCampaignLead).not.toHaveBeenCalled();
+  });
+
+  it('shows backend error detail in the modal when delete fails', async () => {
+    api.deleteCampaignLead.mockRejectedValue({
+      response: { data: { detail: 'Lead not found' } },
+      message: 'Request failed with status code 404',
+    });
+    renderTable();
+    await screen.findByText('Alice Apple');
+
+    fireEvent.click(screen.getByTestId('delete-lead-l1'));
+    await screen.findByTestId('delete-lead-modal');
+    fireEvent.click(screen.getByTestId('confirm-delete-lead'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/lead not found/i)).toBeInTheDocument();
+    });
   });
 });

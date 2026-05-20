@@ -9,7 +9,7 @@ from app.services import imap_client
 
 
 # --------------------------------------------------------------------------
-# fetch_unseen_messages (imaplib mocked)
+# fetch_recent_messages (imaplib mocked)
 # --------------------------------------------------------------------------
 
 
@@ -17,10 +17,11 @@ def _imap_message_bytes(headers: dict[str, str]) -> bytes:
     return ("\r\n".join(f"{k}: {v}" for k, v in headers.items()) + "\r\n").encode()
 
 
-def test_fetch_unseen_messages_parses_headers():
+def test_fetch_recent_messages_parses_headers():
     msg_bytes = _imap_message_bytes({
         "From": "Jane Doe <jane@external.com>",
         "Subject": "Re: Your reach out",
+        "Message-ID": "<mid-jane-1>",
         "In-Reply-To": "<msg-abc-123>",
         "References": "<msg-abc-123> <other-msg>",
     })
@@ -29,12 +30,11 @@ def test_fetch_unseen_messages_parses_headers():
     m.login.return_value = ("OK", [])
     m.select.return_value = ("OK", [b"1"])
     m.search.return_value = ("OK", [b"42"])
-    m.fetch.return_value = ("OK", [(b"42 (RFC822.HEADER {200}", msg_bytes), b")"])
-    m.store.return_value = ("OK", [])
+    m.fetch.return_value = ("OK", [(b"42 (BODY[HEADER] {200}", msg_bytes), b")"])
     m.logout.return_value = ("BYE", [])
 
     with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
-        msgs = imap_client.fetch_unseen_messages(
+        msgs = imap_client.fetch_recent_messages(
             "imap.gmail.com", 993, True, "u@x.com", "pw",
             since=datetime(2026, 5, 1, tzinfo=timezone.utc),
         )
@@ -42,38 +42,140 @@ def test_fetch_unseen_messages_parses_headers():
     assert len(msgs) == 1
     msg = msgs[0]
     assert msg["uid"] == "42"
+    assert msg["message_id"] == "mid-jane-1"
     assert msg["in_reply_to"] == "msg-abc-123"
     assert msg["references"] == ["msg-abc-123", "other-msg"]
     assert msg["subject"] == "Re: Your reach out"
     assert msg["from_email"] == "jane@external.com"
 
 
-def test_fetch_unseen_messages_marks_seen():
+def test_fetch_recent_messages_uses_readonly_select_and_peek_fetch():
+    """The poller must not touch the user's mailbox state.  Two contract
+    checks:
+
+    1. ``client.select("INBOX", readonly=True)`` — the IMAP server can't
+       auto-flag Seen on a read-only mailbox, and any accidental
+       ``STORE`` call would error rather than silently mutate.
+    2. ``client.fetch(uid, "(BODY.PEEK[HEADER])")`` — RFC 3501 §6.4.5
+       guarantees ``BODY.PEEK[]`` is side-effect-free; plain ``BODY[]``
+       or ``RFC822.HEADER`` would set ``\\Seen``.
+
+    Regression guard: a prior implementation used ``readonly=False`` +
+    ``RFC822.HEADER`` + an explicit ``+FLAGS \\Seen`` store, which is
+    what we're undoing.
+    """
     msg_bytes = _imap_message_bytes({
-        "From": "x@y.com", "Subject": "Hi", "In-Reply-To": "<id>",
+        "From": "x@y.com", "Subject": "Hi",
+        "Message-ID": "<mid-readonly>",
+        "In-Reply-To": "<id>",
     })
     m = MagicMock()
     m.search.return_value = ("OK", [b"7"])
     m.select.return_value = ("OK", [b"1"])
-    m.fetch.return_value = ("OK", [(b"7 (RFC822.HEADER", msg_bytes)])
+    m.fetch.return_value = ("OK", [(b"7 (BODY[HEADER]", msg_bytes)])
 
     with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
-        imap_client.fetch_unseen_messages(
-            "h", 993, True, "u", "p", datetime(2026, 5, 1), mark_seen=True,
+        imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1),
         )
 
-    m.store.assert_called_with(b"7", "+FLAGS", "\\Seen")
+    # select must be readonly=True
+    m.select.assert_called_with("INBOX", readonly=True)
+    # fetch must use the side-effect-free PEEK form
+    fetch_args = m.fetch.call_args
+    assert fetch_args[0][1] == "(BODY.PEEK[HEADER])"
+    # And no STORE call (no Seen-flag mutation) was ever issued.
+    m.store.assert_not_called()
 
 
-def test_fetch_unseen_no_messages_returns_empty():
+def test_fetch_recent_messages_search_uses_since_not_unseen():
+    """SINCE-only search (not UNSEEN SINCE).  Read-state filtering is
+    moved out of the IMAP query and into our Message-ID dedup, so
+    messages stay unread for the user."""
     m = MagicMock()
     m.search.return_value = ("OK", [b""])
     m.select.return_value = ("OK", [b"1"])
     with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
-        msgs = imap_client.fetch_unseen_messages(
+        imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+
+    search_args = m.search.call_args
+    criteria = search_args[0][1]
+    assert "UNSEEN" not in criteria
+    assert "SINCE" in criteria
+
+
+def test_fetch_recent_messages_skips_already_processed_message_ids():
+    """Caller-supplied processed set short-circuits per-message — the
+    matching message is never surfaced to the caller, so reply_poller
+    won't re-record a REPLIED event for it."""
+    seen_bytes = _imap_message_bytes({
+        "From": "x@y.com", "Subject": "Old",
+        "Message-ID": "<already-processed>",
+    })
+    fresh_bytes = _imap_message_bytes({
+        "From": "z@y.com", "Subject": "New",
+        "Message-ID": "<brand-new>",
+    })
+    m = MagicMock()
+    m.search.return_value = ("OK", [b"1 2"])
+    m.select.return_value = ("OK", [b"1"])
+    # Two FETCH calls (one per uid); return different bodies.
+    m.fetch.side_effect = [
+        ("OK", [(b"1 (BODY[HEADER]", seen_bytes)]),
+        ("OK", [(b"2 (BODY[HEADER]", fresh_bytes)]),
+    ]
+
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        msgs = imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1),
+            processed_message_ids={"already-processed"},
+        )
+
+    assert len(msgs) == 1
+    assert msgs[0]["message_id"] == "brand-new"
+
+
+def test_fetch_recent_no_messages_returns_empty():
+    m = MagicMock()
+    m.search.return_value = ("OK", [b""])
+    m.select.return_value = ("OK", [b"1"])
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        msgs = imap_client.fetch_recent_messages(
             "h", 993, True, "u", "p", datetime(2026, 5, 1),
         )
     assert msgs == []
+
+
+def test_unmark_seen_uids_clears_flag_on_inbox():
+    """The one-shot remediation script removes ``\\Seen`` from the
+    given UIDs so replies the previous poller wrongly auto-marked pop
+    back to unread in the user's mailbox."""
+    from app.services import encryption
+
+    class _Acc:
+        imap_host = "h"
+        imap_port = 993
+        imap_use_ssl = True
+        username = "u@x.com"
+        password_encrypted = encryption.encrypt("pw")
+
+    m = MagicMock()
+    m.login.return_value = ("OK", [])
+    m.select.return_value = ("OK", [b"1"])
+    m.store.return_value = ("OK", [])
+    m.logout.return_value = ("BYE", [])
+
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        result = imap_client.unmark_seen_uids(_Acc(), ["7", "8", "9"])
+
+    assert result == {"ok": True, "cleared": 3, "errors": 0}
+    # readonly=False this time (we're explicitly mutating flags).
+    m.select.assert_called_with("INBOX", readonly=False)
+    m.store.assert_any_call("7", "-FLAGS", "\\Seen")
+    m.store.assert_any_call("8", "-FLAGS", "\\Seen")
+    m.store.assert_any_call("9", "-FLAGS", "\\Seen")
 
 
 # --------------------------------------------------------------------------

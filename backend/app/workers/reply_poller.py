@@ -1,9 +1,16 @@
 """Periodic IMAP reply polling.
 
 A single Celery beat task fans out per connected account, calling the IMAP
-client to fetch new unseen messages and matching them to outbound leads.
-Accounts whose last credential test failed are skipped so we don't hammer
-broken inboxes.
+client to fetch recent messages (read-only, no Seen-flag mutation) and
+matching them to outbound leads.  Accounts whose last credential test
+failed are skipped so we don't hammer broken inboxes.
+
+Dedup model: we store the last ``MAX_PROCESSED_IDS`` Message-IDs we've
+turned into REPLIED events on the account row
+(``processed_imap_message_ids``).  A message that's already in the set
+is skipped on subsequent polls without re-creating a REPLIED row.  This
+replaces the older "mark as Seen" dedup which side-effected the user's
+mailbox unread state.
 """
 from __future__ import annotations
 
@@ -32,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 # When an account has never been polled, search back this far on the first run.
 INITIAL_LOOKBACK_DAYS = 7
+# 1-hour grace window absorbs clock skew + a poll that lands a few
+# minutes after a delivery — without this, a message that arrived at
+# 09:59:50 but wasn't indexed in the SINCE search until 10:00:01 could
+# slip past the SINCE filter.
+SINCE_GRACE = timedelta(hours=1)
+# Bound on processed_imap_message_ids growth.  500 covers ~50 polls
+# worth of replies at 10 replies/poll which is plenty for our cadence
+# (every 20 minutes).
+MAX_PROCESSED_IDS = 500
 
 
 async def poll_account_for_replies(
@@ -41,19 +57,23 @@ async def poll_account_for_replies(
 ) -> dict[str, Any]:
     """Pull new replies for one account and link them to leads.
 
-    Updates account.last_polled_at on success. On IMAP/auth failure, marks the
-    account's last_test_status=FAILED so the beat task skips it next cycle.
+    Updates ``account.last_polled_at`` and ``account.processed_imap_message_ids``
+    on success.  On IMAP/auth failure, marks the account's
+    ``last_test_status=FAILED`` so the beat task skips it next cycle.
     Caller is responsible for committing the session.
     """
-    since = account.last_polled_at or (
+    raw_since = account.last_polled_at or (
         datetime.now(timezone.utc) - timedelta(days=INITIAL_LOOKBACK_DAYS)
     )
+    since = raw_since - SINCE_GRACE
+    processed_ids: list[str] = list(account.processed_imap_message_ids or [])
+    processed_set: set[str] = set(processed_ids)
 
     try:
         # Decryption + IMAP call live in imap_client; no plaintext touches
         # this function. Raises on decrypt failure or any IMAP error.
         messages = await asyncio.to_thread(
-            imap_client.fetch_unseen_with_account, account, since, True,
+            imap_client.fetch_recent_with_account, account, since, processed_set,
         )
     except Exception as e:  # noqa: BLE001 — auth, network, ssl, decrypt
         account.last_test_status = ConnectedAccountTestStatus.FAILED
@@ -64,7 +84,14 @@ async def poll_account_for_replies(
         return {"ok": False, "error": str(e), "replies_found": 0}
 
     replies_found = 0
+    newly_processed: list[str] = []
     for msg in messages:
+        mid = msg.get("message_id") or ""
+        # Mark any fetched message as "seen by us" so it doesn't reprocess
+        # even if no lead matched — otherwise unmatched-but-recent messages
+        # would keep getting re-parsed every poll cycle.
+        if mid:
+            newly_processed.append(mid)
         lead = await imap_client.match_message_to_lead(session, msg, campaign_ids)
         if lead is None:
             continue
@@ -76,11 +103,22 @@ async def poll_account_for_replies(
                 "from": msg["from_email"],
                 "subject": msg["subject"],
                 "in_reply_to": msg["in_reply_to"],
+                "message_id": mid,
                 "uid": msg["uid"],
             },
         ))
         replies_found += 1
 
+    if newly_processed:
+        # Append new IDs, dedup, trim to last MAX_PROCESSED_IDS preserving
+        # insertion order (newest at the tail).
+        seen: set[str] = set()
+        merged: list[str] = []
+        for x in [*processed_ids, *newly_processed]:
+            if x and x not in seen:
+                seen.add(x)
+                merged.append(x)
+        account.processed_imap_message_ids = merged[-MAX_PROCESSED_IDS:]
     account.last_polled_at = datetime.now(timezone.utc)
     return {"ok": True, "replies_found": replies_found}
 

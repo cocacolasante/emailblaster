@@ -5,8 +5,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, DateTime, Enum, Integer, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -41,6 +41,18 @@ class ConnectedAccount(Base):
     )
     last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # IMAP poller dedup: last ~500 Message-IDs we've already turned into
+    # REPLIED events.  Switching from "UNSEEN SINCE + mark as Seen" to
+    # "SINCE + dedup-by-Message-ID" means the poller no longer touches
+    # the user's read/unread state — they see new replies as unread in
+    # their actual mailbox.  Trimmed in the worker to keep the JSON
+    # column from growing unbounded.
+    processed_imap_message_ids: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

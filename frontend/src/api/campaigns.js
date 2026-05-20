@@ -96,6 +96,10 @@ export async function confirmLeadsUpload(campaignId, file, mapping) {
 
 // ---------- Lead detail ----------
 
+export async function deleteCampaignLead(campaignId, leadId) {
+  await client.delete(`/campaigns/${campaignId}/leads/${leadId}`);
+}
+
 export async function getLeadDetail(campaignId, leadId) {
   const { data } = await client.get(`/campaigns/${campaignId}/leads/${leadId}`);
   return data;

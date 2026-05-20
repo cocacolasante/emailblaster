@@ -22,7 +22,56 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Shipped 'Research a client' — one-off
+- **Last completed:** **Per-lead delete on the campaign Leads tab.**
+  New `DELETE /campaigns/{cid}/leads/{lid}` (returns 204) — every
+  child table (`lead_sequence_states`, `lead_step_executions`,
+  `email_events`) already had `ondelete=CASCADE` on its `lead_id`
+  FK, so one row delete cleans up the lead plus all history in a
+  single transaction.  Any Celery task already in flight for the
+  deleted lead (compose / send / send_linkedin_step) short-circuits
+  via the existing `lead is None → {"status": "not_found"}` guards.
+  Frontend: red "Delete" link per row in `components/LeadTable.jsx`,
+  opens a confirmation modal that spells out the cascade ("halts
+  every future step in the sequence (DM, follow-up emails, profile
+  views).  Already-sent emails, opens, clicks, and reply events for
+  this lead are also wiped").  Invalidates both `campaign-leads` and
+  `campaign` query keys on success so the progress widget reflects
+  the new total.  4 new backend tests + 4 new frontend tests.
+  Tests: **backend 490 passing, frontend 162 passing**.
+
+- **Previously:** **Stopped the IMAP reply poller from
+  auto-marking replies as read in the user's mailbox.**  Symptom: every
+  20 minutes the beat task ran `STORE +FLAGS \Seen` on every reply it
+  fetched (as the dedup story), so real replies hit the user's Gmail
+  inbox already-read and easy to miss.  Fix in three pieces:
+  - `app/services/imap_client.py`: replaced `fetch_unseen_messages` →
+    `fetch_recent_messages`.  Now selects INBOX with `readonly=True`,
+    searches `SINCE <date>` (no UNSEEN), fetches via
+    `BODY.PEEK[HEADER]` (RFC 3501 §6.4.5 — the side-effect-free
+    variant; plain `BODY[]` sets `\Seen`).  Removed the
+    `STORE +FLAGS \Seen` call entirely.  Extracts the `Message-ID`
+    header into the new `FetchedMessage["message_id"]` field and
+    short-circuits per-message when the caller passes a
+    `processed_message_ids` set containing the ID.
+  - `app/models/connected_account.py` + migration `0008`: new
+    `processed_imap_message_ids` JSONB column (default `'[]'::jsonb`).
+    Worker trims to last 500 entries after each poll so the column
+    doesn't grow unbounded.
+  - `app/workers/reply_poller.py`: threads the set through to the IMAP
+    fetcher, records every fetched Message-ID (matched OR unmatched)
+    so unmatched-but-recent messages don't get re-parsed every cycle.
+    Uses a 1-hour `SINCE_GRACE` to absorb clock skew between Brevo
+    delivery and the next poll.
+  - New `app/services/imap_client.unmark_seen_uids` + script at
+    `backend/scripts/unmark_seen_replies.py` for one-off remediation
+    of historical replies the old poller wrongly marked as read.  Run
+    once against my mailbox: flipped 1 reply back to unread.
+  - 8 new backend tests in `test_phase10_imap_polling.py` /
+    `test_phase10_reply_poller.py` (readonly assertion + PEEK fetch
+    assertion + SINCE-not-UNSEEN search + processed-ID short-circuit +
+    cap-trim + unmark_seen contract).  Tests: **backend 487 passing**.
+
+- **Previously:** **Shipped 'Research a client' — one-off
   outreach generator off a LinkedIn URL.**  New nav item / route at
   `/research-client`.  Backend: `POST /research-client` takes
   `{linkedin_url, goal, tone, sender_name, research_mode,
@@ -542,12 +591,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-20 — Shipped 'Research a client' one-off
-outreach generator at `/research-client`: LinkedIn URL + goal +
-char limit → personalized email or DM via a single web-search
-Anthropic call + a char-limited compose call._
+_Last updated: 2026-05-20 — Per-lead delete on the campaign Leads tab.
+DELETE /campaigns/{cid}/leads/{lid} cascades the lead row + every
+child (sequence state, step executions, email events) in one
+transaction; UI confirmation modal spells out the cascade._
 
-_Backend tests: **477 passing**.  Frontend tests: **157 passing**._
+_Backend tests: **490 passing**.  Frontend tests: **162 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

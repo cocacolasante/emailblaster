@@ -249,7 +249,7 @@ def test_test_imap_with_account_returns_failure_on_bad_token(monkeypatch):
     assert "credential decrypt failed" in result["error"]
 
 
-def test_fetch_unseen_with_account_raises_on_bad_token():
+def test_fetch_recent_with_account_raises_on_bad_token():
     from app.services import imap_client
     from cryptography.fernet import InvalidToken
 
@@ -263,7 +263,7 @@ def test_fetch_unseen_with_account_raises_on_bad_token():
 
     from datetime import datetime, timezone
     with pytest.raises(InvalidToken):
-        imap_client.fetch_unseen_with_account(_Acc(), datetime.now(timezone.utc))
+        imap_client.fetch_recent_with_account(_Acc(), datetime.now(timezone.utc))
 
 
 def test_no_decrypt_calls_outside_imap_client():

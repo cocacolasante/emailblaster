@@ -329,6 +329,33 @@ async def get_campaign_lead(
     return LeadResponse.model_validate(lead)
 
 
+@router.delete("/{campaign_id}/leads/{lead_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def delete_campaign_lead(
+    campaign_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove a lead from the campaign and halt all future sequence steps.
+
+    The Lead row, its ``lead_sequence_states`` row, every
+    ``lead_step_executions`` row, and every ``email_events`` row all
+    have ``ondelete=CASCADE`` on their ``lead_id`` FK, so a single
+    ``DELETE FROM leads`` cleans up every child row in one transaction.
+
+    Any Celery task already in flight for this lead (compose, send,
+    or a send_linkedin_step pulled from the queue) will read
+    ``lead is None`` on its next session load and short-circuit with
+    ``{"status": "not_found"}`` — the existing safety guards.  No
+    additional "stop the queue" call is needed.
+    """
+    await _get_or_404(db, campaign_id)
+    lead = await db.get(Lead, lead_id)
+    if lead is None or lead.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await db.delete(lead)
+    await db.commit()
+
+
 # --------------------------------------------------------------------------
 # Activity
 # --------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { listCampaignLeads } from '../api/campaigns.js';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { deleteCampaignLead, listCampaignLeads } from '../api/campaigns.js';
 
 const SEND_STATUSES = ['', 'pending', 'scheduled', 'sent', 'failed'];
 
@@ -41,6 +41,8 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
   const [pageSize] = useState(50);
   const [search, setSearch] = useState('');
   const [sendStatus, setSendStatus] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(null); // lead object or null
+  const queryClient = useQueryClient();
 
   const queryParams = {
     page,
@@ -52,6 +54,16 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
     queryKey: ['campaign-leads', campaignId, queryParams],
     queryFn: () => listCampaignLeads(campaignId, queryParams),
     keepPreviousData: true,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (leadId) => deleteCampaignLead(campaignId, leadId),
+    onSuccess: () => {
+      // Refresh both this table AND the parent campaign progress widget.
+      queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] });
+      queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+      setConfirmDelete(null);
+    },
   });
 
   function exportCsv() {
@@ -140,15 +152,27 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
                     </span>
                   </td>
                   <td className="px-4 py-3 border-b border-slate-100 text-right">
-                    {lead.compose_status === 'done' && onViewLead && (
+                    <div className="flex items-center justify-end gap-3">
+                      {lead.compose_status === 'done' && onViewLead && (
+                        <button
+                          type="button"
+                          onClick={() => onViewLead(lead)}
+                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                        >
+                          View email
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => onViewLead(lead)}
-                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                        onClick={() => setConfirmDelete(lead)}
+                        data-testid={`delete-lead-${lead.id}`}
+                        aria-label={`Delete ${lead.email}`}
+                        title="Remove from campaign and halt future steps"
+                        className="text-xs text-red-600 hover:text-red-800 hover:underline bg-transparent border-none cursor-pointer p-0"
                       >
-                        View email
+                        Delete
                       </button>
-                    )}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -156,6 +180,57 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
           </tbody>
         </table>
       </div>
+
+      {confirmDelete && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => !deleteMutation.isPending && setConfirmDelete(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+            data-testid="delete-lead-modal"
+          >
+            <h2 className="m-0 text-base font-semibold text-slate-900">
+              Delete this lead?
+            </h2>
+            <p className="text-sm text-slate-600 mt-2">
+              This removes <strong>{confirmDelete.email}</strong> from the
+              campaign and halts every future step in the sequence (DM,
+              follow-up emails, profile views).  Already-sent emails, opens,
+              clicks, and reply events for this lead are also wiped.
+            </p>
+            <p className="text-sm text-slate-600 mt-2">
+              This can't be undone — re-importing from CSV would create a
+              new lead with no history.
+            </p>
+            {deleteMutation.error && (
+              <p className="text-sm text-red-600 mt-3 bg-red-50 border border-red-200 rounded-md p-2">
+                {deleteMutation.error?.response?.data?.detail || deleteMutation.error.message}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 mt-5">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleteMutation.isPending}
+                className="px-4 py-2 text-sm bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-md disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteMutation.mutate(confirmDelete.id)}
+                disabled={deleteMutation.isPending}
+                data-testid="confirm-delete-lead"
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white font-semibold rounded-md disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? 'Deleting…' : 'Delete lead'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {totalPages > 1 && (
         <div className="flex justify-between items-center mt-4">
