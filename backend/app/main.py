@@ -13,6 +13,7 @@ from app.routers import (
     leads,
     linkedin_accounts,
     preview,
+    research_client,
     sequences,
     settings as settings_router,
     webhooks,
@@ -111,3 +112,4 @@ app.include_router(connected_accounts.router)
 app.include_router(linkedin_accounts.router)
 app.include_router(settings_router.router)
 app.include_router(sequences.router)
+app.include_router(research_client.router)

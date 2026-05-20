@@ -22,7 +22,43 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Fixed silent webhook drop of `new_relation` events + reconciled 5 historically-stuck leads.**
+- **Last completed:** **Shipped 'Research a client' — one-off
+  outreach generator off a LinkedIn URL.**  New nav item / route at
+  `/research-client`.  Backend: `POST /research-client` takes
+  `{linkedin_url, goal, tone, sender_name, research_mode,
+  output_kind, char_limit}`.  Two depth modes mirror the campaign
+  `ResearchMode`: `fast` (~10s, `max_uses=3` web_search) and `deep`
+  (~30-45s, `max_uses=8` + a more thorough prompt asking for richer
+  signals).  One Anthropic call with the `web_search_20250305` tool
+  does identity extraction + personalization research in a single
+  shot (avoiding the bulk pipeline's CSV-input assumptions); a
+  second Anthropic call composes the message with an embedded
+  `char_limit` constraint.  Output_kind toggles between `email`
+  (subject + body) and `linkedin_dm` (body only).
+  - **Anthropic-only, no Unipile.**  Deliberately skips the
+    `view_profile` call we use in the bulk pipeline: a one-off
+    research tool shouldn't notify the prospect via LinkedIn's "who
+    viewed your profile" feed every time the user runs it.  Name
+    fallback uses URL-slug parsing (strips trailing dedup hex tokens
+    like `jane-doe-a5898840a` → "Jane Doe") for when web search
+    can't confidently identify the person.
+  - **Char-limit enforcement is belt-and-suspenders:** prompt asks
+    for "at most N characters", plus `_truncate_at_sentence` in
+    `compose_client.py` hard-caps the body at the limit preferring a
+    sentence boundary (≥60% of the budget) before falling back to a
+    word boundary.
+  - **Sync HTTP**, not Celery — the user is waiting in the browser
+    with a live elapsed-time counter.  Frontend axios timeout is 60s.
+  - Files: `app/services/research_client.py`,
+    `app/services/compose_client.py`, `app/schemas/research_client.py`,
+    `app/routers/research_client.py`, `pages/ResearchClient.jsx`,
+    `api/researchClient.js`.  14 new backend tests in
+    `test_phase31_research_client.py` (parser + truncator +
+    prompt-builder smoke + end-to-end with Anthropic mocked); 7 new
+    frontend tests in `ResearchClient.test.jsx`.  Tests: **backend
+    477 passing, frontend 157 passing**.
+
+- **Previously:** **Fixed silent webhook drop of `new_relation` events + reconciled 5 historically-stuck leads.**
   Symptom: 51 leads parked on `linkedin_connect` indefinitely, no DMs
   ever firing.  Root cause was two bugs in `app/routers/webhooks.py`:
   (1) `_find_lead_for_event` only inspected nested
@@ -506,12 +542,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-19 — Fixed `new_relation` lead-matching in the
-Unipile webhook handler + shipped a relations-list-based reconciliation
-script for historical INVITED leads.  Sequencer is now progressing
-accepted invites to the DM step._
+_Last updated: 2026-05-20 — Shipped 'Research a client' one-off
+outreach generator at `/research-client`: LinkedIn URL + goal +
+char limit → personalized email or DM via a single web-search
+Anthropic call + a char-limited compose call._
 
-_Backend tests: **463 passing**.  Frontend tests: **150 passing**._
+_Backend tests: **477 passing**.  Frontend tests: **157 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
