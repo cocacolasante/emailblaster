@@ -795,10 +795,61 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             cfg = node.config or {}
             kind = node.kind
 
-            # DMs only fire when we know the lead is a 1st-degree connection
-            # — anything else gets a 403 from LinkedIn and a flagged account
-            # if you do it often. Skip-and-move-on is the right call.
+            # Connect step short-circuit: never re-send a connect request to
+            # a lead who's already INVITED or already a 1st-degree CONNECTED.
+            # Two failure modes this avoids:
+            # - Sending a second invite to someone who's already accepted →
+            #   Unipile returns errors/invalid_recipient and counts against
+            #   the daily connect cap for nothing.
+            # - Sending a duplicate invite to someone with one pending →
+            #   LinkedIn shows them two invites or silently merges; either
+            #   way it makes the sender look automated.
+            # Skip-and-advance.  A downstream DM gated by
+            # ``linkedin_connection==connected`` will park on the deferrable
+            # edge until the webhook flips the lead to CONNECTED.
+            if kind == SequenceNodeKind.LINKEDIN_CONNECT:
+                if lead.linkedin_connection_status == LinkedInConnectionStatus.CONNECTED:
+                    return {
+                        "status": "skipped",
+                        "error": "already 1st-degree connection — no connect request needed",
+                    }
+                if lead.linkedin_connection_status == LinkedInConnectionStatus.INVITED:
+                    return {
+                        "status": "skipped",
+                        "error": "connect request already sent — waiting on acceptance",
+                    }
+
+            # DMs only fire when we know the lead is a 1st-degree connection.
+            # If we have an invite OUTSTANDING (status=INVITED), the right
+            # move isn't to skip-and-move-on — it's to defer the DM until
+            # the prospect accepts.  Otherwise the user wires up a
+            # ``connect → DM`` flow and the DM silently drops every time
+            # because the cursor advanced before acceptance.  ``deferred``
+            # status parks the lead on the DM node, re-checks every
+            # EDGE_WAIT_RETRY_MINUTES, and gives up after MAX_EDGE_WAIT_DAYS
+            # — the same cadence the edge-parking code uses.
+            # UNKNOWN / DECLINED / NONE → skip (no incoming signal to wait
+            # for; deferring forever would silently halt the lead).
             if kind == SequenceNodeKind.LINKEDIN_DM:
+                if lead.linkedin_connection_status == LinkedInConnectionStatus.INVITED:
+                    entered = state.entered_current_at if state else None
+                    if entered is not None:
+                        if entered.tzinfo is None:
+                            entered = entered.replace(tzinfo=timezone.utc)
+                        if (datetime.now(timezone.utc) - entered) >= timedelta(days=MAX_EDGE_WAIT_DAYS):
+                            return {
+                                "status": "skipped",
+                                "error": (
+                                    f"waited {MAX_EDGE_WAIT_DAYS}d for connect "
+                                    "acceptance — giving up on DM"
+                                ),
+                            }
+                    return {
+                        "status": "deferred",
+                        "reason": "waiting_for_connection",
+                        "error": "DM deferred — waiting for connect acceptance",
+                        "retry_in": EDGE_WAIT_RETRY_MINUTES * 60,
+                    }
                 if lead.linkedin_connection_status != LinkedInConnectionStatus.CONNECTED:
                     return {
                         "status": "skipped",

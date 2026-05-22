@@ -22,7 +22,52 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Per-lead delete on the campaign Leads tab.**
+- **Last completed:** **Smart connect/DM idempotency in the
+  sequencer.**  Two new short-circuits in
+  `_send_linkedin_step_async`:
+  - `LINKEDIN_CONNECT` step now skips-and-advances when the lead is
+    already INVITED or CONNECTED.  Avoids duplicate invites (which
+    Unipile 4xxs and which look automated) and CONNECTED-targets that
+    don't need an invite at all.  No rate-slot burn, no API call.
+  - `LINKEDIN_DM` step changed behavior for INVITED leads: previously
+    skip-and-advance (which silently dropped the DM every time);
+    now `deferred` with `reason="waiting_for_connection"`, parks the
+    lead on the DM node, re-checks every `EDGE_WAIT_RETRY_MINUTES` (30
+    min) until the Unipile webhook flips the lead to CONNECTED.
+    Bounded by `MAX_EDGE_WAIT_DAYS` (14); past that → skip-and-advance.
+    UNKNOWN / DECLINED → skip (no signal coming, deferring forever
+    would silently halt).  The existing edge-parking pattern (`{op:
+    linkedin_connection, value: connected}` on the outgoing edge)
+    still works; this fix covers the case where the user wired
+    `{op: always}` between connect and DM.
+  - 4 new backend tests in `test_phase18_linkedin_write.py`
+    (connect-skips-when-INVITED, connect-skips-when-CONNECTED,
+    DM-defers-when-INVITED, DM-gives-up-after-14d).  Fixed
+    `test_connect_cap_blocks_after_subcap_hit` to use two distinct
+    leads since the first one now becomes INVITED after the first
+    connect.  Tests: **backend 494 passing**.
+
+- **Previously:** **Relaxed the freshness gate on IDENTITY
+  fields in 'Research a client'.**  Yesterday's freshness constraint
+  was applied to both news AND identity ("verified within the
+  freshness window"; "leave job_title/company blank rather than
+  guess").  Side effect: typical sales prospects without recent press
+  coverage came back with every identity field blank → compose path
+  fell into the `quality=low` branch → user reported "no research."
+  Reproduced live: Nadella (high-profile) returned `rich` research
+  with 4 dated person-news items; throwaway profile with no public
+  footprint returned every field blank.  Fix in
+  `app/services/research_client.py`: split the prompt into IDENTITY
+  fields (no freshness gate — LinkedIn profile is source of truth for
+  current role) and PERSONALIZATION signals (kept the strict 6-month
+  freshness + parenthetical-date rule).  The compose stage still
+  refuses to reference a prior role since it only sees the verified-
+  current role.  Regression test in `test_phase31_research_client.py`
+  now asserts both sections appear in the prompt and that the
+  too-strict phrases ("verified within the freshness window",
+  "fresh-enough source") never come back.  Tests: **backend 490 passing**.
+
+- **Previously:** **Per-lead delete on the campaign Leads tab.**
   New `DELETE /campaigns/{cid}/leads/{lid}` (returns 204) — every
   child table (`lead_sequence_states`, `lead_step_executions`,
   `email_events`) already had `ondelete=CASCADE` on its `lead_id`
@@ -591,12 +636,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-20 — Per-lead delete on the campaign Leads tab.
-DELETE /campaigns/{cid}/leads/{lid} cascades the lead row + every
-child (sequence state, step executions, email events) in one
-transaction; UI confirmation modal spells out the cascade._
+_Last updated: 2026-05-21 — Sequencer's connect step now skips
+INVITED/CONNECTED leads (no duplicate invites) and the DM step
+defers (not skips) when the lead is INVITED, parking until the
+Unipile webhook flips them to CONNECTED.  Capped at 14 days._
 
-_Backend tests: **490 passing**.  Frontend tests: **162 passing**._
+_Backend tests: **494 passing**.  Frontend tests: **162 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

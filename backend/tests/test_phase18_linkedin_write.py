@@ -214,6 +214,61 @@ async def test_connect_no_note_flag_skips_template(db_session, monkeypatch):
     assert captured["note"] is None
 
 
+async def test_connect_skips_when_lead_already_invited(db_session, monkeypatch):
+    """Re-running a connect step against a lead with INVITED status (an
+    invite was already sent and is pending) must NOT fire a second
+    Unipile call.  Two invites to the same person looks automated and
+    burns the daily connect cap.  Expected: skip-and-advance with a
+    clear reason."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(
+        db_session, campaign, connection=LinkedInConnectionStatus.INVITED,
+    )
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
+        {"note_template": "Hi {{first_name}}!"},
+    )
+
+    fake_connect_calls = 0
+    async def fake_connect(account, profile, note=None):
+        nonlocal fake_connect_calls
+        fake_connect_calls += 1
+        return ActionResult(ok=True)
+    _stub_provider(monkeypatch, send_connect_request=fake_connect)
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "skipped"
+    assert "already sent" in result["error"]
+    assert fake_connect_calls == 0
+
+
+async def test_connect_skips_when_lead_already_connected(db_session, monkeypatch):
+    """A lead that's already a 1st-degree connection doesn't need a new
+    invite — Unipile would 4xx and it wastes a rate slot."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(
+        db_session, campaign, connection=LinkedInConnectionStatus.CONNECTED,
+    )
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
+        {"no_note": True},
+    )
+
+    fake_connect_calls = 0
+    async def fake_connect(account, profile, note=None):
+        nonlocal fake_connect_calls
+        fake_connect_calls += 1
+        return ActionResult(ok=True)
+    _stub_provider(monkeypatch, send_connect_request=fake_connect)
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "skipped"
+    assert "already" in result["error"].lower()
+    assert fake_connect_calls == 0
+
+
 async def test_connect_note_truncated_to_300_chars(db_session, monkeypatch):
     acc = await _make_li_account(db_session)
     campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
@@ -242,9 +297,10 @@ async def test_connect_note_truncated_to_300_chars(db_session, monkeypatch):
 async def test_dm_skips_when_not_connected(db_session, monkeypatch):
     acc = await _make_li_account(db_session)
     campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
-    # Lead is INVITED, not CONNECTED → DM must skip.
+    # Lead is UNKNOWN (no invite ever sent) → no signal coming, must skip
+    # rather than defer forever.
     lead = await _make_lead(
-        db_session, campaign, connection=LinkedInConnectionStatus.INVITED,
+        db_session, campaign, connection=LinkedInConnectionStatus.UNKNOWN,
     )
     node = await _build_seq_with_node(
         db_session, campaign, SequenceNodeKind.LINKEDIN_DM,
@@ -255,6 +311,78 @@ async def test_dm_skips_when_not_connected(db_session, monkeypatch):
     result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
     assert result["status"] == "skipped"
     assert "1st degree" in result["error"]
+
+
+async def test_dm_defers_when_lead_is_invited(db_session, monkeypatch):
+    """A lead with status=INVITED has an outstanding connect request.
+    The right move for the DM step isn't to skip-and-advance — that
+    silently drops the follow-up message every time.  It's to defer:
+    park on the DM node and re-check every EDGE_WAIT_RETRY_MINUTES
+    until the webhook flips the lead to CONNECTED."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(
+        db_session, campaign, connection=LinkedInConnectionStatus.INVITED,
+    )
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_DM,
+        {"text_template": "Thanks for connecting!"},
+    )
+    # Park the lead's sequence state on this DM node so the entered_at
+    # gate (which checks the 14-day timeout) has something to look at.
+    seq = (await db_session.execute(
+        select(Sequence).where(Sequence.campaign_id == campaign.id)
+    )).scalar_one()
+    db_session.add(LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id,
+        current_node_id=node.id, entered_current_at=_now(),
+        status=LeadSequenceStatus.ACTIVE,
+    ))
+    await db_session.commit()
+
+    fake_dm_calls = 0
+    async def fake_dm(account, profile, text):
+        nonlocal fake_dm_calls
+        fake_dm_calls += 1
+        return ActionResult(ok=True)
+    _stub_provider(monkeypatch, send_dm=fake_dm)
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "deferred"
+    assert result["reason"] == "waiting_for_connection"
+    assert fake_dm_calls == 0
+    assert result.get("retry_in", 0) > 0
+
+
+async def test_dm_gives_up_after_max_edge_wait_days(db_session, monkeypatch):
+    """Bounded wait: if a lead has been parked on the DM node for more
+    than MAX_EDGE_WAIT_DAYS without the connect being accepted, the
+    sequencer gives up and skip-advances rather than waiting forever."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(
+        db_session, campaign, connection=LinkedInConnectionStatus.INVITED,
+    )
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_DM,
+        {"text_template": "Hi!"},
+    )
+    # Park state with entered_current_at older than the cap.
+    seq = (await db_session.execute(
+        select(Sequence).where(Sequence.campaign_id == campaign.id)
+    )).scalar_one()
+    db_session.add(LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id,
+        current_node_id=node.id,
+        entered_current_at=_now() - timedelta(days=sequencer.MAX_EDGE_WAIT_DAYS + 1),
+        status=LeadSequenceStatus.ACTIVE,
+    ))
+    await db_session.commit()
+
+    _stub_provider(monkeypatch)
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "skipped"
+    assert "giving up" in result["error"]
 
 
 async def test_dm_sends_when_connected(db_session, monkeypatch):
@@ -365,7 +493,19 @@ async def test_connect_cap_blocks_after_subcap_hit(db_session, monkeypatch):
 
     acc = await _make_li_account(db_session)
     campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
-    lead = await _make_lead(db_session, campaign)
+    # Two distinct leads, both UNKNOWN status so the connect-already-sent
+    # short-circuit doesn't intercept the second call.
+    lead1 = await _make_lead(db_session, campaign)
+    lead2 = Lead(
+        campaign_id=campaign.id, email="lead2@example.com",
+        first_name="Sam",
+        linkedin_url="https://www.linkedin.com/in/sam-other/",
+        linkedin_connection_status=LinkedInConnectionStatus.UNKNOWN,
+        send_status=SendStatus.PENDING,
+    )
+    db_session.add(lead2)
+    await db_session.commit()
+    await db_session.refresh(lead2)
     node = await _build_seq_with_node(
         db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
         {"note_template": "Hi {{first_name}}"},
@@ -379,10 +519,10 @@ async def test_connect_cap_blocks_after_subcap_hit(db_session, monkeypatch):
         f"li-rate:{acc.id}:last",
     )
 
-    r1 = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    r1 = await sequencer._send_linkedin_step_async(str(lead1.id), str(node.id))
     assert r1["status"] == "sent", r1
 
-    r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    r2 = await sequencer._send_linkedin_step_async(str(lead2.id), str(node.id))
     # Cap-style skips now defer to the exact reset time (Redis TTL)
     # instead of consuming the transient-retry budget.
     assert r2["status"] == "deferred"

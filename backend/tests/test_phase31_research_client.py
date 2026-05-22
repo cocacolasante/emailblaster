@@ -89,22 +89,37 @@ def test_compose_for_client_rejects_out_of_range_char_limit():
 
 
 def test_research_prompt_includes_freshness_rules():
-    """The research prompt must explicitly bound results to a 6-month
-    freshness window with a 1-year hard floor, and must instruct the
-    model to drop stale roles.  Regression test: a previous prompt
-    asked for "last 12 months" company news which let stale references
-    leak into the compose stage."""
-    from app.services.research_client import _DEFAULT_RESEARCH  # noqa: F401
-    # We can't easily call the live prompt builder without mocking
-    # Anthropic, so re-derive the same prompt path here.  Grep the
-    # source for the freshness anchors instead — keeps the test
-    # decoupled from the prompt's prose changes.
+    """The research prompt must:
+
+    1. Explicitly bound news/personalization signals to a 6-month window
+       with a 1-year hard floor (regression: a previous prompt asked
+       for "last 12 months" company news which let stale references
+       leak into compose).
+    2. Distinguish between IDENTITY fields (no freshness gate — the
+       LinkedIn profile is source of truth for current role) and
+       PERSONALIZATION signals (strict freshness).  Regression: a
+       previous version of this prompt required Anthropic to find a
+       news article within 6 months to confirm the prospect's current
+       role.  That left job_title/company blank for typical sales
+       prospects with no press coverage — the user reported "no
+       research" on 2026-05-21.
+    """
     import inspect
     from app.services import research_client as rc
     src = inspect.getsource(rc.research_from_linkedin_url)
+    # Freshness anchors for news.
     assert "6 months" in src.lower() or "183 days" in src or "freshness" in src.lower()
     assert "over a year old" in src.lower() or "365" in src
+    # Current-role guard.
     assert "current role" in src.lower() or "CURRENT" in src
+    # Identity vs personalization separation — must NOT require fresh
+    # confirmation for identity fields.
+    assert "IDENTITY" in src or "identity" in src
+    assert "PERSONALIZATION" in src or "personalization" in src
+    # The anti-regression: the prompt must NOT say "verified within the
+    # freshness window" for the IDENTITY/CURRENT-role section.
+    assert "verified within the freshness window" not in src
+    assert "fresh-enough source" not in src
 
 
 def test_compose_prompts_include_freshness_block_for_all_paths():
