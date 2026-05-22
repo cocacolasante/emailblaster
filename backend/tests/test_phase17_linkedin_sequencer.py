@@ -296,44 +296,51 @@ async def test_deferred_cap_skip_does_not_burn_retry_budget(db_session, monkeypa
     _, entry, li_node = await _build_li_node_sequence(
         db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
     )
-    lead = await _make_lead(db_session, campaign)
+    # Two distinct leads: the first one consumes the only slot, the
+    # second one hits the cap on the same node.  Two-lead set up
+    # (rather than calling twice for the same lead) is required because
+    # lifetime per-node idempotency now skips a re-dispatch for the
+    # already-SENT (lead, node) pair before the cap check runs.
+    lead1 = await _make_lead(db_session, campaign,
+                             linkedin_url="https://www.linkedin.com/in/sundarpichai/")
+    lead2 = Lead(
+        campaign_id=campaign.id, email="other@example.com",
+        first_name="Other",
+        linkedin_url="https://www.linkedin.com/in/satyanadella/",
+        send_status=SendStatus.PENDING,
+    )
+    db_session.add(lead2)
+    await db_session.commit()
+    await db_session.refresh(lead2)
     _stub_provider(monkeypatch)
 
     rc = seq_mod._li_redis()
     await rc.delete(f"li-rate:{acc.id}:day", f"li-rate:{acc.id}:last")
 
-    state = LeadSequenceState(
-        lead_id=lead.id, sequence_id=li_node.sequence_id,
+    state2 = LeadSequenceState(
+        lead_id=lead2.id, sequence_id=li_node.sequence_id,
         current_node_id=li_node.id, status=LeadSequenceStatus.ACTIVE,
         next_run_at=_now(), entered_current_at=_now(),
     )
-    db_session.add(state)
+    db_session.add(state2)
     await db_session.commit()
 
-    # First call claims the only slot.
-    r1 = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    # First call (lead1) claims the only slot.
+    r1 = await sequencer._send_linkedin_step_async(str(lead1.id), str(li_node.id))
     assert r1["status"] == "sent"
-    await sequencer._record_execution_and_advance(lead.id, li_node.id, r1)
+    await sequencer._record_execution_and_advance(lead1.id, li_node.id, r1)
 
-    # Reset state to simulate the next attempt landing on the same node.
-    await db_session.refresh(state)
-    state.current_node_id = li_node.id
-    state.next_run_at = _now()
-    state.entered_current_at = _now()
-    state.status = LeadSequenceStatus.ACTIVE
-    await db_session.commit()
-
-    # Second call hits the cap.
-    r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    # Second call (lead2) hits the daily cap.
+    r2 = await sequencer._send_linkedin_step_async(str(lead2.id), str(li_node.id))
     assert r2["status"] == "deferred"
-    await sequencer._record_execution_and_advance(lead.id, li_node.id, r2)
+    await sequencer._record_execution_and_advance(lead2.id, li_node.id, r2)
 
-    await db_session.refresh(state)
-    # Lead is parked on the same node, status ACTIVE, next_run_at ~24h.
-    assert state.current_node_id == li_node.id
-    assert state.status == LeadSequenceStatus.ACTIVE
-    assert state.next_run_at is not None
-    delta = state.next_run_at - _now()
+    await db_session.refresh(state2)
+    # Lead2 is parked on the same node, status ACTIVE, next_run_at ~24h.
+    assert state2.current_node_id == li_node.id
+    assert state2.status == LeadSequenceStatus.ACTIVE
+    assert state2.next_run_at is not None
+    delta = state2.next_run_at - _now()
     # Big enough to be clearly the TTL-based defer, not the 5-min retry.
     assert delta > timedelta(hours=1)
 

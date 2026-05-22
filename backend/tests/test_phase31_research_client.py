@@ -322,6 +322,55 @@ async def test_happy_path_linkedin_dm(client):
     assert body["char_count"] <= 300
 
 
+async def test_anthropic_auth_failure_returns_502_with_actionable_detail(client):
+    """A bad/expired ANTHROPIC_API_KEY surfaces as a 502 with a clear
+    remediation hint, not a generic 500.  Regression: prior to the fix
+    a 401 from Anthropic propagated up through both the research stage
+    (caught) and the compose stage (uncaught), and the latter became
+    an opaque 500 in the browser console."""
+    from anthropic import AuthenticationError
+
+    # The research stage already catches every exception and returns
+    # an empty dict, so the failure mode that escapes is the compose
+    # call.  Patch the compose stage's Anthropic client to raise
+    # AuthenticationError on every messages.create.
+    auth_err = AuthenticationError(
+        message="Invalid authentication credentials",
+        response=SimpleNamespace(status_code=401, headers={}, request=SimpleNamespace()),
+        body=None,
+    )
+    research_response = (
+        '{"first_name": "Jane", "last_name": "Doe", '
+        '"headline": "", "company": "", "company_website": "", '
+        '"job_title": "", "industry": "", "person_news": [], '
+        '"company_news": [], "company_description": "", '
+        '"recent_updates": [], "found": false}'
+    )
+    research_mock = AsyncMock(return_value=_anthropic_text(research_response))
+    compose_mock = AsyncMock(side_effect=auth_err)
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=research_mock)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=compose_mock)),
+    ):
+        resp = await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/jane-doe/",
+            "goal": "Book a call",
+            "char_limit": 300,
+            "output_kind": "linkedin_dm",
+        })
+
+    assert resp.status_code == 502, resp.text
+    detail = resp.json()["detail"].lower()
+    # Actionable: tell the user what to do, not just "auth failed".
+    assert "anthropic" in detail
+    assert "key" in detail
+    assert ".env" in detail
+
+
 async def test_compose_failure_returns_502(client):
     """Anthropic returns garbage twice → compose helper raises → 502 to caller."""
     research_response = (

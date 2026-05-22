@@ -502,6 +502,38 @@ async def _already_executed_this_visit(
     return row is not None
 
 
+async def _already_executed_ever(
+    session: AsyncSession,
+    lead_id: uuid.UUID,
+    node_id: uuid.UUID,
+) -> bool:
+    """True if ANY SENT execution row exists for (lead, node), regardless
+    of when the lead entered the node.
+
+    Lifetime per-node idempotency.  Once an action has successfully
+    fired for a lead at a node, it must NEVER fire again — not on
+    re-enrollment, not on a manual cursor reset, not after a duplicate
+    Celery dispatch slipped past the stale-dispatch guard, not when the
+    user wires a sequence that loops back to a previously-executed node.
+
+    Applies to every action kind: view_profile, follow, react, connect,
+    DM, page-invite, InMail, comment, and follow-up email.  The "send
+    the same touch twice in a sequence" pattern must be modelled as TWO
+    separate nodes (which is the only way to get distinct execution rows
+    + analytics anyway), not by looping back.
+    """
+    row = await session.scalar(
+        select(LeadStepExecution.id)
+        .where(
+            LeadStepExecution.lead_id == lead_id,
+            LeadStepExecution.node_id == node_id,
+            LeadStepExecution.result == LeadStepResult.SENT,
+        )
+        .limit(1)
+    )
+    return row is not None
+
+
 async def _arm_next_run(
     session: AsyncSession, state: LeadSequenceState, node: SequenceNode
 ) -> None:
@@ -626,6 +658,17 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
             if campaign is None:
                 return {"status": "not_found"}
 
+            # Lifetime per-node idempotency: never re-send the same email
+            # node for the same lead.  Catches re-enrollment, duplicate
+            # Celery dispatches that slipped past the stale-dispatch
+            # guard, and loop-back sequences.  Multi-touch must use
+            # separate nodes.
+            if await _already_executed_ever(session, lid, nid):
+                return {
+                    "status": "skipped",
+                    "error": "email already sent for this node — skipping duplicate",
+                }
+
             cfg = node.config or {}
             subject_tpl = cfg.get("subject_template") or ""
             body_tpl = cfg.get("body_template") or ""
@@ -741,6 +784,19 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     lid, nid, state.current_node_id,
                 )
                 return {"status": "stale_dispatch"}
+
+            # Lifetime per-node idempotency: a SENT execution row for
+            # (lead, node) means the action already fired successfully
+            # in a prior visit (or a prior Celery delivery of the same
+            # task).  Don't re-fire — applies uniformly to every action
+            # kind: view_profile, follow, react, connect, DM, page-
+            # invite, InMail, comment.  Skip-and-advance with a clear
+            # reason so the activity log shows the dedup.
+            if await _already_executed_ever(session, lid, nid):
+                return {
+                    "status": "skipped",
+                    "error": "action already sent for this node — skipping duplicate",
+                }
 
             campaign = await session.get(Campaign, lead.campaign_id)
             if campaign is None or campaign.linkedin_account_id is None:

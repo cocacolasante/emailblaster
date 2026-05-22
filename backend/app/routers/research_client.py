@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import time
 
+from anthropic import APIError, APIStatusError, AuthenticationError
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.research_client import (
@@ -53,6 +54,32 @@ async def research_client_endpoint(req: ResearchClientRequest) -> ResearchClient
     except ValueError as exc:
         logger.warning("research_client compose failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"compose_failed: {exc}") from exc
+    except AuthenticationError as exc:
+        # Bad/missing ANTHROPIC_API_KEY in .env.  Surface a clear 502
+        # so the frontend toast tells the user what's wrong instead of
+        # showing a generic 500.  Same shape applies to research stage,
+        # but that one already swallows the error and returns empty
+        # research; the failure mode here is unique because compose
+        # MUST produce a body to be useful.
+        logger.error("Anthropic auth failed in research_client: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Anthropic API key is invalid or expired.  Rotate the key "
+                "at console.anthropic.com, update ANTHROPIC_API_KEY in .env, "
+                "and run: docker compose up -d --force-recreate backend "
+                "worker beat"
+            ),
+        ) from exc
+    except (APIError, APIStatusError) as exc:
+        # Network / rate-limit / 5xx from Anthropic.  Same idea: clean
+        # 502 with the upstream status so we don't masquerade as a
+        # server bug.
+        logger.warning("Anthropic API error in research_client: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"anthropic_api_error: {exc}",
+        ) from exc
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return ResearchClientResponse(

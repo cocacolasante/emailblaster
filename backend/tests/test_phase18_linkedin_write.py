@@ -580,6 +580,98 @@ async def test_page_invite_cap_is_per_page(db_session, monkeypatch):
 # --------------------------------------------------------------------------
 
 
+async def test_linkedin_action_never_refires_after_sent_for_same_node(db_session, monkeypatch):
+    """Lifetime idempotency: once any LinkedIn action node has produced
+    a SENT execution row for a lead, a subsequent dispatch for the same
+    (lead, node) must skip-and-advance — no second API call, regardless
+    of how the duplicate arrived (re-enrollment, manual cursor reset,
+    loop-back sequence, duplicate Celery delivery past the stale-dispatch
+    guard).  Catches every action kind via the shared handler check."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(db_session, campaign)
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_VIEW_PROFILE, {},
+    )
+
+    fake_view_calls = 0
+    async def fake_view(account, profile):
+        nonlocal fake_view_calls
+        fake_view_calls += 1
+        return ActionResult(ok=True, external_id="urn:li:fsd_profile:x")
+    _stub_provider(monkeypatch, view_profile=fake_view)
+
+    # First dispatch fires.
+    r1 = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert r1["status"] == "sent"
+    assert fake_view_calls == 1
+
+    # In production ``_record_execution_and_advance`` (the Celery
+    # wrapper) writes the SENT row after the handler returns.  We're
+    # calling the handler directly so simulate that step.
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=node.id, result=LeadStepResult.SENT,
+    ))
+    await db_session.commit()
+
+    # Second dispatch for the same (lead, node) must skip — the SENT
+    # execution row trips the lifetime idempotency check.
+    r2 = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert r2["status"] == "skipped"
+    assert "already sent" in r2["error"].lower()
+    # No second API call.
+    assert fake_view_calls == 1
+
+
+async def test_followup_email_never_refires_after_sent_for_same_node(db_session, monkeypatch):
+    """Same lifetime contract for follow-up email nodes.  A re-enrolled
+    lead must not get the same templated email a second time."""
+    from app.workers import send as _send_mod
+    from app.workers import sequencer as seq_mod
+    from app.services import brevo as brevo_mod
+    from unittest.mock import AsyncMock
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(db_session, campaign)
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.EMAIL,
+        {
+            "subject_template": "Following up with {{first_name}}",
+            "body_template": "Hey {{first_name}}, circling back.",
+        },
+    )
+
+    # Bypass send-gate checks (returning ok) so the test focuses on the
+    # idempotency contract, not the gate logic.
+    monkeypatch.setattr(
+        _send_mod, "check_send_gates", AsyncMock(return_value={"ok": True}),
+    )
+    monkeypatch.setattr(
+        _send_mod, "increment_rate_counters", AsyncMock(return_value=None),
+    )
+    # Stub Brevo so we don't hit the network.
+    brevo_send = AsyncMock(return_value="brevo-msg-id-1")
+    monkeypatch.setattr(brevo_mod, "send_email", brevo_send)
+
+    r1 = await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert r1["status"] == "sent"
+    assert brevo_send.await_count == 1
+
+    # Simulate the execution-row write that the Celery wrapper would
+    # do after the handler returns.
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=node.id, result=LeadStepResult.SENT,
+    ))
+    await db_session.commit()
+
+    r2 = await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert r2["status"] == "skipped"
+    assert "already sent" in r2["error"].lower()
+    # No second Brevo call.
+    assert brevo_send.await_count == 1
+
+
 async def test_publish_rejects_overlong_connect_note(client):
     cid_resp = await client.post("/campaigns/", json={
         "name": "x", "goal": "g", "tone": "Direct",

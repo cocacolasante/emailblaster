@@ -22,7 +22,32 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Smart connect/DM idempotency in the
+- **Last completed:** **Lifetime per-node idempotency across every
+  action kind.**  New `_already_executed_ever(session, lead_id,
+  node_id)` helper in `app/workers/sequencer.py` queries
+  `lead_step_executions` for any SENT row matching the pair — no time
+  bound, no kind filter.  Wired in at the top of both
+  `_send_email_step_async` and `_send_linkedin_step_async` right after
+  the stale-dispatch guard.  Effect: once any node has produced a SENT
+  execution row for a lead, a subsequent dispatch (re-enrollment,
+  manual cursor reset, loop-back sequence, duplicate Celery delivery
+  past the visibility-timeout guard) skip-and-advances with
+  `error="action/email already sent for this node — skipping duplicate"`.
+  Applies uniformly to view_profile, follow_profile, react_post,
+  connect, DM, page-invite, InMail, comment_post, AND follow-up
+  email.  The status-based connect-skip (INVITED/CONNECTED) and
+  DM-defer-when-INVITED guards are now belt-and-suspenders behind
+  this — the lifetime check catches the duplicate-dispatch case while
+  the status-based ones catch the "lead's state changed externally"
+  case.  Multi-touch ("view profile 3x over 10 days") must be modelled
+  as separate nodes; loop-back to the same node will now skip.
+  2 new backend tests in `test_phase18_linkedin_write.py` (LinkedIn
+  view + email follow-up).  Updated
+  `test_deferred_cap_skip_does_not_burn_retry_budget` in phase17 to
+  use TWO leads (the same-lead-twice scenario it tested is no longer
+  possible in production).  Tests: **backend 497 passing**.
+
+- **Previously:** **Smart connect/DM idempotency in the
   sequencer.**  Two new short-circuits in
   `_send_linkedin_step_async`:
   - `LINKEDIN_CONNECT` step now skips-and-advances when the lead is
@@ -636,12 +661,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-21 — Sequencer's connect step now skips
-INVITED/CONNECTED leads (no duplicate invites) and the DM step
-defers (not skips) when the lead is INVITED, parking until the
-Unipile webhook flips them to CONNECTED.  Capped at 14 days._
+_Last updated: 2026-05-22 — Lifetime per-node idempotency: once any
+node has produced a SENT execution row for a lead, the sequencer
+skip-and-advances any subsequent dispatch.  Covers every action
+kind including follow-up email.  Multi-touch must use separate nodes._
 
-_Backend tests: **494 passing**.  Frontend tests: **162 passing**._
+_Backend tests: **497 passing**.  Frontend tests: **162 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
