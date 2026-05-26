@@ -326,6 +326,10 @@ function Step3({ campaignId, onComplete }) {
     queryFn: () => getPreview(campaignId),
     refetchInterval: 5000,
   });
+  const { data: campaign } = useQuery({
+    queryKey: ['campaign', campaignId],
+    queryFn: () => getCampaign(campaignId),
+  });
 
   useEffect(() => {
     if (preview?.all_ready) onComplete();
@@ -336,6 +340,23 @@ function Step3({ campaignId, onComplete }) {
   const composed = progress?.composed ?? 0;
   const pct = total ? Math.min(100, Math.round((composed / total) * 100)) : 0;
 
+  // Tailor the wording to the campaign's generation mode. While the campaign
+  // is still loading (mode undefined) show neutral copy rather than wrongly
+  // implying research is happening.
+  const mode = campaign?.research_mode;
+  let heading = 'Preparing emails…';
+  let detail = `${composed} of ${total} ready`;
+  if (mode === 'template') {
+    heading = 'Rendering your templated emails…';
+    detail = `${composed} of ${total} rendered`;
+  } else if (mode === 'none') {
+    heading = 'Composing emails…';
+    detail = `${composed} of ${total} composed`;
+  } else if (mode === 'fast' || mode === 'deep') {
+    heading = 'Researching and composing emails…';
+    detail = `${composed} of ${total} composed · ${researched} researched`;
+  }
+
   return (
     <div data-testid="step3" className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center">
       <div className="w-12 h-12 mx-auto mb-4 bg-blue-50 rounded-full flex items-center justify-center">
@@ -344,9 +365,9 @@ function Step3({ campaignId, onComplete }) {
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
         </svg>
       </div>
-      <h2 className="text-lg font-semibold text-slate-900 mb-2">Researching and composing emails…</h2>
+      <h2 className="text-lg font-semibold text-slate-900 mb-2">{heading}</h2>
       <p className="text-sm text-slate-500 mb-4">
-        {composed} of {total} composed · {researched} researched
+        {detail}
       </p>
       <div className="h-3 bg-slate-200 rounded-full overflow-hidden mx-auto max-w-sm mb-4">
         <div
