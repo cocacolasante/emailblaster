@@ -13,7 +13,8 @@
       "WebFetch(domain:developer.unipile.com)",
       "WebFetch(domain:support.linkedhelper.com)",
       "WebSearch",
-      "WebFetch(domain:linkedin.api-docs.io)"
+      "WebFetch(domain:linkedin.api-docs.io)",
+      "Bash(grep -nA6 \"backend:\\\\|worker:\" docker-compose.yml)"
     ]
   }
 }

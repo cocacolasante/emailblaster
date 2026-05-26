@@ -28,8 +28,10 @@ from app.models import (
     CampaignStatus,
     ComposeStatus,
     Lead,
+    ResearchMode,
     StyleCorrection,
 )
+from app.services.template_render import build_merge_context, render_template
 from app.services.web_research import _extract_text, _parse_json
 from app.workers.celery_app import celery_app
 from app.workers.send import send_lead
@@ -319,6 +321,7 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             corrected_examples = list(sc_rows)
 
             quality = (lead.research_data or {}).get("quality", "low")
+            mode = campaign.research_mode
             ctx = {
                 "first_name": lead.first_name or "",
                 "last_name": lead.last_name or "",
@@ -330,40 +333,51 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
                 "tone": campaign.tone,
                 "sender_name": campaign.sender_name,
             }
+            # Snapshot template inputs while the lead row is loaded so the
+            # render (below) doesn't touch the closed session.
+            template_subject = campaign.template_subject
+            template_body = campaign.template_body
+            merge_ctx = build_merge_context(lead) if mode == ResearchMode.TEMPLATE else {}
             is_sample = lead.is_sample
             campaign_status_now = campaign.status
 
             lead.compose_status = ComposeStatus.RUNNING
             await session.commit()
 
-        # Build prompt + call Anthropic.
-        if quality == "low":
-            system_prompt = _build_generic_prompt(
-                ctx["goal"], ctx["tone"], ctx["sender_name"],
-                ctx["first_name"], ctx["last_name"], ctx["company"],
-                ctx["company_website"],
-            )
+        if mode == ResearchMode.TEMPLATE:
+            # Fully-templated path: render merge fields, no Anthropic call,
+            # no em-dash sanitiser (the copy is the user's own verbatim text).
+            subject_clean = render_template(template_subject, merge_ctx)
+            body_clean = render_template(template_body, merge_ctx)
         else:
-            system_prompt = _build_personalized_prompt(
-                ctx["goal"], ctx["tone"], ctx["sender_name"],
-                ctx["first_name"], ctx["last_name"], ctx["company"], ctx["job_title"],
-                ctx["research_data"], corrected_examples,
-                ctx["company_website"],
-            )
+            # Build prompt + call Anthropic.
+            if quality == "low":
+                system_prompt = _build_generic_prompt(
+                    ctx["goal"], ctx["tone"], ctx["sender_name"],
+                    ctx["first_name"], ctx["last_name"], ctx["company"],
+                    ctx["company_website"],
+                )
+            else:
+                system_prompt = _build_personalized_prompt(
+                    ctx["goal"], ctx["tone"], ctx["sender_name"],
+                    ctx["first_name"], ctx["last_name"], ctx["company"], ctx["job_title"],
+                    ctx["research_data"], corrected_examples,
+                    ctx["company_website"],
+                )
 
-        try:
-            composed = await _generate_email(system_prompt)
-        except ValueError as e:
-            # Parse failure — retrying won't help. Mark failed and return.
-            logger.warning("compose_lead parse-failed for %s: %s", lead_id, e)
-            await _mark_compose_failed(str(lid))
-            return {"status": "parse_failed", "error": str(e)}
+            try:
+                composed = await _generate_email(system_prompt)
+            except ValueError as e:
+                # Parse failure — retrying won't help. Mark failed and return.
+                logger.warning("compose_lead parse-failed for %s: %s", lead_id, e)
+                await _mark_compose_failed(str(lid))
+                return {"status": "parse_failed", "error": str(e)}
 
-        # Sanitise stray em/en dashes (the prompt forbids them but models
-        # occasionally slip).  No unsubscribe footer — these are individual
-        # person-to-person messages, not bulk transactional mail.
-        subject_clean = _strip_long_dashes(composed["subject"])
-        body_clean = _strip_long_dashes(composed["body"])
+            # Sanitise stray em/en dashes (the prompt forbids them but models
+            # occasionally slip).  No unsubscribe footer — these are individual
+            # person-to-person messages, not bulk transactional mail.
+            subject_clean = _strip_long_dashes(composed["subject"])
+            body_clean = _strip_long_dashes(composed["body"])
 
         # Re-open session to persist the result.
         async with AsyncSession(engine, expire_on_commit=False) as session:

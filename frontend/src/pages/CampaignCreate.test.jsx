@@ -118,6 +118,25 @@ describe('Step 1 — campaign details', () => {
     expect(screen.getByRole('radio', { name: /^deep/i })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByRole('radio', { name: /^fast/i })).toHaveAttribute('aria-checked', 'false');
   });
+
+  it('selects "None" research mode and shows the no-research hint', async () => {
+    renderPage();
+    await screen.findByText(/campaign details/i);
+    fireEvent.click(screen.getByRole('radio', { name: /^none/i }));
+    expect(screen.getByRole('radio', { name: /^none/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /^fast/i })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText(/skips all lead research/i)).toBeInTheDocument();
+  });
+
+  it('reveals subject + body fields when "Template" mode is selected', async () => {
+    renderPage();
+    await screen.findByText(/campaign details/i);
+    expect(screen.queryByLabelText(/^body$/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /^template/i }));
+    expect(screen.getByRole('radio', { name: /^template/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByLabelText(/^subject$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^body$/i)).toBeInTheDocument();
+  });
 });
 
 
@@ -150,6 +169,38 @@ describe('Submitting step 1', () => {
 
     // Step 2 mounts the sequence builder; step 3 mounts the LeadUpload.
     await waitFor(() => expect(screen.getByTestId('embedded-sequence-builder')).toBeInTheDocument());
+  });
+
+  it('sends template_subject/body when in template mode', async () => {
+    const user = userEvent.setup();
+    campaignsApi.createCampaign.mockResolvedValue({ id: 'new-campaign-1' });
+    renderPage();
+    await screen.findByText(/campaign details/i);
+
+    await fillForm(user);
+    fireEvent.click(screen.getByRole('radio', { name: /^template/i }));
+    // fireEvent.change avoids userEvent.type treating '{{' as an escape seq.
+    fireEvent.change(screen.getByLabelText(/^subject$/i), { target: { value: 'Hi {{first_name}}' } });
+    fireEvent.change(screen.getByLabelText(/^body$/i), { target: { value: 'About {{company}}' } });
+    fireEvent.click(screen.getByTestId('step1-submit'));
+
+    await waitFor(() => expect(campaignsApi.createCampaign).toHaveBeenCalled());
+    const payload = campaignsApi.createCampaign.mock.calls[0][0];
+    expect(payload.research_mode).toBe('template');
+    expect(payload.template_subject).toBe('Hi {{first_name}}');
+    expect(payload.template_body).toBe('About {{company}}');
+  });
+
+  it('blocks submit in template mode with an empty body', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/campaign details/i);
+    await fillForm(user);
+    fireEvent.click(screen.getByRole('radio', { name: /^template/i }));
+    fireEvent.click(screen.getByTestId('step1-submit'));
+
+    expect(await screen.findByTestId('step1-error')).toHaveTextContent(/template body is required/i);
+    expect(campaignsApi.createCampaign).not.toHaveBeenCalled();
   });
 
   it('shows error on create failure', async () => {

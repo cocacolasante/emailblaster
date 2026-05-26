@@ -22,7 +22,60 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Lifetime per-node idempotency across every
+- **Last completed:** **Fully-templated campaign mode (no AI).**  Added
+  a fourth `ResearchMode.TEMPLATE = "template"` plus two nullable
+  campaign columns `template_subject` / `template_body` (migration
+  `0010_campaign_templates.py` — `ALTER TYPE ADD VALUE 'template'` +
+  the two `add_column`s).  In this mode the pipeline makes **zero**
+  external API calls: the research worker short-circuits (same branch
+  as NONE — `mode in (NONE, TEMPLATE)`), and `compose_lead_async`
+  renders the template per-lead instead of calling Anthropic.  New
+  pure-function service `app/services/template_render.py`:
+  `build_merge_context(lead)` flattens standard fields + raw CSV
+  columns into one dict (populated standard field wins; raw columns
+  fill empty/unmapped ones); `render_template(text, ctx)` substitutes
+  `{{field}}` / `{{field|default}}` placeholders (case-insensitive,
+  inline pipe-default when empty, collapses the double-spaces an empty
+  placeholder leaves, preserves newlines).  No em-dash sanitiser on
+  this path — the copy is the user's own verbatim text.  Send path is
+  unchanged (it just reads `composed_subject`/`composed_body`), so
+  preview/sample rendering + approve-all all work as-is.  Schema:
+  `template_subject`/`template_body` on Create/Update/Response +
+  `campaign_to_dict`; a `_blank_to_none` validator nulls all-whitespace
+  fields so an empty textarea doesn't trip template mode, and a
+  model-validator requires `template_body` when mode is TEMPLATE.
+  Frontend: fourth "Template (no AI, you write it)" pill in
+  `CampaignCreate.jsx` reveals subject + body textareas with a
+  merge-field hint; payload only carries the copy in template mode;
+  client-side guard blocks an empty body.  Tests: 11 renderer unit
+  tests (`test_phase32_template_render.py`) + 1 compose test
+  (renders without calling Anthropic) + 1 research test (TEMPLATE
+  skips all research) + 3 frontend tests.  Tests: **backend 511
+  passing, frontend 166 passing**.
+
+- **Previously:** **"No research" campaign mode.**  Added a third
+  `ResearchMode.NONE = "none"` alongside FAST / DEEP.  Campaigns set to
+  this mode make **zero** external research calls (no Apollo / Hunter /
+  web): `research_lead_async` short-circuits when
+  `mode == ResearchMode.NONE`, writing `{"quality": "low", "skipped":
+  True}` and marking research DONE, then still enqueues `compose_lead`.
+  Compose runs as normal but falls into its existing generic
+  name+company-only prompt (`quality == "low"` branch), so the only API
+  spend is one Anthropic call per lead.  This is the "AI compose, no
+  research" path — the model still writes each email (no static
+  template / merge fields).  Migration `0009_research_mode_none.py`
+  does `ALTER TYPE research_mode ADD VALUE IF NOT EXISTS 'none'`
+  (PG 12+ allows this inside Alembic's txn since the value isn't used
+  in the same migration; downgrade is a documented no-op — Postgres
+  can't drop enum values).  Frontend: third "None (no research, AI
+  writes from name + company)" pill in the `CampaignCreate.jsx`
+  research-mode selector + an inline hint when selected.  1 new backend
+  test (`test_phase6_research_task.py` — asserts every provider mock is
+  un-called yet compose is enqueued) + 1 new frontend test
+  (`CampaignCreate.test.jsx`).  Tests: **backend 498 passing, frontend
+  163 passing**.
+
+- **Previously:** **Lifetime per-node idempotency across every
   action kind.**  New `_already_executed_ever(session, lead_id,
   node_id)` helper in `app/workers/sequencer.py` queries
   `lead_step_executions` for any SENT row matching the pair — no time
@@ -661,12 +714,13 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-22 — Lifetime per-node idempotency: once any
-node has produced a SENT execution row for a lead, the sequencer
-skip-and-advances any subsequent dispatch.  Covers every action
-kind including follow-up email.  Multi-touch must use separate nodes._
+_Last updated: 2026-05-26 — Added a fourth campaign ResearchMode
+"template": fully-templated, zero-API-call campaigns.  User authors
+template_subject/template_body with {{merge|default}} fields; compose
+renders per-lead instead of calling Anthropic.  (Earlier same day:
+"none" mode — skip research, still AI-compose.)_
 
-_Backend tests: **497 passing**.  Frontend tests: **162 passing**._
+_Backend tests: **511 passing**.  Frontend tests: **166 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

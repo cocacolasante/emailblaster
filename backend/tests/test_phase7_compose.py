@@ -12,6 +12,7 @@ from app.models import (
     CampaignStatus,
     ComposeStatus,
     Lead,
+    ResearchMode,
     StyleCorrection,
 )
 from app.workers import compose as compose_mod
@@ -85,6 +86,34 @@ def _reset_client():
 # --------------------------------------------------------------------------
 # Prompt selection
 # --------------------------------------------------------------------------
+
+
+async def test_template_mode_renders_without_calling_anthropic(db_session):
+    campaign = await _make_campaign(db_session)
+    campaign.research_mode = ResearchMode.TEMPLATE
+    campaign.template_subject = "Quick question about {{company}}"
+    campaign.template_body = "Hi {{first_name|there}},\n\nLove what {{company}} does in {{Industry}}."
+    await db_session.commit()
+
+    lead = await _make_lead(
+        db_session, campaign,
+        first_name="",  # exercise the inline default
+        company="Acme",
+        raw_csv_row={"Industry": "fintech"},
+    )
+
+    create_mock = AsyncMock()  # must NOT be called
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    create_mock.assert_not_called()
+    assert result["status"] == "done"
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.compose_status == ComposeStatus.DONE
+    assert refreshed.composed_subject == "Quick question about Acme"
+    assert refreshed.composed_body == "Hi there,\n\nLove what Acme does in fintech."
 
 
 async def test_low_quality_lead_uses_generic_prompt(db_session):

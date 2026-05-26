@@ -4,13 +4,20 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { listAccounts } from '../api/connectedAccounts.js';
 import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
-import { createCampaign, getPreview, getPreviewProgress } from '../api/campaigns.js';
+import { createCampaign, getCampaign, getPreview, getPreviewProgress } from '../api/campaigns.js';
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import ScheduleConfig from '../components/ScheduleConfig.jsx';
 import { EmbeddedSequenceBuilder } from './SequenceBuilder.jsx';
 
 const TONES = ['Professional', 'Friendly', 'Direct', 'Conversational', 'Formal'];
+
+const RESEARCH_MODES = [
+  { value: 'fast', label: 'Fast (web only, ~10s/lead)' },
+  { value: 'deep', label: 'Deep (+Apollo, ~45s/lead)' },
+  { value: 'none', label: 'None (no research, AI writes from name + company)' },
+  { value: 'template', label: 'Template (no AI, you write it)' },
+];
 
 const DEFAULT_FORM = {
   name: '',
@@ -19,6 +26,8 @@ const DEFAULT_FORM = {
   sender_name: '',
   sender_email: '',
   research_mode: 'fast',
+  template_subject: '',
+  template_body: '',
   sample_count: 5,
   connected_account_id: '',
   linkedin_account_id: '',
@@ -150,24 +159,61 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
 
           <div>
             <span className="block text-sm font-medium text-slate-700 mb-2">Research mode</span>
-            <div role="radiogroup" className="flex gap-2">
-              {['fast', 'deep'].map((mode) => (
+            <div role="radiogroup" className="flex flex-wrap gap-2">
+              {RESEARCH_MODES.map(({ value, label }) => (
                 <button
-                  key={mode}
+                  key={value}
                   type="button"
                   role="radio"
-                  aria-checked={form.research_mode === mode}
-                  onClick={() => update('research_mode', mode)}
+                  aria-checked={form.research_mode === value}
+                  onClick={() => update('research_mode', value)}
                   className={`px-4 py-2 rounded-full text-sm border font-medium transition-colors ${
-                    form.research_mode === mode
+                    form.research_mode === value
                       ? 'bg-blue-600 text-white border-blue-600'
                       : 'border-slate-300 text-slate-600 hover:border-blue-400 bg-white'
                   }`}
                 >
-                  {mode === 'fast' ? 'Fast (web only, ~10s/lead)' : 'Deep (+Apollo, ~45s/lead)'}
+                  {label}
                 </button>
               ))}
             </div>
+            {form.research_mode === 'none' && (
+              <p className="mt-2 text-xs text-slate-500">
+                Skips all lead research. The AI still writes each email from
+                the lead's name and company only (one Anthropic call per lead).
+              </p>
+            )}
+            {form.research_mode === 'template' && (
+              <div className="mt-4 space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                <p className="text-xs text-slate-500 m-0">
+                  No AI is used. The exact text below is sent to every lead with
+                  merge fields filled in. Use <code>{'{{first_name}}'}</code>,{' '}
+                  <code>{'{{company}}'}</code>, any CSV column header, or an inline
+                  fallback like <code>{'{{first_name|there}}'}</code>.
+                </p>
+                <div>
+                  <label htmlFor="template-subject" className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
+                  <input
+                    id="template-subject"
+                    value={form.template_subject}
+                    onChange={(e) => update('template_subject', e.target.value)}
+                    placeholder="Quick question about {{company}}"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="template-body" className="block text-sm font-medium text-slate-700 mb-1">Body</label>
+                  <textarea
+                    id="template-body"
+                    rows={8}
+                    value={form.template_body}
+                    onChange={(e) => update('template_body', e.target.value)}
+                    placeholder={'Hi {{first_name|there}},\n\nI noticed {{company}} is ...\n\nWould you be open to a quick chat?\n\n- ' + (form.sender_name || 'Your name')}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-[inherit]"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -390,8 +436,13 @@ export default function CampaignCreate() {
   });
 
   function buildPayload() {
+    const isTemplate = form.research_mode === 'template';
     return {
       ...form,
+      // Only carry template copy when the campaign is actually templated, so
+      // switching modes after typing doesn't leave stale text on the record.
+      template_subject: isTemplate ? form.template_subject || null : null,
+      template_body: isTemplate ? form.template_body || null : null,
       connected_account_id: form.connected_account_id || null,
       linkedin_account_id: form.linkedin_account_id || null,
       max_per_hour: form.max_per_hour || null,
@@ -409,6 +460,10 @@ export default function CampaignCreate() {
 
   function handleStep1Submit() {
     setError(null);
+    if (form.research_mode === 'template' && !form.template_body.trim()) {
+      setError('Template body is required when using template mode.');
+      return;
+    }
     createMutation.mutate(buildPayload());
   }
 

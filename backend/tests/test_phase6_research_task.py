@@ -194,6 +194,73 @@ async def test_partial_failure_in_one_service_still_completes(db_session):
     assert refreshed.research_data["person_news"] == []
 
 
+async def test_none_mode_skips_all_research_but_enqueues_compose(db_session):
+    """'No research' mode makes zero external calls yet still composes."""
+    campaign = await _make_campaign(db_session, mode=ResearchMode.NONE)
+    lead = await _make_lead(db_session, campaign)
+
+    web_mock = AsyncMock(return_value={})
+    site_mock = AsyncMock(return_value={})
+    hunter_mock = AsyncMock(return_value={"deliverable": True, "score": 0})
+    apollo_mock = AsyncMock(return_value={})
+
+    with patch("app.workers.research.web_research.research_person_web", web_mock), \
+         patch("app.workers.research.site_scraper.scrape_company_site", site_mock), \
+         patch("app.workers.research.hunter.verify_email_hunter", hunter_mock), \
+         patch("app.workers.research.apollo.enrich_lead_apollo", apollo_mock), \
+         patch("app.workers.research.compose_lead.delay") as enqueue:
+
+        result = await research_lead_async(str(lead.id))
+
+    # No research provider is touched at all.
+    web_mock.assert_not_called()
+    site_mock.assert_not_called()
+    hunter_mock.assert_not_called()
+    apollo_mock.assert_not_called()
+    # Compose still runs (it uses the generic name+company-only prompt).
+    enqueue.assert_called_once_with(str(lead.id))
+
+    assert result["status"] == "done"
+    assert result["quality"] == "low"
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.research_status == ResearchStatus.DONE
+    assert refreshed.research_data["quality"] == "low"
+    assert refreshed.research_data["skipped"] is True
+
+
+async def test_template_mode_skips_all_research_but_enqueues_compose(db_session):
+    """'Template' mode (no AI) also makes zero research calls; compose then
+    renders the campaign template instead of calling Anthropic."""
+    campaign = await _make_campaign(db_session, mode=ResearchMode.TEMPLATE)
+    lead = await _make_lead(db_session, campaign)
+
+    web_mock = AsyncMock(return_value={})
+    site_mock = AsyncMock(return_value={})
+    hunter_mock = AsyncMock(return_value={"deliverable": True, "score": 0})
+    apollo_mock = AsyncMock(return_value={})
+
+    with patch("app.workers.research.web_research.research_person_web", web_mock), \
+         patch("app.workers.research.site_scraper.scrape_company_site", site_mock), \
+         patch("app.workers.research.hunter.verify_email_hunter", hunter_mock), \
+         patch("app.workers.research.apollo.enrich_lead_apollo", apollo_mock), \
+         patch("app.workers.research.compose_lead.delay") as enqueue:
+
+        result = await research_lead_async(str(lead.id))
+
+    web_mock.assert_not_called()
+    site_mock.assert_not_called()
+    hunter_mock.assert_not_called()
+    apollo_mock.assert_not_called()
+    enqueue.assert_called_once_with(str(lead.id))
+    assert result["status"] == "done"
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.research_status == ResearchStatus.DONE
+
+
 async def test_missing_lead_returns_not_found(db_session):
     with patch("app.workers.research.compose_lead.delay") as enqueue:
         result = await research_lead_async(str(uuid.uuid4()))

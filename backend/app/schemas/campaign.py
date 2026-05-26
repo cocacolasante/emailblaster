@@ -80,6 +80,14 @@ def _validate_days(v: list[int] | None) -> list[int] | None:
     return v
 
 
+def _blank_to_none(v: str | None) -> str | None:
+    """Treat an all-whitespace template field as unset so an empty textarea
+    doesn't accidentally put the campaign into template mode."""
+    if v is None:
+        return None
+    return v if v.strip() else None
+
+
 # --------------------------------------------------------------------------
 # Create / Update
 # --------------------------------------------------------------------------
@@ -92,6 +100,8 @@ class CampaignCreate(BaseModel):
     sender_name: str = Field(min_length=1)
     sender_email: str = Field(min_length=1)
     research_mode: ResearchMode = ResearchMode.FAST
+    template_subject: str | None = None
+    template_body: str | None = None
     sample_count: int = Field(default=5, ge=1)
     connected_account_id: uuid.UUID | None = None
     linkedin_account_id: uuid.UUID | None = None
@@ -104,11 +114,18 @@ class CampaignCreate(BaseModel):
     min_delay_seconds: int = Field(default=60, ge=0)
 
     _v_days = field_validator("schedule_days")(_validate_days)
+    _v_tmpl = field_validator("template_subject", "template_body")(_blank_to_none)
 
     @model_validator(mode="after")
     def _check_time_order(self) -> "CampaignCreate":
         if self.schedule_time_start >= self.schedule_time_end:
             raise ValueError("schedule_time_start must be before schedule_time_end")
+        return self
+
+    @model_validator(mode="after")
+    def _check_template(self) -> "CampaignCreate":
+        if self.research_mode == ResearchMode.TEMPLATE and not self.template_body:
+            raise ValueError("template_body is required when research_mode is 'template'")
         return self
 
 
@@ -119,6 +136,8 @@ class CampaignUpdate(BaseModel):
     sender_name: str | None = Field(default=None, min_length=1)
     sender_email: str | None = Field(default=None, min_length=1)
     research_mode: ResearchMode | None = None
+    template_subject: str | None = None
+    template_body: str | None = None
     sample_count: int | None = Field(default=None, ge=1)
     connected_account_id: uuid.UUID | None = None
     linkedin_account_id: uuid.UUID | None = None
@@ -131,6 +150,7 @@ class CampaignUpdate(BaseModel):
     min_delay_seconds: int | None = Field(default=None, ge=0)
 
     _v_days = field_validator("schedule_days")(_validate_days)
+    _v_tmpl = field_validator("template_subject", "template_body")(_blank_to_none)
 
     @model_validator(mode="after")
     def _check_time_order(self) -> "CampaignUpdate":
@@ -230,6 +250,8 @@ class CampaignResponse(BaseModel):
     sender_name: str
     sender_email: str
     research_mode: ResearchMode
+    template_subject: str | None
+    template_body: str | None
     sample_count: int
     connected_account_id: uuid.UUID | None
     connected_account: ConnectedAccountInfo | None
@@ -260,6 +282,8 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "sender_name": c.sender_name,
         "sender_email": c.sender_email,
         "research_mode": c.research_mode,
+        "template_subject": c.template_subject,
+        "template_body": c.template_body,
         "sample_count": c.sample_count,
         "connected_account_id": c.connected_account_id,
         "linkedin_account_id": c.linkedin_account_id,

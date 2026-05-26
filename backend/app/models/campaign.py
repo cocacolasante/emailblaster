@@ -23,6 +23,14 @@ if TYPE_CHECKING:
 class ResearchMode(str, enum.Enum):
     FAST = "fast"
     DEEP = "deep"
+    # No external research at all (no Apollo/Hunter/web calls).  The compose
+    # worker still runs but falls into its generic name+company-only prompt,
+    # so the only API spend is one Anthropic call per lead.
+    NONE = "none"
+    # No research AND no AI.  The compose worker renders the campaign's
+    # `template_subject` / `template_body` with per-lead merge fields
+    # (`{{first_name}}`, `{{Company|there}}`, etc.).  Zero external API calls.
+    TEMPLATE = "template"
 
 
 class CampaignStatus(str, enum.Enum):
@@ -49,6 +57,10 @@ class Campaign(Base):
         default=ResearchMode.FAST,
         server_default=ResearchMode.FAST.value,
     )
+    # Only used when research_mode == TEMPLATE.  Authored by the user; the
+    # compose worker renders these per-lead instead of calling Anthropic.
+    template_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     connected_account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
