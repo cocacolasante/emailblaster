@@ -15,8 +15,16 @@ vi.mock('../api/connectedAccounts.js', () => ({
 vi.mock('../api/linkedinAccounts.js', () => ({
   listLinkedInAccounts: vi.fn().mockResolvedValue([]),
 }));
+// Spy on navigation so we can assert the auto-launch redirect. MemoryRouter
+// + useSearchParams keep their real implementations via importOriginal.
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
 vi.mock('../api/campaigns.js', () => ({
   createCampaign: vi.fn(),
+  getCampaign: vi.fn(),
   getPreview: vi.fn(),
   getPreviewProgress: vi.fn(),
   uploadLeadsPreview: vi.fn(),
@@ -67,11 +75,13 @@ const sampleAccount = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockNavigate.mockReset();
   accountsApi.listAccounts.mockResolvedValue([]);
   campaignsApi.getPreview.mockResolvedValue({ samples: [], all_ready: false });
   campaignsApi.getPreviewProgress.mockResolvedValue({
     total_leads: 0, researched: 0, composed: 0, sent: 0, failed: 0,
   });
+  campaignsApi.getCampaign.mockResolvedValue({ research_mode: 'fast' });
 });
 
 
@@ -219,8 +229,7 @@ describe('Submitting step 1', () => {
 
 
 describe('Step 4 — progress polling', () => {
-  it('renders progress UI and shows composed/researched counts', async () => {
-    const user = userEvent.setup();
+  async function driveToStep4(user) {
     campaignsApi.createCampaign.mockResolvedValue({ id: 'c1' });
     campaignsApi.uploadLeadsPreview.mockResolvedValue({
       columns: ['Email'], preview_rows: [{ Email: 'a@x.com' }],
@@ -228,9 +237,6 @@ describe('Step 4 — progress polling', () => {
     });
     campaignsApi.confirmLeadsUpload.mockResolvedValue({
       total: 1, suppressed: 0, duplicates_removed: 0, samples_selected: 1,
-    });
-    campaignsApi.getPreviewProgress.mockResolvedValue({
-      total_leads: 10, researched: 4, composed: 2, sent: 0, failed: 0,
     });
 
     renderPage();
@@ -254,11 +260,74 @@ describe('Step 4 — progress polling', () => {
 
     // Step 4: progress
     await screen.findByTestId('step3');
-    await waitFor(() => {
-      expect(screen.getByText(/2 of 10 composed/i)).toBeInTheDocument();
+  }
+
+  it('renders progress UI and shows composed/researched counts', async () => {
+    const user = userEvent.setup();
+    campaignsApi.getCampaign.mockResolvedValue({ research_mode: 'fast' });
+    campaignsApi.getPreviewProgress.mockResolvedValue({
+      total_leads: 10, researched: 4, composed: 2, sent: 0, failed: 0,
     });
+
+    await driveToStep4(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 of 10 composed · 4 researched/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/researching and composing emails/i)).toBeInTheDocument();
     // Bar width reflects composed/total
-    const bar = screen.getByTestId('progress-bar');
-    expect(bar.style.width).toBe('20%');
+    expect(screen.getByTestId('progress-bar').style.width).toBe('20%');
+  });
+
+  it('skips the preview step and navigates to detail when auto-launched', async () => {
+    const user = userEvent.setup();
+    campaignsApi.createCampaign.mockResolvedValue({ id: 'c1' });
+    campaignsApi.uploadLeadsPreview.mockResolvedValue({
+      columns: ['Email'], preview_rows: [{ Email: 'a@x.com' }],
+      suggested_mapping: { Email: 'email' }, total_rows: 1,
+    });
+    // Non-email start node → backend launched straight into running.
+    campaignsApi.confirmLeadsUpload.mockResolvedValue({
+      total: 1, suppressed: 0, duplicates_removed: 0, samples_selected: 0,
+      auto_launched: true,
+    });
+
+    renderPage();
+    await screen.findByText(/campaign details/i);
+    await user.type(screen.getByLabelText(/^name$/i), 'x');
+    await user.type(screen.getByLabelText(/^goal$/i), 'g');
+    await user.type(screen.getByLabelText(/sender name/i), 's');
+    await user.type(screen.getByLabelText(/sender email/i), 's@x.com');
+    fireEvent.click(screen.getByTestId('step1-submit'));
+
+    await screen.findByTestId('embedded-sequence-builder');
+    fireEvent.click(screen.getByTestId('sequence-skip'));
+
+    await screen.findByTestId('lead-upload');
+    const file = new File(['Email\na@x.com\n'], 'leads.csv', { type: 'text/csv' });
+    fireEvent.change(screen.getByTestId('file-input'), { target: { files: [file] } });
+    await screen.findByTestId('mapping-table');
+    fireEvent.click(screen.getByRole('button', { name: /import 1 leads/i }));
+
+    // Navigates straight to the campaign detail page; no step-4 progress.
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/campaigns/c1'));
+    expect(screen.queryByTestId('step3')).not.toBeInTheDocument();
+  });
+
+  it('shows template-specific wording when the campaign is templated', async () => {
+    const user = userEvent.setup();
+    campaignsApi.getCampaign.mockResolvedValue({ research_mode: 'template' });
+    campaignsApi.getPreviewProgress.mockResolvedValue({
+      total_leads: 10, researched: 10, composed: 3, sent: 0, failed: 0,
+    });
+
+    await driveToStep4(user);
+
+    await waitFor(() => {
+      expect(screen.getByText(/rendering your templated emails/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/3 of 10 rendered/i)).toBeInTheDocument();
+    // No "researched" count — there's no research in template mode.
+    expect(screen.queryByText(/researched/i)).not.toBeInTheDocument();
   });
 });

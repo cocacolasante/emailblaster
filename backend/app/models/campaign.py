@@ -85,6 +85,13 @@ class Campaign(Base):
         default=CampaignStatus.DRAFT,
         server_default=CampaignStatus.DRAFT.value,
     )
+    # When set (and status is PAUSED), the campaign was auto-paused because it
+    # hit the LinkedIn daily cap with no email work left.  The sequencer beat
+    # auto-resumes it (status -> RUNNING, this -> NULL) once this time passes
+    # (the cap window has reset).  NULL for manual pauses, so they stay paused.
+    auto_paused_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -61,3 +61,6 @@ class ConfirmUploadResponse(BaseModel):
     suppressed: int
     duplicates_removed: int
     samples_selected: int
+    # True when the campaign launched straight into RUNNING (its start node
+    # isn't an email, so there are no sample emails to preview/approve).
+    auto_launched: bool = False

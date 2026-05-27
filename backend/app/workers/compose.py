@@ -31,6 +31,7 @@ from app.models import (
     ResearchMode,
     StyleCorrection,
 )
+from app.services.sequence_service import campaign_sends_legacy_first_email
 from app.services.template_render import build_merge_context, render_template
 from app.services.web_research import _extract_text, _parse_json
 from app.workers.celery_app import celery_app
@@ -312,6 +313,18 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             campaign = await session.get(Campaign, lead.campaign_id)
             if campaign is None:
                 return {"status": "not_found"}
+
+            # If this campaign's first touch isn't the legacy composed email
+            # (the sequence starts with a LinkedIn / wait / etc. node), there
+            # is no first email to write.  Skip the AI call and the send
+            # entirely — the sequencer drives the first action.  Research
+            # already ran, so AI-composed LinkedIn DMs stay personalized.
+            if not await campaign_sends_legacy_first_email(session, campaign.id):
+                lead.composed_subject = None
+                lead.composed_body = None
+                lead.compose_status = ComposeStatus.DONE
+                await session.commit()
+                return {"status": "skipped_non_email_entry"}
 
             sc_rows = (await session.execute(
                 select(StyleCorrection.corrected_body)

@@ -492,15 +492,23 @@ export default function CampaignCreate() {
     setStep(3);  // → Upload leads
   }
 
-  function onUploadComplete() {
-    setStep(4);  // → Research
+  function onUploadComplete(result) {
+    // A non-email start node has no sample emails to preview — the campaign
+    // already launched into RUNNING, so jump straight to its detail page.
+    if (result?.auto_launched) {
+      navigate(`/campaigns/${campaignId}`);
+      return;
+    }
+    setStep(4);  // → Research / preview
   }
 
   function onResearchComplete() {
     if (campaignId) navigate(`/campaigns/${campaignId}/preview`);
   }
 
-  const STEP_LABELS = ['Details', 'Sequence', 'Upload leads', 'Research'];
+  // Last step covers research+compose, AI-compose-only, or template-render
+  // depending on the campaign's mode, so keep the chip label mode-agnostic.
+  const STEP_LABELS = ['Details', 'Sequence', 'Upload leads', 'Prepare'];
 
   // The Sequence step needs the full viewport for the canvas; every other
   // step uses the standard narrow wizard width.

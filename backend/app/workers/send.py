@@ -238,6 +238,12 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             if lead.send_status == SendStatus.SENT:
                 return {"status": "already_sent"}
 
+            # Defensive: a campaign whose first step isn't an email has no
+            # composed body (compose skipped it).  Never send an empty email
+            # even if a stray dispatch reaches here.
+            if not (lead.composed_body or "").strip():
+                return {"status": "skipped_no_body"}
+
             gates = await check_send_gates(session, lead, campaign, redis_client)
             if not gates.get("ok"):
                 reason = gates["reason"]

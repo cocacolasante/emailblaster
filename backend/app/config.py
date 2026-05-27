@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # so a runaway sequence can't flood a single account with actions.
     LINKEDIN_DAILY_ACTION_CAP: int = 20         # per-account TOTAL actions / day
     LINKEDIN_MIN_ACTION_DELAY_SECONDS: int = 30 # min gap between actions
+    # Sequencer dispatch staggering: the scheduler releases at most one
+    # LinkedIn step per account per this many seconds, parking the rest until
+    # their slot opens.  This spaces a campaign's leads out (one lead, wait,
+    # next lead) instead of dispatching the whole batch at once.  Set to 0 to
+    # disable staggering (fall back to the per-action min-delay floor only).
+    LINKEDIN_STAGGER_SECONDS: int = 120
     LINKEDIN_POLL_INTERVAL_MINUTES: int = 30    # inbox poller cadence
     # Per-kind subcaps.  LinkedIn's real enforcement: ~100 connects/week for
     # established accounts (~14/day).  20/day is conservative and safe.

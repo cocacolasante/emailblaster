@@ -133,6 +133,25 @@ describe('CampaignDetail', () => {
     expect(screen.queryByTestId('pause-resume-button')).not.toBeInTheDocument();
   });
 
+  it('shows an auto-paused note when paused at the LinkedIn cap', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, status: 'paused',
+      auto_paused_until: '2026-05-27T13:00:00Z',
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    expect(screen.getByTestId('auto-paused-note')).toHaveTextContent(/auto-paused.*linkedin daily cap/i);
+  });
+
+  it('no auto-paused note for a manual pause', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, status: 'paused', auto_paused_until: null,
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    expect(screen.queryByTestId('auto-paused-note')).not.toBeInTheDocument();
+  });
+
   it('Switching to Leads tab renders the LeadTable', async () => {
     renderPage();
     await screen.findByTestId('overview-tab');

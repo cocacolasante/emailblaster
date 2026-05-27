@@ -963,3 +963,347 @@ async def test_linkedin_step_defers_when_campaign_paused(db_session, monkeypatch
     assert result["reason"] == "paused"
     assert "retry_at" not in result  # paused has no eta — recheck in 5 min
 
+
+
+# --------------------------------------------------------------------------
+# Dispatch staggering (one LinkedIn step per account per interval)
+# --------------------------------------------------------------------------
+
+
+async def _enroll_on_node(db_session, lead, node, *, when=None):
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=node.sequence_id,
+        current_node_id=node.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=when or _now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+    return state
+
+
+async def test_paused_campaign_is_frozen_in_place(db_session, monkeypatch):
+    """A paused campaign's leads are skipped entirely by the beat — no
+    dispatch, no staggering, next_run_at untouched (frozen where they are)."""
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE
+    )
+    lead = await _make_lead(db_session, campaign)
+    state = await _enroll_on_node(db_session, lead, li_node, when=_now() - timedelta(seconds=1))
+    orig_next = state.next_run_at
+
+    # Pause the campaign after enrollment.
+    campaign.status = CampaignStatus.PAUSED
+    await db_session.commit()
+
+    dispatched: list = []
+    monkeypatch.setattr(
+        sequencer.send_linkedin_step, "apply_async",
+        lambda *, args, **kw: dispatched.append(args),
+    )
+
+    counts = await sequencer._advance_sequences_async()
+
+    assert dispatched == []
+    assert counts["dispatched_linkedin"] == 0
+    assert counts["staggered_linkedin"] == 0
+
+    await db_session.refresh(state)
+    assert state.status == LeadSequenceStatus.ACTIVE      # not halted
+    assert state.current_node_id == li_node.id            # still on its node
+    assert state.next_run_at == orig_next                 # untouched / frozen
+
+
+# --------------------------------------------------------------------------
+# Auto-pause / auto-resume at the LinkedIn daily cap
+# --------------------------------------------------------------------------
+
+
+async def test_linkedin_cap_auto_pauses_when_no_email_downstream(db_session):
+    """Hitting the connect cap with no email node downstream auto-pauses the
+    campaign and stamps the cap-reset time on auto_paused_until."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # entry(email) -> connect ; the email is UPSTREAM, so nothing email is
+    # reachable downstream of the capped connect node.
+    _, _entry, connect_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT
+    )
+    lead = await _make_lead(db_session, campaign)
+    state = await _enroll_on_node(db_session, lead, connect_node)
+
+    result = {"status": "deferred", "reason": "connect_cap", "retry_in": 3600,
+              "error": "daily connect cap reached"}
+    await sequencer._record_execution_and_advance(lead.id, connect_node.id, result)
+
+    refreshed = await db_session.get(Campaign, campaign.id)
+    await db_session.refresh(refreshed)
+    assert refreshed.status == CampaignStatus.PAUSED
+    assert refreshed.auto_paused_until is not None
+    assert refreshed.auto_paused_until > _now()
+    # The lead is parked (not advanced past the connect node).
+    await db_session.refresh(state)
+    assert state.current_node_id == connect_node.id
+
+
+async def test_linkedin_cap_does_not_pause_when_email_downstream(db_session):
+    """If an email node is reachable downstream of the capped step, the
+    campaign keeps running (email isn't subject to the LinkedIn cap)."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # connect(entry) -> email(followup)
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db_session.add(seq)
+    await db_session.flush()
+    connect_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_CONNECT, config={}, is_entry=True,
+    )
+    email_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+        config={"subject_template": "s", "body_template": "b"}, is_entry=False,
+    )
+    db_session.add_all([connect_node, email_node])
+    await db_session.flush()
+    db_session.add(SequenceEdge(
+        sequence_id=seq.id, from_node_id=connect_node.id,
+        to_node_id=email_node.id, condition={"op": "always"},
+    ))
+    await db_session.commit()
+    lead = await _make_lead(db_session, campaign)
+    await _enroll_on_node(db_session, lead, connect_node)
+
+    result = {"status": "deferred", "reason": "connect_cap", "retry_in": 3600}
+    await sequencer._record_execution_and_advance(lead.id, connect_node.id, result)
+
+    refreshed = await db_session.get(Campaign, campaign.id)
+    await db_session.refresh(refreshed)
+    assert refreshed.status == CampaignStatus.RUNNING
+    assert refreshed.auto_paused_until is None
+
+
+async def test_auto_paused_campaign_resumes_when_window_passes(db_session, monkeypatch):
+    """The beat auto-resumes a cap-paused campaign once auto_paused_until
+    passes, and leaves manual pauses (auto_paused_until NULL) alone."""
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    auto = await _make_campaign(db_session)
+    auto.status = CampaignStatus.PAUSED
+    auto.auto_paused_until = _now() - timedelta(seconds=1)  # window already passed
+    manual = await _make_campaign(db_session)
+    manual.status = CampaignStatus.PAUSED
+    manual.auto_paused_until = None  # manual pause
+    future = await _make_campaign(db_session)
+    future.status = CampaignStatus.PAUSED
+    future.auto_paused_until = _now() + timedelta(hours=2)  # not yet
+    await db_session.commit()
+
+    await sequencer._advance_sequences_async()
+
+    for c, expected in ((auto, CampaignStatus.RUNNING),
+                        (manual, CampaignStatus.PAUSED),
+                        (future, CampaignStatus.PAUSED)):
+        await db_session.refresh(c)
+        assert c.status == expected, c.name
+    await db_session.refresh(auto)
+    assert auto.auto_paused_until is None  # cleared on resume
+
+
+async def test_linkedin_dispatch_is_staggered_per_account(db_session, monkeypatch):
+    """With 3 leads due on the same account, one scheduler tick dispatches
+    exactly ONE LinkedIn step and parks the other two until their slot
+    opens — instead of bursting all three at once."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LINKEDIN_STAGGER_SECONDS", 300)
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # follow_profile is a non-exempt kind, so it staggers (view_profile does not).
+    _, _entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE
+    )
+
+    states = []
+    for i in range(3):
+        lead = await _make_lead(
+            db_session, campaign, linkedin_url=f"https://www.linkedin.com/in/lead{i}/"
+        )
+        states.append(
+            await _enroll_on_node(db_session, lead, li_node, when=_now() - timedelta(seconds=1))
+        )
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sequencer.send_linkedin_step, "apply_async",
+        lambda *, args, **kw: dispatched.append((args[0], args[1])),
+    )
+
+    counts = await sequencer._advance_sequences_async()
+
+    assert len(dispatched) == 1
+    assert counts["dispatched_linkedin"] == 1
+    assert counts["staggered_linkedin"] == 2
+
+    # All three remain ACTIVE on the node — the two staggered ones are parked
+    # (future next_run_at), not halted or advanced.
+    for s in states:
+        await db_session.refresh(s)
+        assert s.status == LeadSequenceStatus.ACTIVE
+        assert s.current_node_id == li_node.id
+        assert s.next_run_at > _now()
+
+
+async def test_staggered_leads_get_distinct_spread_slots(db_session, monkeypatch):
+    """Parked (overflow) leads are spread across DISTINCT slots one interval
+    apart — not all piled on the same 'next slot' timestamp — so the schedule
+    reflects the true one-per-interval cadence."""
+    from app.config import settings
+
+    interval = 300
+    monkeypatch.setattr(settings, "LINKEDIN_STAGGER_SECONDS", interval)
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE
+    )
+
+    states = []
+    for i in range(5):
+        lead = await _make_lead(
+            db_session, campaign, linkedin_url=f"https://www.linkedin.com/in/spread{i}/"
+        )
+        states.append(
+            await _enroll_on_node(db_session, lead, li_node, when=_now() - timedelta(seconds=1))
+        )
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        sequencer.send_linkedin_step, "apply_async",
+        lambda *, args, **kw: dispatched.append(args[0]),
+    )
+
+    counts = await sequencer._advance_sequences_async()
+
+    assert len(dispatched) == 1
+    assert counts["staggered_linkedin"] == 4
+
+    # The 4 parked leads (everything except the dispatched one) must have
+    # DISTINCT next_run_at spaced exactly one interval apart.
+    parked_times = []
+    for s in states:
+        await db_session.refresh(s)
+        if str(s.lead_id) != dispatched[0]:
+            parked_times.append(s.next_run_at)
+    parked_times.sort()
+
+    assert len(set(parked_times)) == 4  # all distinct
+    gaps = [
+        (parked_times[i + 1] - parked_times[i]).total_seconds()
+        for i in range(len(parked_times) - 1)
+    ]
+    assert all(g == interval for g in gaps), gaps
+
+
+async def test_stagger_slots_distinct_across_ticks_no_pushback(db_session, monkeypatch):
+    """The high-water cursor persists across ticks, so a later tick's parked
+    lead doesn't collide with an earlier tick's slot — even though the beat
+    fires more often than the interval — and a parked lead still dispatches
+    when its slot arrives (no push-back)."""
+    import uuid as _uuid
+    from app.config import settings
+
+    interval = 120
+    monkeypatch.setattr(settings, "LINKEDIN_STAGGER_SECONDS", interval)
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    key = f"acct-{_uuid.uuid4()}"
+    t0 = 1_000_000.0
+    try:
+        # Tick 1 @ t0: first lead dispatches; next two park at distinct slots.
+        assert await sequencer._reserve_li_stagger_slot(key, t0) == 0.0
+        assert await sequencer._reserve_li_stagger_slot(key, t0) == t0 + interval
+        assert await sequencer._reserve_li_stagger_slot(key, t0) == t0 + 2 * interval
+
+        # Tick 2 @ t0+60 (beat faster than interval): slot not open, so the new
+        # lead parks AFTER the high-water (t0+240), NOT back at t0+120.
+        assert await sequencer._reserve_li_stagger_slot(key, t0 + 60) == t0 + 3 * interval
+
+        # @ t0+interval the lead parked at t0+interval is due → it dispatches
+        # (returns 0), proving re-queued leads aren't pushed back.
+        assert await sequencer._reserve_li_stagger_slot(key, t0 + interval) == 0.0
+    finally:
+        rc = sequencer._li_redis()
+        await rc.delete(f"li-stagger:{key}:last", f"li-stagger:{key}:hw")
+
+
+async def test_linkedin_dispatch_not_staggered_when_interval_zero(db_session, monkeypatch):
+    """LINKEDIN_STAGGER_SECONDS=0 disables staggering — all due leads dispatch
+    in the same tick (the per-action min-delay floor still applies in the
+    worker)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LINKEDIN_STAGGER_SECONDS", 0)
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE
+    )
+    for i in range(3):
+        lead = await _make_lead(
+            db_session, campaign, linkedin_url=f"https://www.linkedin.com/in/z{i}/"
+        )
+        await _enroll_on_node(db_session, lead, li_node, when=_now() - timedelta(seconds=1))
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sequencer.send_linkedin_step, "apply_async",
+        lambda *, args, **kw: dispatched.append((args[0], args[1])),
+    )
+
+    counts = await sequencer._advance_sequences_async()
+
+    assert len(dispatched) == 3
+    assert counts["dispatched_linkedin"] == 3
+    assert counts["staggered_linkedin"] == 0
+
+
+async def test_view_profile_is_exempt_from_staggering(db_session, monkeypatch):
+    """Profile views are low-risk reads — they don't count as throttled
+    actions, so the scheduler dispatches them all in one tick even with a
+    stagger interval set (unlike connect/follow/DM)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "LINKEDIN_STAGGER_SECONDS", 300)
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_VIEW_PROFILE
+    )
+    for i in range(3):
+        lead = await _make_lead(
+            db_session, campaign, linkedin_url=f"https://www.linkedin.com/in/v{i}/"
+        )
+        await _enroll_on_node(db_session, lead, li_node, when=_now() - timedelta(seconds=1))
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sequencer.send_linkedin_step, "apply_async",
+        lambda *, args, **kw: dispatched.append((args[0], args[1])),
+    )
+
+    counts = await sequencer._advance_sequences_async()
+
+    # All three views go out in this tick; none are staggered.
+    assert len(dispatched) == 3
+    assert counts["dispatched_linkedin"] == 3
+    assert counts["staggered_linkedin"] == 0

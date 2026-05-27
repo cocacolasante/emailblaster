@@ -322,6 +322,14 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
         />
       </div>
 
+      {node.data.isEntry && node.data.kind !== 'email' && (
+        <div className="p-3 bg-blue-50 rounded text-xs text-blue-700">
+          This is the start node — the sequence begins here. No standalone
+          first email is sent; the campaign launches straight into running.
+          Add an email node downstream if you want to email these leads.
+        </div>
+      )}
+
       {node.data.kind === 'email' && (
         <>
           {node.data.isEntry ? (

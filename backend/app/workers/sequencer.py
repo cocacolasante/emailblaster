@@ -34,6 +34,7 @@ import redis.asyncio as aioredis
 from app.config import settings
 from app.models import (
     Campaign,
+    CampaignStatus,
     EmailEvent,
     EmailEventType,
     Lead,
@@ -76,6 +77,11 @@ ADVANCE_BATCH_SIZE = 200
 # (account challenge, rate-limit cooldown, restriction) is resolved.
 # Anything NOT in this set is permanent: the cursor advances like a sent step.
 TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited"}
+# LinkedIn cap deferral reasons that auto-pause a campaign when no email work
+# is reachable downstream (nothing useful can run until the cap window resets).
+# ``daily_cap`` is also an email (Brevo) gate reason, so callers must ALSO
+# check the node is a LinkedIn kind before acting on it.
+_LI_CAP_PAUSE_REASONS = {"daily_cap", "connect_cap", "dm_cap"}
 # How long to wait before retrying a transient skip. 5 min is short enough
 # to be responsive after a user fixes their account, long enough not to
 # spin every 60s while they're still working on it.
@@ -121,6 +127,95 @@ def _li_redis() -> aioredis.Redis:
     if _LI_REDIS_CLIENT is None:
         _LI_REDIS_CLIENT = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
     return _LI_REDIS_CLIENT
+
+
+# Lua: reserve the next staggered dispatch slot for a LinkedIn account.
+# Returns "0" when the slot is open now (and records this instant as the
+# account's last dispatch), otherwise the epoch-seconds timestamp at which to
+# park this lead.  Two keys keep the schedule clean across ticks:
+#   KEYS[1] last-dispatch — only advances on an actual dispatch.  A lead is
+#           dispatch-eligible when now >= last + interval, so a previously
+#           parked lead fires when its slot arrives (no push-back).
+#   KEYS[2] high-water — the furthest slot handed out so far.  New parks go to
+#           high_water + interval, so leads parked across DIFFERENT ticks get
+#           DISTINCT slots (the beat runs more often than the interval, so a
+#           naive "stored + interval" piles every non-dispatch tick's leads
+#           onto the same timestamp).
+# Server-side + atomic so two overlapping ticks can't both claim the slot.
+_LI_STAGGER_LUA = """
+local last = tonumber(redis.call('GET', KEYS[1]))
+local hw = tonumber(redis.call('GET', KEYS[2]))
+local now = tonumber(ARGV[1])
+local interval = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+if last == nil or now >= last + interval then
+  redis.call('SET', KEYS[1], now, 'EX', ttl)
+  if hw == nil or hw < now then
+    redis.call('SET', KEYS[2], now, 'EX', ttl)
+  end
+  return '0'
+else
+  local base = now
+  if hw ~= nil and hw > base then base = hw end
+  local slot = base + interval
+  redis.call('SET', KEYS[2], slot, 'EX', ttl)
+  return tostring(slot)
+end
+"""
+
+
+async def _reserve_li_stagger_slot(account_key: str, now_ts: float) -> float:
+    """Per-account dispatch spacing for LinkedIn steps.
+
+    Returns 0.0 when the account's slot is open right now (and atomically
+    claims it), otherwise the epoch-seconds timestamp to park the lead until.
+    Releases at most one dispatch per ``LINKEDIN_STAGGER_SECONDS`` per account
+    and hands each parked lead a distinct slot (one interval apart), so the
+    schedule reflects the true one-per-interval cadence even across the many
+    beat ticks that fall within a single interval.
+    """
+    interval = settings.LINKEDIN_STAGGER_SECONDS
+    if interval <= 0:
+        return 0.0  # staggering disabled
+    client = _li_redis()
+    last_key = f"li-stagger:{account_key}:last"
+    hw_key = f"li-stagger:{account_key}:hw"
+    # TTL must comfortably outlast a full queue's worth of future slots; the
+    # high-water key is refreshed on every park, so it only expires once the
+    # account goes idle (at which point a stale value is harmless).
+    ttl = 86400
+    res = await client.eval(
+        _LI_STAGGER_LUA, 2, last_key, hw_key,
+        str(now_ts), str(interval), str(ttl),
+    )
+    try:
+        return float(res)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def _li_stagger_key(
+    session: AsyncSession,
+    state: "LeadSequenceState",
+    cache: dict[uuid.UUID, str],
+) -> str:
+    """Resolve the per-account key a lead's LinkedIn steps stagger against.
+
+    Keyed on the campaign's bound LinkedIn account (rate limits are
+    per-account), falling back to the campaign id when no account is set so
+    staggering still applies.  ``cache`` memoises campaign → key within a
+    single tick to avoid refetching the campaign per lead.
+    """
+    lead = await session.get(Lead, state.lead_id)
+    if lead is None:
+        return str(state.lead_id)
+    cid = lead.campaign_id
+    if cid in cache:
+        return cache[cid]
+    campaign = await session.get(Campaign, cid)
+    key = str((campaign and campaign.linkedin_account_id) or cid)
+    cache[cid] = key
+    return key
 
 
 # Lua script: check every rate-limit gate AND claim the slot atomically.
@@ -202,15 +297,18 @@ return {1, '', 0}
 """
 
 
-# Kinds that don't count against ``LINKEDIN_DAILY_ACTION_CAP``.  Views
-# are read-only and don't move LinkedIn's bot scorer at human-scale
-# volumes; counting them halves throughput on a typical
-# ``view_profile → connect`` sequence for no risk reduction.  Other
-# warm-ups (follow_profile, react_to_post) DO still count because they
-# generate visible notifications/feed activity that LinkedIn polices
-# more closely.  Min-delay still applies to keep us from burst-viewing
-# 100 profiles in a minute (which IS detectable).
-_DAILY_CAP_EXEMPT_KINDS = frozenset({
+# Low-risk read kinds that DON'T count as throttled LinkedIn "actions":
+# exempt from BOTH the daily total cap AND the dispatch staggering.  A
+# profile view is passive (it only surfaces in "who viewed your profile")
+# and doesn't move LinkedIn's bot scorer at human-scale volumes, so making
+# it wait behind the per-account stagger slot or count against the daily
+# cap just slows a ``view_profile → connect`` warm-up for no risk
+# reduction.  Other warm-ups (follow_profile, react_to_post) DO still
+# count — they generate visible notifications/feed activity LinkedIn
+# polices more closely.  The per-action min-delay still applies even to
+# views, as an anti-burst floor (viewing 100 profiles in a minute IS
+# detectable).
+_UNCOUNTED_ACTION_KINDS = frozenset({
     SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
 })
 
@@ -231,9 +329,9 @@ async def _li_rate_acquire(
     client = _li_redis()
     aid = str(account.id)
     last_key = f"li-rate:{aid}:last"
-    # Exempt low-risk reads from the daily-total cap (see _DAILY_CAP_EXEMPT_KINDS).
+    # Exempt low-risk reads from the daily-total cap (see _UNCOUNTED_ACTION_KINDS).
     # Empty key = Lua skips the daily-cap GET, the >= check, and the INCR.
-    day_key = "" if kind in _DAILY_CAP_EXEMPT_KINDS else f"li-rate:{aid}:day"
+    day_key = "" if kind in _UNCOUNTED_ACTION_KINDS else f"li-rate:{aid}:day"
 
     sub_key = ""
     sub_cap = 0
@@ -1070,6 +1168,37 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
         await engine.dispose()
 
 
+async def _has_downstream_email(session: AsyncSession, node: SequenceNode) -> bool:
+    """True if a live EMAIL node is reachable downstream from ``node`` via the
+    sequence's edges.  Used to decide whether hitting the LinkedIn cap should
+    pause the campaign: if email work is still reachable (email isn't subject
+    to the LinkedIn cap), keep running; otherwise nothing can progress until
+    the cap resets, so pause.
+    """
+    edges = (await session.execute(
+        select(SequenceEdge).where(SequenceEdge.sequence_id == node.sequence_id)
+    )).scalars().all()
+    adj: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for e in edges:
+        if e.to_node_id is not None:
+            adj.setdefault(e.from_node_id, []).append(e.to_node_id)
+
+    seen: set[uuid.UUID] = {node.id}
+    stack = list(adj.get(node.id, []))
+    while stack:
+        nid = stack.pop()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        nxt = await session.get(SequenceNode, nid)
+        if nxt is None or nxt.deleted_at is not None:
+            continue
+        if nxt.kind == SequenceNodeKind.EMAIL:
+            return True
+        stack.extend(adj.get(nid, []))
+    return False
+
+
 async def _record_execution_and_advance(
     lead_id: uuid.UUID, node_id: uuid.UUID, result: dict[str, Any]
 ) -> None:
@@ -1157,6 +1286,38 @@ async def _record_execution_and_advance(
                             lead_id, node_id, result.get("reason"),
                             state.next_run_at.isoformat() if state.next_run_at else "?",
                         )
+
+                        # Auto-pause: a LinkedIn step hit the daily cap and the
+                        # lead has no email node reachable downstream — nothing
+                        # useful can run until the cap window resets.  Pause the
+                        # campaign (the beat auto-resumes it at the reset time
+                        # stamped in auto_paused_until).  Gated on the node being
+                        # a LinkedIn kind because "daily_cap" is also a Brevo
+                        # (email) gate reason.
+                        reason = result.get("reason")
+                        retry_in = result.get("retry_in")
+                        if (
+                            node.kind in LI_KINDS
+                            and reason in _LI_CAP_PAUSE_REASONS
+                            and retry_in
+                            and not await _has_downstream_email(session, node)
+                        ):
+                            seq = await session.get(Sequence, node.sequence_id)
+                            campaign = (
+                                await session.get(Campaign, seq.campaign_id)
+                                if seq is not None else None
+                            )
+                            if campaign is not None and campaign.status == CampaignStatus.RUNNING:
+                                campaign.status = CampaignStatus.PAUSED
+                                campaign.auto_paused_until = _now() + timedelta(
+                                    seconds=int(retry_in)
+                                )
+                                logger.info(
+                                    "Auto-paused campaign %s at LinkedIn %s cap; "
+                                    "auto-resumes ~%s",
+                                    campaign.id, reason,
+                                    campaign.auto_paused_until.isoformat(),
+                                )
                     elif status in TRANSIENT_SKIP_STATUSES:
                         # Count prior skips for THIS visit only (since we
                         # entered the node). Re-enrollment resets
@@ -1216,26 +1377,53 @@ async def _advance_sequences_async() -> dict[str, int]:
         "advanced_entry_done": 0,
         "dispatched_email": 0,
         "dispatched_linkedin": 0,
+        "staggered_linkedin": 0,
         "halted_unsupported": 0,
     }
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             now = _now()
+            # Auto-resume campaigns that were auto-paused at the LinkedIn cap,
+            # now that their cap window has reset.  Manual pauses have
+            # auto_paused_until = NULL and are left alone.  Runs in this same
+            # transaction so the SELECT below picks up the just-resumed leads.
+            await session.execute(
+                update(Campaign)
+                .where(
+                    Campaign.status == CampaignStatus.PAUSED,
+                    Campaign.auto_paused_until.is_not(None),
+                    Campaign.auto_paused_until <= now,
+                )
+                .values(status=CampaignStatus.RUNNING, auto_paused_until=None)
+            )
+            # Only advance leads whose campaign is RUNNING.  A paused campaign
+            # freezes in place: its leads keep their current node + next_run_at
+            # untouched, so the beat doesn't churn them (and doesn't burn the
+            # account's stagger slots, which would otherwise starve running
+            # campaigns that share the LinkedIn account).  Draft/previewing/
+            # complete campaigns aren't driven by the sequencer either.
+            # ``of=LeadSequenceState`` scopes the row lock to the state rows so
+            # the join to campaigns/sequences doesn't lock those.
             rows = (await session.execute(
                 select(LeadSequenceState)
+                .join(Sequence, Sequence.id == LeadSequenceState.sequence_id)
+                .join(Campaign, Campaign.id == Sequence.campaign_id)
                 .where(
                     LeadSequenceState.status == LeadSequenceStatus.ACTIVE,
                     LeadSequenceState.next_run_at.is_not(None),
                     LeadSequenceState.next_run_at <= now,
                     LeadSequenceState.current_node_id.is_not(None),
+                    Campaign.status == CampaignStatus.RUNNING,
                 )
                 .order_by(LeadSequenceState.next_run_at.asc())
                 .limit(ADVANCE_BATCH_SIZE)
-                .with_for_update(skip_locked=True)
+                .with_for_update(skip_locked=True, of=LeadSequenceState)
             )).scalars().all()
 
             email_dispatch: list[tuple[str, str]] = []
             linkedin_dispatch: list[tuple[str, str]] = []
+            # Memoises campaign -> stagger key for this tick.
+            li_stagger_cache: dict[uuid.UUID, str] = {}
 
             for state in rows:
                 node = await session.get(SequenceNode, state.current_node_id)
@@ -1292,6 +1480,24 @@ async def _advance_sequences_async() -> dict[str, int]:
                         await _advance_cursor(session, state, node)
                         counts["reevaluated_parked"] = counts.get("reevaluated_parked", 0) + 1
                         continue
+                    # Stagger: release at most one LinkedIn step per account
+                    # per LINKEDIN_STAGGER_SECONDS so a campaign's leads go out
+                    # one at a time (lead, wait, next lead) rather than as a
+                    # burst.  When the slot isn't open yet, park this lead
+                    # until it is without dispatching.  Low-risk reads (profile
+                    # views) are exempt — they don't count as throttled actions,
+                    # so they fire promptly without consuming a stagger slot.
+                    if node.kind not in _UNCOUNTED_ACTION_KINDS:
+                        stagger_key = await _li_stagger_key(session, state, li_stagger_cache)
+                        slot = await _reserve_li_stagger_slot(stagger_key, now.timestamp())
+                        if slot > 0:
+                            # Slot not open — park until the distinct slot the
+                            # reservation handed back (one interval past the
+                            # account's high-water mark, so every waiting lead
+                            # gets its own timestamp instead of piling up).
+                            state.next_run_at = datetime.fromtimestamp(slot, tz=timezone.utc)
+                            counts["staggered_linkedin"] += 1
+                            continue
                     linkedin_dispatch.append((str(state.lead_id), str(node.id)))
                     # Push next_run_at out so a slow handler doesn't get
                     # double-dispatched on the next tick.
@@ -1330,6 +1536,8 @@ async def _advance_sequences_async() -> dict[str, int]:
 
 @celery_app.task(name="sequencer.advance_sequences")
 def advance_sequences() -> dict[str, int]:
+    global _LI_REDIS_CLIENT
+    _LI_REDIS_CLIENT = None  # fresh client bound to this asyncio.run loop
     return asyncio.run(_advance_sequences_async())
 
 

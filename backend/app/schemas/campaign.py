@@ -266,6 +266,9 @@ class CampaignResponse(BaseModel):
     max_per_day: int | None
     min_delay_seconds: int
     status: CampaignStatus
+    # Set when the campaign was auto-paused at the LinkedIn cap; the time it
+    # will auto-resume.  NULL for manual pauses / running campaigns.
+    auto_paused_until: datetime | None
     created_at: datetime
     updated_at: datetime
     lead_counts: LeadCounts
@@ -295,6 +298,7 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "max_per_day": c.max_per_day,
         "min_delay_seconds": c.min_delay_seconds,
         "status": c.status,
+        "auto_paused_until": c.auto_paused_until,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
     }

@@ -13,6 +13,9 @@ from app.models import (
     ComposeStatus,
     Lead,
     ResearchMode,
+    Sequence,
+    SequenceNode,
+    SequenceNodeKind,
     StyleCorrection,
 )
 from app.workers import compose as compose_mod
@@ -86,6 +89,39 @@ def _reset_client():
 # --------------------------------------------------------------------------
 # Prompt selection
 # --------------------------------------------------------------------------
+
+
+async def test_skips_compose_when_entry_node_is_not_email(db_session):
+    """When the sequence starts with a non-email node there's no first email
+    to write — compose skips the AI call + send and leaves the body empty."""
+    campaign = await _make_campaign(db_session)
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db_session.add(seq)
+    await db_session.flush()
+    db_session.add(SequenceNode(
+        sequence_id=seq.id,
+        kind=SequenceNodeKind.LINKEDIN_CONNECT,
+        config={},
+        position_x=0,
+        position_y=0,
+        is_entry=True,
+    ))
+    await db_session.commit()
+
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock()  # must NOT be called
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay") as send_delay:
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    create_mock.assert_not_called()
+    send_delay.assert_not_called()
+    assert result["status"] == "skipped_non_email_entry"
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.compose_status == ComposeStatus.DONE
+    assert refreshed.composed_body is None
 
 
 async def test_template_mode_renders_without_calling_anthropic(db_session):

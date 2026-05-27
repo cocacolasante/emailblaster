@@ -247,6 +247,9 @@ async def pause_campaign(
             detail=f"Cannot pause campaign in status '{c.status.value}' (only running)",
         )
     c.status = CampaignStatus.PAUSED
+    # Manual pause: clear any cap auto-pause marker so the sequencer doesn't
+    # auto-resume it — the user wants it to stay paused.
+    c.auto_paused_until = None
     await db.commit()
     await db.refresh(c)
     return await _build_response(db, c)
@@ -263,6 +266,7 @@ async def resume_campaign(
             detail=f"Cannot resume campaign in status '{c.status.value}' (only paused)",
         )
     c.status = CampaignStatus.RUNNING
+    c.auto_paused_until = None
     await db.commit()
     await db.refresh(c)
     return await _build_response(db, c)

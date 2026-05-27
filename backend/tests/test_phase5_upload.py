@@ -127,7 +127,10 @@ async def test_confirm_upload_inserts_leads_and_enqueues(client, db_session):
 
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body == {"total": 5, "suppressed": 0, "duplicates_removed": 0, "samples_selected": 3}
+    assert body == {
+        "total": 5, "suppressed": 0, "duplicates_removed": 0,
+        "samples_selected": 3, "auto_launched": False,
+    }
 
     enqueue.assert_called_once_with(campaign["id"])
 
@@ -191,7 +194,10 @@ async def test_confirm_upload_skips_suppressed_emails(client, db_session):
             data={"mapping": json.dumps({"Email": "email"})},
         )
     body = resp.json()
-    assert body == {"total": 1, "suppressed": 1, "duplicates_removed": 0, "samples_selected": 1}
+    assert body == {
+        "total": 1, "suppressed": 1, "duplicates_removed": 0,
+        "samples_selected": 1, "auto_launched": False,
+    }
 
     leads = (await db_session.execute(
         select(Lead).where(Lead.campaign_id == uuid.UUID(campaign["id"]))
@@ -213,6 +219,37 @@ async def test_confirm_upload_transitions_campaign_to_previewing(client, db_sess
     refreshed = await db_session.get(Campaign, uuid.UUID(campaign["id"]))
     await db_session.refresh(refreshed)
     assert refreshed.status == CampaignStatus.PREVIEWING
+
+
+async def test_confirm_upload_auto_launches_for_non_email_entry(client, db_session):
+    """A campaign whose sequence starts with a non-email node has no first
+    email to preview, so confirm-upload launches it straight into RUNNING."""
+    campaign = await _new_campaign(client)
+    # Replace the default email-entry sequence with a LinkedIn-connect entry.
+    seq_payload = {
+        "nodes": [
+            {"client_id": "entry", "kind": "linkedin_connect", "is_entry": True,
+             "config": {"no_note": True}},
+        ],
+        "edges": [],
+    }
+    r = await client.put(f"/campaigns/{campaign['id']}/sequence", json=seq_payload)
+    assert r.status_code == 200, r.text
+
+    with patch("app.routers.leads.ingest_tasks.run_campaign_research.delay") as enqueue:
+        resp = await client.post(
+            f"/campaigns/{campaign['id']}/leads/confirm-upload",
+            files={"file": ("x.csv", CSV_BASIC, "text/csv")},
+            data={"mapping": json.dumps({"Email": "email"})},
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["auto_launched"] is True
+    # Research still runs (for DM personalization).
+    enqueue.assert_called_once_with(campaign["id"])
+
+    refreshed = await db_session.get(Campaign, uuid.UUID(campaign["id"]))
+    await db_session.refresh(refreshed)
+    assert refreshed.status == CampaignStatus.RUNNING
 
 
 async def test_confirm_upload_rejects_missing_email_mapping(client):

@@ -141,6 +141,53 @@ async def enroll_leads(
 
 
 # --------------------------------------------------------------------------
+# Entry-node introspection
+# --------------------------------------------------------------------------
+
+
+async def get_live_entry_node(
+    db: AsyncSession, campaign_id: uuid.UUID
+) -> SequenceNode | None:
+    """Return the campaign's live (not soft-deleted) entry node, or None."""
+    seq = await db.scalar(
+        select(Sequence).where(Sequence.campaign_id == campaign_id)
+    )
+    if seq is None:
+        return None
+    return await db.scalar(
+        select(SequenceNode).where(
+            SequenceNode.sequence_id == seq.id,
+            SequenceNode.is_entry.is_(True),
+            live_nodes_filter(),
+        )
+    )
+
+
+def is_legacy_first_email_node(node: SequenceNode | None) -> bool:
+    """True when the entry node is the campaign's legacy compose-pipeline
+    first email.  Every email entry node qualifies — the builder treats an
+    entry email as "use the per-lead email Claude composed", which the
+    legacy ``compose -> send_lead`` path delivers.  Any other entry kind
+    (LinkedIn, wait, ...) means the sequencer drives the first step and no
+    standalone first email is sent.
+
+    When no entry node can be resolved (None) we default to True — the
+    backward-compatible email behavior.  We only suppress the first email
+    when we positively identify a non-email start node.
+    """
+    if node is None:
+        return True
+    return node.kind == SequenceNodeKind.EMAIL and node.is_entry
+
+
+async def campaign_sends_legacy_first_email(
+    db: AsyncSession, campaign_id: uuid.UUID
+) -> bool:
+    """Whether this campaign's first touch is the legacy composed email."""
+    return is_legacy_first_email_node(await get_live_entry_node(db, campaign_id))
+
+
+# --------------------------------------------------------------------------
 # Whole-graph replace + publish validation
 # --------------------------------------------------------------------------
 
@@ -189,8 +236,12 @@ def validate_graph(
       - each edge's condition is a valid expression
       - graph is a DAG (no cycles)
       - all nodes are reachable from the entry
-      - every non-`email` first node is rejected (entry must be email in M1)
       - kinds outside PUBLISHABLE_KINDS_M1 are rejected
+
+    Any publishable kind may be the entry node.  When the entry is an email
+    node the legacy compose pipeline sends it as the campaign's first email;
+    when it's anything else, the sequencer drives the first action and no
+    standalone first email is sent (see ``campaign_sends_legacy_first_email``).
     """
     errors: list[str] = []
 
@@ -199,9 +250,6 @@ def validate_graph(
         errors.append(f"sequence must have exactly one entry node (found {len(entries)})")
         return errors
     entry = entries[0]
-
-    if entry.get("kind") != SequenceNodeKind.EMAIL.value:
-        errors.append("entry node must be an email node")
 
     for i, n in enumerate(nodes):
         kind = n.get("kind")
@@ -336,13 +384,20 @@ async def replace_graph(
 
     client_to_db: dict[str, uuid.UUID] = {}
     for n in nodes:
+        is_entry = bool(n.get("is_entry", False))
+        config = n.get("config") or {}
+        # An email entry node always means "send the campaign-composed first
+        # email" — stamp the flag the sequencer keys off of so a node the
+        # builder promoted to entry behaves like the seeded default.
+        if is_entry and SequenceNodeKind(n["kind"]) == SequenceNodeKind.EMAIL:
+            config = {**config, "use_campaign_compose": True}
         node = SequenceNode(
             sequence_id=sequence.id,
             kind=SequenceNodeKind(n["kind"]),
-            config=n.get("config") or {},
+            config=config,
             position_x=int(n.get("position_x", 0)),
             position_y=int(n.get("position_y", 0)),
-            is_entry=bool(n.get("is_entry", False)),
+            is_entry=is_entry,
         )
         db.add(node)
         await db.flush()

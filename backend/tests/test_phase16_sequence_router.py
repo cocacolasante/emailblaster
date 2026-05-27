@@ -181,6 +181,60 @@ async def test_publish_succeeds_for_email_wait_email_chain(client):
     assert body["errors"] == []
 
 
+async def test_publish_succeeds_for_non_email_entry(client):
+    """Any publishable kind can be the entry node (the M1 email-only rule
+    was lifted so a sequence can start with, e.g., a LinkedIn connect)."""
+    cid = await _create_campaign(client)
+    payload = {
+        "nodes": [
+            {
+                "client_id": "entry",
+                "kind": "linkedin_connect",
+                "is_entry": True,
+                "config": {"no_note": True},
+            },
+            {
+                "client_id": "dm",
+                "kind": "linkedin_dm",
+                "is_entry": False,
+                "config": {"text_template": "Hi {{first_name}}"},
+            },
+        ],
+        "edges": [
+            {"from_client_id": "entry", "to_client_id": "dm", "condition": {"op": "always"}},
+            {"from_client_id": "dm", "to_client_id": None, "condition": {"op": "always"}},
+        ],
+    }
+    r = await client.put(f"/campaigns/{cid}/sequence", json=payload)
+    assert r.status_code == 200, r.text
+
+    pub = await client.post(f"/campaigns/{cid}/sequence/publish")
+    body = pub.json()
+    assert body["ok"] is True, body["errors"]
+    assert body["is_published"] is True
+    assert body["errors"] == []
+    # The entry node is the LinkedIn connect, not an email.
+    seq = (await client.get(f"/campaigns/{cid}/sequence")).json()
+    entry = next(n for n in seq["nodes"] if n["is_entry"])
+    assert entry["kind"] == "linkedin_connect"
+
+
+async def test_email_entry_gets_use_campaign_compose_stamped(client):
+    """An email node promoted to entry is normalized to the compose path."""
+    cid = await _create_campaign(client)
+    payload = {
+        "nodes": [
+            # No use_campaign_compose in config — replace_graph should add it.
+            {"client_id": "entry", "kind": "email", "is_entry": True, "config": {}},
+        ],
+        "edges": [],
+    }
+    r = await client.put(f"/campaigns/{cid}/sequence", json=payload)
+    assert r.status_code == 200, r.text
+    entry = next(n for n in r.json()["nodes"] if n["is_entry"])
+    assert entry["config"].get("use_campaign_compose") is True
+
+
 async def test_get_sequence_404_for_missing_campaign(client):
     r = await client.get("/campaigns/00000000-0000-0000-0000-000000000000/sequence")
     assert r.status_code == 404

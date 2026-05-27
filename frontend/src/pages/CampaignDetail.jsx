@@ -216,6 +216,11 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
                 Resume
               </button>
             )}
+            {campaign.status === 'paused' && campaign.auto_paused_until && (
+              <span data-testid="auto-paused-note" className="text-xs text-amber-700">
+                Auto-paused (LinkedIn daily cap) — resumes {fmtDatetime(campaign.auto_paused_until)}
+              </span>
+            )}
           </div>
           <div className="text-sm text-slate-500 mb-2">{sent} of {total} sent</div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">

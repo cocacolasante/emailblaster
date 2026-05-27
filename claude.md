@@ -22,7 +22,117 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Fully-templated campaign mode (no AI).**  Added
+- **Last completed:** **Paused campaigns freeze; LinkedIn cap
+  auto-pauses (and auto-resumes) the campaign.**  Two related scheduler
+  changes:
+  - **Paused = frozen in place.**  The beat (`_advance_sequences_async`)
+    now JOINs `sequences`/`campaigns` and only selects leads whose
+    `Campaign.status == RUNNING` (`.with_for_update(..., of=
+    LeadSequenceState)` keeps the row lock scoped to the state rows).
+    A paused campaign's leads are skipped entirely — current node +
+    `next_run_at` untouched — so the beat no longer churns paused
+    campaigns or burns the per-account stagger slots that running
+    campaigns sharing the LinkedIn account need.  (Previewing/draft/
+    complete are also not driven by the sequencer, which is correct.)
+  - **Auto-pause at the LinkedIn cap + auto-resume.**  New nullable
+    `campaigns.auto_paused_until` column (migration 0011).  When a
+    LinkedIn step defers with a cap reason (`daily_cap` / `connect_cap`
+    / `dm_cap`) AND no email node is reachable downstream of the capped
+    node (`_has_downstream_email` BFS over live edges), the campaign is
+    set PAUSED with `auto_paused_until = now + retry_in` (the cap-reset
+    time).  The beat resumes it (status→RUNNING, marker→NULL) once that
+    time passes — done in the same tick's leading `UPDATE` before the
+    main SELECT.  Gated on `node.kind in LI_KINDS` because `daily_cap`
+    is also a Brevo (email) gate reason — only the *LinkedIn* cap
+    pauses.  Manual pause/resume endpoints clear `auto_paused_until`
+    (so a manual pause stays paused; only cap-pauses auto-resume).
+    `CampaignResponse` exposes `auto_paused_until`; `CampaignDetail`
+    shows an "Auto-paused (LinkedIn daily cap) — resumes <time>" note.
+  - Tests: paused-freeze, cap-auto-pause (no email downstream),
+    no-pause (email downstream), auto-resume vs manual/future, + 2
+    frontend.  Tests: **backend 524, frontend 170**.
+
+- **Previously:** **Staggered LinkedIn dispatch (one lead at a
+  time, not bulk).**  The sequencer beat (`_advance_sequences_async`)
+  used to dispatch every due LinkedIn step in a tick at once (jittered
+  2-8s), leaving the worker's rate limiter to bounce the losers to
+  5-min retries — a messy burst.  Now it releases **at most one
+  LinkedIn step per account per `LINKEDIN_STAGGER_SECONDS`** (new
+  config, default 120s; 0 disables).  New atomic Redis Lua
+  `_LI_STAGGER_LUA` + `_reserve_li_stagger_slot(account_key, now)`:
+  returns 0 when the account's slot is open now (and claims it,
+  recording the dispatch instant), else the epoch timestamp when the
+  next slot opens.  In the `LI_KINDS` dispatch block, a lead whose
+  account slot isn't open is parked (`next_run_at = slot`,
+  `counts["staggered_linkedin"]++`) WITHOUT dispatching; the open-slot
+  lead dispatches as before (`next_run_at = now+10min`).  Keyed per
+  LinkedIn account (`_li_stagger_key`, memoised per tick) since rate
+  limits are per-account — different accounts run in parallel; leads
+  with no bound account fall back to the campaign id.  `advance_sequences`
+  now resets `_LI_REDIS_CLIENT=None` at task entry (same fresh-loop
+  pattern as `send_linkedin_step`) since the beat now uses Redis.
+  **`view_profile` is exempt from staggering** (it's a low-risk read
+  that doesn't count as a throttled action — same set that's already
+  exempt from the daily cap, renamed `_DAILY_CAP_EXEMPT_KINDS →
+  _UNCOUNTED_ACTION_KINDS` and now consulted by both the cap and the
+  stagger block); views still respect the per-action min-delay
+  anti-burst floor.  Effect: a batch of N due write/notify leads peels
+  off one per interval per account, while profile views fire promptly;
+  the per-action min-delay + daily caps remain as the worker-side
+  backstop.  3 new tests in `test_phase17_linkedin_sequencer.py`
+  (staggered: 1 dispatched + 2 parked; disabled: all 3 dispatched;
+  view_profile exempt: all 3 dispatched despite a stagger interval).
+  Tests: **backend 518 passing**.
+  - **Follow-up: distinct stagger slots across ticks.**  The first cut
+    parked every waiting lead on the same "next slot" timestamp, which
+    made the schedule/UI look like a simultaneous batch (the beat runs
+    every 60s but the interval is 120s, so non-dispatch ticks re-piled
+    leads onto one timestamp).  Reworked `_LI_STAGGER_LUA` to a TWO-key
+    design (`:last` dispatch marker + `:hw` high-water) so each parked
+    lead gets a DISTINCT slot one interval apart, persisting across
+    ticks, while re-queued leads still fire on time (no push-back).
+    2 more tests (distinct-spread within a tick; cross-tick distinct +
+    no-push-back).  Tests: **backend 520 passing**.
+
+- **Previously:** **Any node can be the sequence entry/start node.**
+  Lifted the M1 "entry node must be an email node" rule
+  (`sequence_service.validate_graph` no longer rejects non-email
+  entries).  A sequence can now start with a LinkedIn connect, wait,
+  etc.  Because the legacy `compose -> send_lead` pipeline sends the
+  first email **unconditionally** (it's not sequence-aware), this
+  required gating it on the entry kind:
+  - New helpers in `sequence_service.py`: `get_live_entry_node`,
+    `is_legacy_first_email_node` (True for an email entry node; also
+    True when no entry resolves — the backward-compatible default so
+    sequence-less test campaigns still compose), and
+    `campaign_sends_legacy_first_email`.
+  - `replace_graph` now stamps `use_campaign_compose=True` onto any
+    email node promoted to entry, so the sequencer's entry-email
+    branch keys off a reliable flag.
+  - `compose.compose_lead_async`: when the entry node isn't a legacy
+    compose email, skip the Anthropic call AND the send enqueue, mark
+    compose DONE with empty body, return `skipped_non_email_entry`.
+    Research still runs (for AI LinkedIn-DM personalization).
+  - `send.send_lead_async`: defensive guard — never send an empty
+    `composed_body` even if a stray dispatch reaches it.
+  - `leads.confirm_upload`: when the entry isn't an email, launch
+    straight into RUNNING (no sample-email preview to show) and return
+    `auto_launched=True` on `ConfirmUploadResponse`; email-first
+    campaigns still go to PREVIEWING.  The sequencer drives the first
+    action.
+  - Frontend: `CampaignCreate` jumps to the campaign detail page
+    (skips the step-4 preview) when `auto_launched` is true; the
+    `SequenceBuilder` node editor shows a "this is the start node, no
+    first email is sent" hint on a non-email entry.  The builder
+    already allowed "Set as entry" on any node — the blocker was
+    purely server-side validation.
+  - Tests: non-email entry publishes; email-entry gets
+    use_campaign_compose stamped; compose skips for non-email entry;
+    confirm_upload auto-launches; frontend skips preview + navigates
+    on auto-launch.  Tests: **backend 515 passing, frontend 168
+    passing**.
+
+- **Previously:** **Fully-templated campaign mode (no AI).**  Added
   a fourth `ResearchMode.TEMPLATE = "template"` plus two nullable
   campaign columns `template_subject` / `template_body` (migration
   `0010_campaign_templates.py` — `ALTER TYPE ADD VALUE 'template'` +
@@ -47,11 +157,17 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   Frontend: fourth "Template (no AI, you write it)" pill in
   `CampaignCreate.jsx` reveals subject + body textareas with a
   merge-field hint; payload only carries the copy in template mode;
-  client-side guard blocks an empty body.  Tests: 11 renderer unit
-  tests (`test_phase32_template_render.py`) + 1 compose test
-  (renders without calling Anthropic) + 1 research test (TEMPLATE
-  skips all research) + 3 frontend tests.  Tests: **backend 511
-  passing, frontend 166 passing**.
+  client-side guard blocks an empty body.  The Step-4 progress screen
+  is now mode-aware (it fetches the campaign via `getCampaign`): fast/
+  deep → "Researching and composing emails…  X of Y composed · Z
+  researched"; none → "Composing emails…  X of Y composed"; template →
+  "Rendering your templated emails…  X of Y rendered" (no research
+  count).  The step-indicator chip label changed from "Research" to
+  the mode-agnostic "Prepare".  Tests: 11 renderer unit tests
+  (`test_phase32_template_render.py`) + 1 compose test (renders
+  without calling Anthropic) + 1 research test (TEMPLATE skips all
+  research) + 4 frontend tests (incl. a template-wording Step-4 test).
+  Tests: **backend 511 passing, frontend 167 passing**.
 
 - **Previously:** **"No research" campaign mode.**  Added a third
   `ResearchMode.NONE = "none"` alongside FAST / DEEP.  Campaigns set to
@@ -447,10 +563,18 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 - **Default sequences are auto-created** on campaign creation, and every
   enrolled lead gets a `lead_sequence_state` row. Old data was backfilled
   in `alembic/versions/0002_sequences.py`.
-- **The legacy `compose → send_lead` path is still the source of truth
-  for the FIRST email.** The new sequencer skips email entry nodes whose
-  `lead.send_status` is already SENT and advances to the next node.
-  Don't remove the legacy path without a migration plan.
+- **The legacy `compose → send_lead` path is the source of truth for the
+  FIRST email — but ONLY when the entry node is an email node.** The new
+  sequencer skips email entry nodes whose `lead.send_status` is already
+  SENT and advances to the next node.  Since the legacy pipeline isn't
+  sequence-aware, it's gated on the entry kind via
+  `sequence_service.campaign_sends_legacy_first_email`: a non-email start
+  node (LinkedIn / wait / ...) makes `compose` skip the AI call + send
+  (`skipped_non_email_entry`) and `confirm_upload` auto-launch into
+  RUNNING (no email preview).  Research still runs.  `is_legacy_first_email_node(None)`
+  returns True (backward-compatible default) so a campaign with no live
+  entry node still composes.  Don't remove the legacy path without a
+  migration plan.
 
 ## Conventions and gotchas
 
@@ -541,6 +665,22 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   ```
   Verify by comparing host `.env` against `docker compose exec backend
   printenv VAR_NAME` after the recreate.
+- **A new setting in `.env` alone does NOT reach the containers.**
+  `docker-compose.yml` passes env via an explicit per-service
+  `environment:` allowlist (`VAR: ${VAR:-default}`), NOT `env_file`,
+  so only enumerated vars are injected.  The app's pydantic `Settings`
+  then falls back to its *code default* for anything missing — which
+  silently masks the problem when the `.env` value happens to equal the
+  default.  Symptom: you set `FOO=...` in `.env`, recreate, but
+  `docker compose exec worker printenv FOO` is empty and changes to it
+  never take effect.  Fix: add the var to the `environment:` block of
+  **all three Python services** (`backend`, `worker`, `beat`) as
+  `FOO: ${FOO:-<default>}`, then `docker compose up -d --force-recreate
+  backend worker beat`.  (This is how `LINKEDIN_STAGGER_SECONDS` was
+  wired — it read 120 from the default until added to the compose
+  blocks.)  `docker compose exec worker printenv FOO` returning the
+  value is the real confirmation; `settings.FOO` matching can be a
+  false positive when it equals the default.
 - **Pre-M1 leads have no `lead_sequence_state` row.** Campaigns +
   leads that existed before the M1 migration's backfill ran are fine
   going forward, but if your dev DB had leads inserted via the legacy
@@ -628,6 +768,53 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   Two concurrent ticks can no longer both pass under a cap of one.
   Trade-off: a failed action still counts the slot (no refund) — a
   cleaner over-count than the previous race that double-fired.
+- **The sequencer beat only drives RUNNING campaigns.**
+  `_advance_sequences_async` filters `Campaign.status == RUNNING`, so a
+  paused campaign freezes in place (leads keep their node + next_run_at,
+  no dispatch, no stagger-slot consumption).  The per-step handlers
+  still re-check paused as belt-and-suspenders.  Two consequences:
+  (1) a campaign paused mid-flight resumes exactly where it left off;
+  (2) the beat auto-resumes campaigns that were cap-auto-paused — it
+  runs an `UPDATE campaigns SET status=RUNNING WHERE status=PAUSED AND
+  auto_paused_until <= now` at the top of each tick (same transaction
+  as the SELECT, so resumed leads run immediately).  Manual pauses have
+  `auto_paused_until IS NULL` and are never auto-resumed.
+- **LinkedIn cap auto-pauses a campaign (`auto_paused_until`).**  When a
+  LinkedIn step hits `daily_cap`/`connect_cap`/`dm_cap` and no email
+  node is reachable downstream (`_has_downstream_email`), the campaign
+  is paused with `auto_paused_until` = cap-reset time and auto-resumes
+  then.  Gated on `node.kind in LI_KINDS` — `daily_cap` is ALSO the
+  Brevo email-gate reason, so without that gate an email rate-limit
+  would wrongly pause the campaign.  Email-bearing sequences keep
+  running at the cap (email isn't LinkedIn-capped).
+- **LinkedIn dispatch is staggered, not bulk — with DISTINCT slots.**
+  The sequencer beat releases at most one LinkedIn step per account per
+  `LINKEDIN_STAGGER_SECONDS` (default 120; 0 disables).  Due leads
+  beyond the open slot are PARKED (`next_run_at` set to a future slot)
+  without dispatching.  Slot reservation is an atomic Redis Lua
+  (`_LI_STAGGER_LUA` via `_reserve_li_stagger_slot`) using TWO keys per
+  account: `li-stagger:{key}:last` (last *dispatch* time — a parked
+  lead becomes dispatch-eligible when `now >= last + interval`, so it
+  fires when its slot arrives with NO push-back) and
+  `li-stagger:{key}:hw` (high-water of slots handed out — new parks go
+  to `hw + interval`, giving every waiting lead a DISTINCT timestamp).
+  The two-key design matters because the beat runs (60s) more often
+  than the interval (120s): a naive single "next slot = last + interval"
+  piled every non-dispatch tick's leads onto the same timestamp
+  (looked like a simultaneous batch in the UI even though dispatch was
+  correctly one-per-interval).  The worker rate limiter
+  (`_li_rate_acquire`) is now just a backstop, rarely hit.  Because the
+  beat uses Redis, `advance_sequences` resets `_LI_REDIS_CLIENT=None`
+  at task entry (fresh client per `asyncio.run` loop) — same caveat as
+  the worker tasks.  Staggering is per-account so distinct accounts run
+  in parallel; only LinkedIn kinds (`LI_KINDS`) are staggered, email
+  dispatch is unaffected.  `view_profile` (and anything in
+  `_UNCOUNTED_ACTION_KINDS`) is exempt from BOTH the daily cap and the
+  staggering — low-risk reads fire promptly — but the per-action
+  min-delay still applies to them as a burst guard.  Note: leads
+  newly advanced into a node via `_advance_cursor` get `next_run_at =
+  now`, so a batch arriving in one tick momentarily shares a timestamp
+  until the next tick re-spreads them — a transient, not a pile.
 - **Brevo events come from polling, not a webhook.**  The inbound
   `/webhooks/brevo` route was removed; events are pulled from
   `GET /v3/smtp/statistics/events` by `brevo_events_poller.poll` every
@@ -714,13 +901,13 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-26 — Added a fourth campaign ResearchMode
-"template": fully-templated, zero-API-call campaigns.  User authors
-template_subject/template_body with {{merge|default}} fields; compose
-renders per-lead instead of calling Anthropic.  (Earlier same day:
-"none" mode — skip research, still AI-compose.)_
+_Last updated: 2026-05-26 — Paused campaigns now freeze in place (the
+beat only drives RUNNING campaigns); a LinkedIn-only campaign that hits
+its daily cap auto-pauses (`auto_paused_until`) and auto-resumes when the
+cap resets.  (Earlier same day: staggered LinkedIn dispatch w/ distinct
+slots + view_profile exempt; any-node entry; "template"/"none" modes.)_
 
-_Backend tests: **511 passing**.  Frontend tests: **166 passing**._
+_Backend tests: **524 passing**.  Frontend tests: **170 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
