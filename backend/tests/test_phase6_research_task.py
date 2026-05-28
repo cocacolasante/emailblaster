@@ -226,6 +226,66 @@ async def test_none_mode_skips_all_research_but_enqueues_compose(db_session):
     assert refreshed.research_data["skipped"] is True
 
 
+async def test_fresh_cache_hit_skips_api_calls_and_reuses_research(db_session):
+    """A fresh row in research_cache for the lead's email makes the worker
+    reuse the cached research_data, skipping every external API call."""
+    from app.services import research_cache as rc_mod
+    campaign = await _make_campaign(db_session, mode=ResearchMode.FAST)
+    lead = await _make_lead(db_session, campaign, email="hit@example.com")
+    await rc_mod.upsert(db_session, "hit@example.com", {
+        "quality": "rich", "person_news": ["raised B"],
+        "company_description": "AI for SMB",
+    })
+    await db_session.commit()
+
+    web_mock = AsyncMock(return_value={})       # MUST NOT be called
+    hunter_mock = AsyncMock(return_value={})    # MUST NOT be called
+    apollo_mock = AsyncMock(return_value={})    # MUST NOT be called
+
+    with patch("app.workers.research.web_research.research_person_web", web_mock), \
+         patch("app.workers.research.hunter.verify_email_hunter", hunter_mock), \
+         patch("app.workers.research.apollo.enrich_lead_apollo", apollo_mock), \
+         patch("app.workers.research.compose_lead.delay") as enqueue:
+        result = await research_lead_async(str(lead.id))
+
+    web_mock.assert_not_called()
+    hunter_mock.assert_not_called()
+    apollo_mock.assert_not_called()
+    enqueue.assert_called_once_with(str(lead.id))
+    assert result["status"] == "done"
+    assert result["quality"] == "rich"
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.research_status == ResearchStatus.DONE
+    assert refreshed.research_data["person_news"] == ["raised B"]
+    assert refreshed.research_data.get("from_cache") is True
+
+
+async def test_cache_miss_calls_api_and_upserts_cache(db_session):
+    """A cache miss runs the normal pipeline AND warms the cache so a
+    second campaign for the same email reuses the result."""
+    from app.services import research_cache as rc_mod
+    campaign = await _make_campaign(db_session, mode=ResearchMode.FAST)
+    lead = await _make_lead(db_session, campaign, email="miss@example.com")
+
+    web_mock = AsyncMock(return_value={
+        "person_news": ["news"], "company_news": [],
+        "company_description": "ACME inc", "recent_updates": [],
+        "industry": "SaaS", "size_hint": "growth", "found": True,
+    })
+    with patch("app.workers.research.web_research.research_person_web", web_mock), \
+         patch("app.workers.research.hunter.verify_email_hunter",
+               AsyncMock(return_value={"deliverable": True, "score": 0})), \
+         patch("app.workers.research.compose_lead.delay"):
+        await research_lead_async(str(lead.id))
+
+    web_mock.assert_called_once()  # cache MISS → api called
+    cached = await rc_mod.lookup(db_session, "miss@example.com")
+    assert cached is not None
+    assert cached["company_description"] == "ACME inc"
+
+
 async def test_template_mode_skips_all_research_but_enqueues_compose(db_session):
     """'Template' mode (no AI) also makes zero research calls; compose then
     renders the campaign template instead of calling Anthropic."""

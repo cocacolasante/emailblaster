@@ -91,6 +91,10 @@ class Lead(Base):
     sample_approved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     style_correction: Mapped[str | None] = mapped_column(Text, nullable=True)
     brevo_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Free-form notes the user adds in the lite-CRM Leads view.  Per
+    # (campaign × email) — a lead in a different campaign for the same email
+    # gets its own notes row.
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     scheduled_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     linkedin_connection_status: Mapped[LinkedInConnectionStatus] = mapped_column(
         Enum(

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # fee AND ingests result pages as input tokens, so this is a direct cost
     # lever.  2-3 covers person + company; 5 was wasteful.
     RESEARCH_WEB_SEARCH_MAX_USES: int = 3
+    # Freshness window for the cross-campaign research cache (keyed by email).
+    # A second campaign adding the same email reuses the cached research_data
+    # if it was refreshed within this many days, skipping the API call.
+    RESEARCH_CACHE_TTL_DAYS: int = 90
 
     # Email sending
     BREVO_API_KEY: str = ""

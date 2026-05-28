@@ -110,6 +110,11 @@ export async function updateLeadEmail(campaignId, leadId, payload) {
   return data;
 }
 
+export async function listAllLeads(params = {}) {
+  const { data } = await client.get(`/leads`, { params });
+  return data;
+}
+
 export async function applySignature(campaignId) {
   const { data } = await client.post(`/campaigns/${campaignId}/apply-signature`);
   return data;

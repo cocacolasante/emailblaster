@@ -22,7 +22,46 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Edit composed emails + bulk signature.**  Two
+- **Last completed:** **Lite-CRM Leads tab + 90-day research
+  cache + per-lead notes.**  Three threads:
+  - **Research cache (cuts repeated API spend).**  New `research_cache`
+    table — primary key is the lowercased+stripped lead email; columns
+    `research_data` (JSONB) + `refreshed_at` (timestamptz).  New
+    `app/services/research_cache.py`: `lookup(session, email)` returns
+    the JSONB blob iff `now - refreshed_at <=
+    RESEARCH_CACHE_TTL_DAYS` (new setting, default 90); `upsert(...)`
+    uses `pg_insert(...).on_conflict_do_update(...)` to refresh stale
+    rows in place.  Wired into `research.research_lead_async`: before
+    any Apollo / Hunter / web fan-out, hit the cache; on hit, stamp
+    `research_data["from_cache"] = True`, write the lead's
+    `research_data` to the cached blob, mark DONE, enqueue compose —
+    zero external calls.  On miss the existing fan-out runs and the
+    resulting blob is upserted before the compose enqueue.  NONE /
+    TEMPLATE modes short-circuit before the cache is consulted (no
+    point caching a `{skipped: True}` blob).  Migration 0013 adds the
+    table.
+  - **Per-lead notes (lite CRM).**  New nullable `leads.notes` TEXT
+    column (same migration 0013).  `PATCH /campaigns/{cid}/leads/{lid}`
+    renamed from `update_campaign_lead_email` → `update_campaign_lead`
+    and now accepts `{composed_subject?, composed_body?, notes?}`;
+    composed-content edits still 409 when `send_status == SENT`, but
+    `notes` is always editable.  `LeadSummary` exposes `notes`,
+    `has_notes`, and `campaign_name`; `list_campaign_leads` trims notes
+    preview to 280 chars.
+  - **Global Leads page.**  New top-level nav item between Campaigns
+    and Research-a-client.  New `GET /leads` (paginated; filters:
+    `campaign_id`, `send_status`, `search` over email/name/company,
+    `has_notes`).  Frontend `pages/Leads.jsx` shows a table (Name,
+    Email, Company, Campaign, Send pill, Notes preview); row click
+    opens a CRM modal with the composed email preview + a notes
+    textarea + Save (calls the renamed `updateLeadEmail({notes})`).
+    Filters: campaign dropdown, search input, has-notes toggle.
+  - Tests: 5 research-cache unit + 2 research-worker (cache hit skips
+    APIs / miss upserts) + 2 router (notes editable when SENT, global
+    list pagination/filter/campaign_name) + 5 frontend.
+    Tests: **backend 557, frontend 178**.
+
+- **Previously:** **Edit composed emails + bulk signature.**  Two
   related editing features:
   - **Reusable campaign signature.**  New nullable `campaigns.signature`
     column (migration 0012) — the sender's contact / website / calendar
@@ -1061,20 +1100,16 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-27 — Edit composed emails (per-email modal +
-`PATCH .../leads/{lid}`) and a reusable campaign signature that swaps the
-AI's sign-off for your contact/website/calendar block (auto on compose +
-bulk `POST .../apply-signature`).  Earlier 2026-05-27: email send
-staggering (atomic min-gate + approve-all spacing) + calendar-day daily
-cap; AI cost optimization; LinkedIn cap calendar-day reset; Unipile
-redirect-follow + transient-retry._
+_Last updated: 2026-05-28 — Lite-CRM Leads tab + 90-day research
+cache + per-lead notes.  New global `/leads` page (paginated, filterable
+by campaign / search / has-notes) opens a per-lead modal with composed-
+email preview + notes textarea; `PATCH .../leads/{lid}` now accepts
+`notes` (editable even on SENT leads).  Research worker consults a new
+`research_cache` table keyed by lowercased email; hits within
+`RESEARCH_CACHE_TTL_DAYS` (90) skip every Apollo / Hunter / web call.
+Migration 0013 adds `research_cache` + `leads.notes`._
 
-_Also fixed: the Unipile client now follows 301 redirects (accented-slug
-profiles resolve instead of failing on the HTML "Redirecting" page); and
-transient LinkedIn failures (5xx / network / 3xx) now park-and-retry
-instead of permanently skipping the lead — only 4xx client errors skip._
-
-_Backend tests: **548 passing**.  Frontend tests: **173 passing**._
+_Backend tests: **557 passing**.  Frontend tests: **178 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+import math
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Campaign, CampaignStatus, Lead, Suppression
-from app.schemas.lead import ConfirmUploadResponse, UploadPreviewResponse
+from app.models import Campaign, CampaignStatus, Lead, SendStatus, Suppression
+from app.schemas.lead import (
+    ConfirmUploadResponse,
+    LeadSummary,
+    PaginatedLeads,
+    UploadPreviewResponse,
+)
 from app.services.csv_parser import parse_csv_content, select_sample_indices, suggest_mapping
 from app.services.sequence_service import (
     campaign_sends_legacy_first_email,
@@ -19,6 +26,66 @@ from app.services.sequence_service import (
 from app.workers import ingest as ingest_tasks
 
 router = APIRouter(tags=["leads"])
+
+
+@router.get("/leads", response_model=PaginatedLeads)
+async def list_all_leads(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    campaign_id: uuid.UUID | None = None,
+    send_status: SendStatus | None = None,
+    search: str | None = None,
+    has_notes: bool | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> PaginatedLeads:
+    """Global cross-campaign leads listing — the lite-CRM Leads tab.
+
+    Each row includes the lead's notes preview + the campaign name, so the
+    user can browse / filter / add notes across every campaign at once.
+    """
+    filters = []
+    if campaign_id is not None:
+        filters.append(Lead.campaign_id == campaign_id)
+    if send_status is not None:
+        filters.append(Lead.send_status == send_status)
+    if search:
+        s = f"%{search}%"
+        filters.append(
+            or_(Lead.email.ilike(s), Lead.first_name.ilike(s),
+                Lead.last_name.ilike(s), Lead.company.ilike(s))
+        )
+    if has_notes is True:
+        filters.append(Lead.notes.is_not(None))
+    elif has_notes is False:
+        filters.append(Lead.notes.is_(None))
+
+    total = (await db.execute(
+        select(func.count()).select_from(Lead).where(*filters)
+    )).scalar_one()
+
+    rows_q = (
+        select(Lead, Campaign.name)
+        .join(Campaign, Campaign.id == Lead.campaign_id)
+        .where(*filters)
+        .order_by(Lead.updated_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = (await db.execute(rows_q)).all()
+    items: list[LeadSummary] = []
+    for lead, campaign_name in rows:
+        s = LeadSummary.model_validate(lead)
+        s.campaign_name = campaign_name
+        s.has_notes = bool(lead.notes)
+        # Trim notes preview so the list payload doesn't ship full essays.
+        if s.notes and len(s.notes) > 280:
+            s.notes = s.notes[:277] + "…"
+        items.append(s)
+
+    return PaginatedLeads(
+        items=items, total=total, page=page, page_size=page_size,
+        total_pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
 
 # Lead-model fields the user is allowed to populate from a CSV column.
 _ALLOWED_LEAD_FIELDS = {

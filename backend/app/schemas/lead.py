@@ -26,12 +26,17 @@ class LeadSummary(BaseModel):
     sample_approved: bool | None
     scheduled_send_at: datetime | None
     created_at: datetime
+    # CRM-lite extras (kept here so the global Leads list can show them).
+    notes: str | None = None
+    has_notes: bool = False
+    campaign_name: str | None = None
 
 
 class LeadEmailUpdate(BaseModel):
-    """Edit a lead's composed email (subject and/or body)."""
+    """Edit a lead's composed email and/or notes."""
     composed_subject: str | None = None
     composed_body: str | None = None
+    notes: str | None = None
 
 
 class LeadResponse(LeadSummary):

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models import Campaign, Lead, ResearchMode, ResearchStatus
-from app.services import apollo, hunter, web_research
+from app.services import apollo, hunter, research_cache, web_research
 from app.workers.celery_app import celery_app
 from app.workers.compose import compose_lead
 
@@ -83,6 +83,7 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             email = lead.email
             mode = campaign.research_mode
 
+        cache_hit = False
         if mode in (ResearchMode.NONE, ResearchMode.TEMPLATE):
             # "No research" / "template" modes: make zero external research
             # calls (no Apollo / Hunter / web).  Hand an empty, low-quality
@@ -91,6 +92,19 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             quality = "low"
             research_data: dict[str, Any] = {"quality": "low", "skipped": True}
         else:
+            # Cross-campaign cache: a fresh research_data for this email skips
+            # the (expensive) web-search / Apollo / Hunter calls entirely.  See
+            # ``RESEARCH_CACHE_TTL_DAYS``.
+            cached = None
+            async with AsyncSession(engine) as session:
+                cached = await research_cache.lookup(session, email)
+            if cached:
+                quality = cached.get("quality", "low")
+                # Stamp a marker so the audit log makes the cache hit obvious.
+                research_data = {**cached, "from_cache": True}
+                cache_hit = True
+
+        if mode not in (ResearchMode.NONE, ResearchMode.TEMPLATE) and not cache_hit:
             # ONE web-search call covers person + company (was two: web_research
             # + site_scraper).  Halves the per-lead web-search spend; the merged
             # call returns company_description / recent_updates / industry too.
@@ -136,6 +150,15 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
                 return {"status": "not_found"}
             lead.research_data = research_data
             lead.research_status = ResearchStatus.DONE
+            # Warm the cross-campaign cache so the next campaign with this
+            # email reuses this research instead of re-spending tokens.  Skip
+            # cache hits (no new data) and the NONE/TEMPLATE no-signal payload.
+            if (
+                not cache_hit
+                and mode not in (ResearchMode.NONE, ResearchMode.TEMPLATE)
+                and research_data
+            ):
+                await research_cache.upsert(session, email, research_data)
             await session.commit()
     finally:
         await engine.dispose()

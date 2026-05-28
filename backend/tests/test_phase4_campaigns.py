@@ -332,6 +332,74 @@ async def test_apply_signature_swaps_signoff_on_unsent_composed(client, db_sessi
     assert sent_refreshed.composed_body == sent_body
 
 
+async def test_patch_lead_notes_works_even_when_sent(client, db_session):
+    """Notes are CRM-lite and editable on any lead, including ones whose email
+    has already been sent (only the composed copy is locked at that point)."""
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    lead = Lead(
+        campaign_id=cid, email="n@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Hi", send_status=SendStatus.SENT,
+    )
+    db_session.add(lead)
+    await db_session.commit()
+
+    resp = await client.patch(
+        f"/campaigns/{created['id']}/leads/{lead.id}",
+        json={"notes": "Met at Lattice summit; warm intro from Sara"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notes"] == "Met at Lattice summit; warm intro from Sara"
+
+    # Composed-body edits on a sent lead still 409.
+    blocked = await client.patch(
+        f"/campaigns/{created['id']}/leads/{lead.id}",
+        json={"composed_body": "x"},
+    )
+    assert blocked.status_code == 409
+
+
+async def test_global_leads_endpoint_paginates_filters_and_includes_campaign(
+    client, db_session
+):
+    """GET /leads returns leads from every campaign with campaign_name + the
+    notes preview / has_notes flag, supports campaign + search filters."""
+    c1 = (await client.post("/campaigns/", json=_campaign_payload(name="C1"))).json()
+    c2 = (await client.post("/campaigns/", json=_campaign_payload(name="C2"))).json()
+    db_session.add_all([
+        Lead(campaign_id=uuid.UUID(c1["id"]), email="a@x.com",
+             first_name="Alice", notes="Met at Lattice"),
+        Lead(campaign_id=uuid.UUID(c1["id"]), email="b@x.com", first_name="Bob"),
+        Lead(campaign_id=uuid.UUID(c2["id"]), email="c@x.com", first_name="Cara"),
+    ])
+    await db_session.commit()
+
+    # All campaigns: 3 leads, campaign_name + has_notes populated.
+    resp = await client.get("/leads")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 3
+    names = {item["campaign_name"] for item in body["items"]}
+    assert names == {"C1", "C2"}
+    alice = next(i for i in body["items"] if i["email"] == "a@x.com")
+    assert alice["has_notes"] is True
+    assert "Lattice" in alice["notes"]
+
+    # Filter by campaign_id.
+    resp = await client.get(f"/leads?campaign_id={c1['id']}")
+    assert resp.json()["total"] == 2
+
+    # Search by name.
+    resp = await client.get("/leads?search=cara")
+    assert resp.json()["total"] == 1
+    assert resp.json()["items"][0]["email"] == "c@x.com"
+
+    # has_notes filter.
+    resp = await client.get("/leads?has_notes=true")
+    assert resp.json()["total"] == 1
+    assert resp.json()["items"][0]["email"] == "a@x.com"
+
+
 async def test_apply_signature_400_when_campaign_has_no_signature(client):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     resp = await client.post(f"/campaigns/{created['id']}/apply-signature")

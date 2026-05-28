@@ -314,9 +314,16 @@ async def list_campaign_leads(
         .offset((page - 1) * page_size)
     )
     rows = (await db.execute(rows_q)).scalars().all()
+    items: list[LeadSummary] = []
+    for l in rows:
+        s = LeadSummary.model_validate(l)
+        s.has_notes = bool(l.notes)
+        if s.notes and len(s.notes) > 280:
+            s.notes = s.notes[:277] + "…"
+        items.append(s)
 
     return PaginatedLeads(
-        items=[LeadSummary.model_validate(l) for l in rows],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
@@ -338,27 +345,33 @@ async def get_campaign_lead(
 
 
 @router.patch("/{campaign_id}/leads/{lead_id}", response_model=LeadResponse)
-async def update_campaign_lead_email(
+async def update_campaign_lead(
     campaign_id: uuid.UUID,
     lead_id: uuid.UUID,
     payload: LeadEmailUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> LeadResponse:
-    """Edit a lead's composed email (subject / body).  Works for any lead,
-    not just preview samples — but a SENT email can't be changed."""
+    """Edit a lead's composed email (subject/body) and/or notes.  Notes are
+    always editable (CRM-lite); the composed email is locked once the email
+    has been sent."""
     await _get_or_404(db, campaign_id)
     lead = await db.get(Lead, lead_id)
     if lead is None or lead.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="Lead not found")
-    if lead.send_status == SendStatus.SENT:
+    updates = payload.model_dump(exclude_unset=True)
+    composed_edits = {k: v for k, v in updates.items() if k in {"composed_subject", "composed_body"}}
+    if composed_edits and lead.send_status == SendStatus.SENT:
         raise HTTPException(
             status_code=409, detail="Cannot edit an email that has already been sent"
         )
-    updates = payload.model_dump(exclude_unset=True)
-    if "composed_subject" in updates and updates["composed_subject"] is not None:
-        lead.composed_subject = updates["composed_subject"]
-    if "composed_body" in updates and updates["composed_body"] is not None:
-        lead.composed_body = updates["composed_body"]
+    if "composed_subject" in composed_edits and composed_edits["composed_subject"] is not None:
+        lead.composed_subject = composed_edits["composed_subject"]
+    if "composed_body" in composed_edits and composed_edits["composed_body"] is not None:
+        lead.composed_body = composed_edits["composed_body"]
+    if "notes" in updates:
+        # Accept None / "" — both clear notes (treat all-whitespace as None).
+        v = updates["notes"]
+        lead.notes = v.strip() if (v and v.strip()) else None
     await db.commit()
     await db.refresh(lead)
     return LeadResponse.model_validate(lead)
