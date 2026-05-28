@@ -115,22 +115,50 @@ async def test_rate_limits_blocks_when_day_cap_reached(db_session, fake_redis):
 
 async def test_rate_limits_blocks_when_min_delay_not_elapsed(db_session, fake_redis):
     c = await _make_campaign(db_session, min_delay_seconds=120)
-    await fake_redis.set(f"rate:{c.id}:last_sent", str(time.time() - 30))
+    # A prior send already claimed the min-delay gate (still within window).
+    await fake_redis.set(f"rate:{c.id}:min_gate", str(time.time()), ex=120)
     result = await send_mod.check_rate_limits(c, fake_redis)
     assert result["ok"] is False
     assert result["reason"] == "min_delay"
-    assert 80 <= result["retry_in"] <= 95
+    assert 1 <= result["retry_in"] <= 120
 
 
-async def test_increment_rate_counters_bumps_all_three(db_session, fake_redis):
+async def test_min_delay_gate_is_atomic(db_session, fake_redis):
+    """Only one of several concurrent checks claims the min-delay window; the
+    rest get a min_delay deferral.  This is what stops the bulk-of-N burst."""
+    c = await _make_campaign(db_session, min_delay_seconds=120)
+    first = await send_mod.check_rate_limits(c, fake_redis)
+    assert first == {"ok": True}                       # claimed the window
+    second = await send_mod.check_rate_limits(c, fake_redis)
+    assert second["ok"] is False and second["reason"] == "min_delay"  # gate held
+
+
+async def test_increment_rate_counters_bumps_caps(db_session, fake_redis):
     c = await _make_campaign(db_session, min_delay_seconds=60)
     await send_mod.increment_rate_counters(c, fake_redis)
     assert await fake_redis.get(f"rate:{c.id}:hour") == "1"
     assert await fake_redis.get(f"rate:{c.id}:day") == "1"
-    last = await fake_redis.get(f"rate:{c.id}:last_sent")
-    assert last is not None
-    # last_sent is a unix timestamp string
-    assert abs(float(last) - time.time()) < 5
+    # The min-delay window is claimed in check_rate_limits (min_gate), not here.
+    assert await fake_redis.get(f"rate:{c.id}:last_sent") is None
+
+
+def test_seconds_until_local_midnight():
+    secs = send_mod._seconds_until_local_midnight("America/New_York")
+    assert 0 < secs <= 86400
+    # bad / missing tz → UTC fallback, still bounded
+    assert 0 < send_mod._seconds_until_local_midnight("Not/AZone") <= 86400
+    assert 0 < send_mod._seconds_until_local_midnight(None) <= 86400
+
+
+async def test_daily_counter_resets_on_calendar_day(db_session, fake_redis):
+    """The daily cap counter expires at the next local midnight (calendar-day
+    reset), not a flat rolling 86400."""
+    c = await _make_campaign(db_session)  # schedule_timezone="UTC"
+    await send_mod.increment_rate_counters(c, fake_redis)
+    day_ttl = await fake_redis.ttl(f"rate:{c.id}:day")
+    expected = send_mod._seconds_until_local_midnight("UTC")
+    assert 0 < day_ttl <= 86400
+    assert abs(day_ttl - expected) <= 5
 
 
 async def test_increment_sets_ttl_only_on_first_call(db_session, fake_redis):

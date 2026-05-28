@@ -105,6 +105,16 @@ export async function getLeadDetail(campaignId, leadId) {
   return data;
 }
 
+export async function updateLeadEmail(campaignId, leadId, payload) {
+  const { data } = await client.patch(`/campaigns/${campaignId}/leads/${leadId}`, payload);
+  return data;
+}
+
+export async function applySignature(campaignId) {
+  const { data } = await client.post(`/campaigns/${campaignId}/apply-signature`);
+  return data;
+}
+
 // ---------- Activity ----------
 
 export async function getCampaignActivity(id) {

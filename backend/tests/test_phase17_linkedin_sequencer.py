@@ -271,8 +271,9 @@ async def test_daily_cap_triggers_deferred_with_reset_eta(db_session, monkeypatc
     assert r2["status"] == "deferred"
     assert r2["reason"] == "daily_cap"
     assert "daily cap" in r2["error"]
-    # TTL should be close to 24h (just bumped on the first acquire).
-    assert 86000 < r2["retry_in"] <= 86400
+    # retry_in is the cap-reset TTL = seconds until local (UTC here) midnight,
+    # i.e. a calendar-day reset, not the short 5-min transient retry.
+    assert 0 < r2["retry_in"] <= 86400
 
 
 async def test_deferred_cap_skip_does_not_burn_retry_budget(db_session, monkeypatch):
@@ -336,13 +337,18 @@ async def test_deferred_cap_skip_does_not_burn_retry_budget(db_session, monkeypa
     await sequencer._record_execution_and_advance(lead2.id, li_node.id, r2)
 
     await db_session.refresh(state2)
-    # Lead2 is parked on the same node, status ACTIVE, next_run_at ~24h.
+    # Lead2 is parked on the same node, status ACTIVE, rescheduled to the cap
+    # reset (next local midnight — campaign tz is UTC here), NOT the 5-min
+    # transient retry.  (Time-of-day independent: seconds-to-midnight can be
+    # small near midnight, so we check it lands on the midnight boundary
+    # rather than asserting a large fixed delta.)
     assert state2.current_node_id == li_node.id
     assert state2.status == LeadSequenceStatus.ACTIVE
     assert state2.next_run_at is not None
-    delta = state2.next_run_at - _now()
-    # Big enough to be clearly the TTL-based defer, not the 5-min retry.
-    assert delta > timedelta(hours=1)
+    next_midnight = (_now() + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    assert abs((state2.next_run_at - next_midnight).total_seconds()) < 120
 
 
 # --------------------------------------------------------------------------
@@ -1111,6 +1117,54 @@ async def test_auto_paused_campaign_resumes_when_window_passes(db_session, monke
     assert auto.auto_paused_until is None  # cleared on resume
 
 
+# --------------------------------------------------------------------------
+# Daily cap resets on the calendar day (not a rolling 24h window)
+# --------------------------------------------------------------------------
+
+
+def test_seconds_until_midnight_aligns_to_local_midnight():
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/New_York")
+    before = datetime.now(tz)
+    secs = sequencer._seconds_until_midnight("America/New_York")
+    next_mid = (before + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    expected = (next_mid - before).total_seconds()
+    assert 0 < secs <= 86400
+    assert abs(secs - expected) <= 2  # allow a touch of clock drift
+
+
+def test_seconds_until_midnight_bad_tz_falls_back_to_utc():
+    # Invalid tz -> UTC calendar-day reset (still bounded, not a crash).
+    secs = sequencer._seconds_until_midnight("Not/AZone")
+    assert 0 < secs <= 86400
+
+
+async def test_li_rate_acquire_stamps_calendar_day_ttl(db_session, monkeypatch):
+    """The daily + per-kind cap counters get the caller-supplied TTL (seconds
+    to local midnight) rather than a hardcoded rolling 24h."""
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+    acc = await _make_li_account(db_session)
+    rc = sequencer._li_redis()
+    aid = str(acc.id)
+    keys = [f"li-rate:{aid}:last", f"li-rate:{aid}:day", f"li-rate:{aid}:day:connect"]
+    await rc.delete(*keys)
+    try:
+        r = await sequencer._li_rate_acquire(
+            acc, kind=SequenceNodeKind.LINKEDIN_CONNECT, daily_ttl_seconds=3600,
+        )
+        assert r["ok"] is True
+        day_ttl = await rc.ttl(f"li-rate:{aid}:day")
+        sub_ttl = await rc.ttl(f"li-rate:{aid}:day:connect")
+        # TTL reflects the passed 3600, not the old 86400 default.
+        assert 0 < day_ttl <= 3600
+        assert 0 < sub_ttl <= 3600
+    finally:
+        await rc.delete(*keys)
+
+
 async def test_linkedin_dispatch_is_staggered_per_account(db_session, monkeypatch):
     """With 3 leads due on the same account, one scheduler tick dispatches
     exactly ONE LinkedIn step and parks the other two until their slot
@@ -1307,3 +1361,75 @@ async def test_view_profile_is_exempt_from_staggering(db_session, monkeypatch):
     assert len(dispatched) == 3
     assert counts["dispatched_linkedin"] == 3
     assert counts["staggered_linkedin"] == 0
+
+
+# --------------------------------------------------------------------------
+# Transient failures park-and-retry instead of skipping the lead
+# --------------------------------------------------------------------------
+
+
+def test_is_transient_failure_classification():
+    f = sequencer._is_transient_failure
+    # Transient infra errors → retry.
+    assert f({"http_status": 500}) is True
+    assert f({"http_status": 503}) is True
+    assert f({"http_status": 0}) is True      # synthetic network status
+    assert f({"http_status": 429}) is True     # rate limited
+    assert f({"http_status": 301}) is True     # stray redirect
+    # Permanent client errors → advance/skip.
+    assert f({"http_status": 400}) is False
+    assert f({"http_status": 404}) is False
+    assert f({"http_status": 422}) is False
+    # Unknown / absent → permanent (never retry forever on the unclassifiable).
+    assert f({}) is False
+    assert f(None) is False
+    assert f({"http_status": "nope"}) is False
+
+
+async def test_server_error_returns_transient_status(db_session, monkeypatch):
+    """A 5xx from the provider yields a 'transient_error' status (retryable)."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    _stub_provider(
+        monkeypatch,
+        returns=ActionResult(ok=False, error="server boom", meta={"http_status": 503}),
+    )
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "transient_error"
+
+
+async def test_client_error_returns_failed(db_session, monkeypatch):
+    """A 4xx client error stays a permanent 'failed' (advances the cursor)."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    _stub_provider(
+        monkeypatch,
+        returns=ActionResult(ok=False, error="invalid recipient", meta={"http_status": 422}),
+    )
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(li_node.id))
+    assert result["status"] == "failed"
+
+
+async def test_transient_error_parks_lead_instead_of_advancing(db_session, monkeypatch):
+    """A transient_error result parks the lead on its node + reschedules,
+    rather than advancing the cursor past it."""
+    monkeypatch.setattr(sequencer, "_LI_REDIS_CLIENT", None)
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    _, _entry, li_node = await _build_view_profile_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    state = await _enroll_on_node(db_session, lead, li_node)
+
+    await sequencer._record_execution_and_advance(
+        lead.id, li_node.id,
+        {"status": "transient_error", "error": "boom", "meta": {"http_status": 503}},
+    )
+
+    await db_session.refresh(state)
+    assert state.status == LeadSequenceStatus.ACTIVE
+    assert state.current_node_id == li_node.id   # parked, not advanced
+    assert state.next_run_at > _now()            # rescheduled for a retry

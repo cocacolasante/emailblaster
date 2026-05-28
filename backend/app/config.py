@@ -19,7 +19,17 @@ class Settings(BaseSettings):
 
     # Anthropic
     ANTHROPIC_API_KEY: str = ""
+    # Compose model — writes the actual email copy, so quality matters.
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
+    # Research model — just extracts structured facts from web-search results,
+    # which a cheaper model handles fine.  Research ingests large web-search
+    # result pages as input tokens (the dominant AI cost), so running it on
+    # Haiku instead of Sonnet is ~3.75x cheaper on that token spend.
+    ANTHROPIC_RESEARCH_MODEL: str = "claude-haiku-4-5-20251001"
+    # Web searches allowed per lead's research call.  Each search costs a tool
+    # fee AND ingests result pages as input tokens, so this is a direct cost
+    # lever.  2-3 covers person + company; 5 was wasteful.
+    RESEARCH_WEB_SEARCH_MAX_USES: int = 3
 
     # Email sending
     BREVO_API_KEY: str = ""

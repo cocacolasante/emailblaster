@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  applySignature,
   approveAll as approveAllCampaign,
   getCampaign,
   getCampaignActivity,
@@ -12,6 +13,7 @@ import {
   reEnrollHalted,
   resumeCampaign,
   updateCampaign,
+  updateLeadEmail,
 } from '../api/campaigns.js';
 import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
 import LeadTable from '../components/LeadTable.jsx';
@@ -720,10 +722,105 @@ function ActivityTab({ campaignId, campaign }) {
 }
 
 
+function SignatureEditor({ campaignId, campaign }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [sig, setSig] = useState(campaign.signature || '');
+  const dirty = sig !== (campaign.signature || '');
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateCampaign(campaignId, { signature: sig }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+      toast.success('Signature saved');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save signature'),
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: () => applySignature(campaignId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] });
+      toast.success(`Signature applied to ${data.updated} email${data.updated === 1 ? '' : 's'}`);
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to apply signature'),
+  });
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" data-testid="signature-editor">
+      <h3 className="text-sm font-semibold text-slate-900 mb-1">Email signature</h3>
+      <p className="text-xs text-slate-500 mb-3">
+        Saved on the campaign and swapped in for the AI's sign-off on every email
+        (including future ones). Include your contact info, website, and calendar link.
+        Already-composed emails update when you click <strong>Apply to all emails</strong>;
+        sent emails are left alone.
+      </p>
+      <textarea
+        value={sig}
+        onChange={(e) => setSig(e.target.value)}
+        rows={5}
+        placeholder={'Anthony Colasante\nVP Sales, Acme\n555-123-4567\nacme.com\ncal.com/anthony'}
+        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+      />
+      <div className="flex justify-end gap-2 mt-3">
+        <button
+          type="button"
+          onClick={() => saveMutation.mutate()}
+          disabled={!dirty || saveMutation.isPending}
+          data-testid="save-signature-btn"
+          className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {saveMutation.isPending ? 'Saving…' : 'Save signature'}
+        </button>
+        <button
+          type="button"
+          onClick={() => applyMutation.mutate()}
+          disabled={!(campaign.signature || '').trim() || dirty || applyMutation.isPending}
+          title={dirty ? 'Save the signature first' : 'Apply to all composed, unsent emails'}
+          data-testid="apply-signature-btn"
+          className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        >
+          {applyMutation.isPending ? 'Applying…' : 'Apply to all emails'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 function LeadEmailModal({ campaignId, lead, onClose }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
   const { data: detail, isLoading, error } = useQuery({
     queryKey: ['lead-detail', campaignId, lead.id],
     queryFn: () => getLeadDetail(campaignId, lead.id),
+  });
+
+  const [editing, setEditing] = useState(false);
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const sent = detail?.send_status === 'sent';
+
+  function startEdit() {
+    setSubject(detail?.composed_subject || '');
+    setBody(detail?.composed_body || '');
+    setEditing(true);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateLeadEmail(campaignId, lead.id, {
+      composed_subject: subject,
+      composed_body: body,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail', campaignId, lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] });
+      setEditing(false);
+      toast.success('Email updated');
+    },
+    onError: (err) => {
+      toast.error(err?.response?.data?.detail || 'Failed to update email');
+    },
   });
 
   const qualityColors = {
@@ -795,8 +892,59 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
               )}
             </div>
 
-            {/* Composed email */}
-            {detail.composed_subject || detail.composed_body ? (
+            {/* Composed email — view or edit */}
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Email</span>
+              {!editing && !sent && (detail.composed_subject || detail.composed_body) && (
+                <button
+                  type="button"
+                  onClick={startEdit}
+                  data-testid="edit-email-btn"
+                  className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {editing ? (
+              <div className="space-y-3" data-testid="email-editor">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Subject</label>
+                  <input
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Body</label>
+                  <textarea
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    rows={12}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditing(false)}
+                    className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => saveMutation.mutate()}
+                    disabled={saveMutation.isPending}
+                    data-testid="save-email-btn"
+                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {saveMutation.isPending ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            ) : detail.composed_subject || detail.composed_body ? (
               <div className="border border-slate-200 rounded-lg overflow-hidden">
                 <div className="bg-slate-50 border-b border-slate-200 px-4 py-2.5">
                   <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-2">Subject</span>
@@ -814,6 +962,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
 
             <div className="flex gap-4 text-xs text-slate-500 pt-1">
               <span>Send status: <strong className="text-slate-700">{detail.send_status}</strong></span>
+              {sent && <span className="text-slate-400">(sent emails can't be edited)</span>}
               {detail.brevo_message_id && (
                 <span>Message ID: <code className="text-slate-600">{detail.brevo_message_id}</code></span>
               )}
@@ -1002,6 +1151,7 @@ export default function CampaignDetail() {
       )}
       {tab === 'leads' && (
         <div data-testid="leads-tab">
+          <SignatureEditor campaignId={id} campaign={campaign} />
           <LeadTable
             campaignId={id}
             replyTrackingEnabled={!!campaign.connected_account_configured}

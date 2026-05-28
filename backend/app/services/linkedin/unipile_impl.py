@@ -130,6 +130,13 @@ class UnipileLinkedInProvider(LinkedInProvider):
             "base_url": self._base_url(),
             "headers": self._headers(),
             "timeout": _LONG_TIMEOUT if long else _REQUEST_TIMEOUT,
+            # Follow redirects: Unipile 301-redirects GET /users/{slug} to a
+            # Unicode-normalized (NFD + percent-encoded) URL when a LinkedIn
+            # public identifier contains accented characters (e.g.
+            # "rahnà-wakę-..." -> "rahna%CC%80-wake%CC%A8-...").  Without this
+            # httpx returns the 301's HTML "Redirecting" page, which we'd
+            # surface as a bogus failure and the lead's profile never resolves.
+            "follow_redirects": True,
         }
         if self._transport is not None:
             kwargs["transport"] = self._transport
@@ -326,7 +333,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             return ActionResult(ok=False, error=str(exc), meta={"challenged": True})
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
 
         # Unipile statuses we care about:
         #   "OK" / "CONNECTED" / "ACTIVE"        — good
@@ -416,7 +423,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             raise
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
 
         urn = None
         if isinstance(data, dict):
@@ -460,7 +467,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             raise
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
         return ActionResult(ok=True, external_id=provider_id, meta=data if isinstance(data, dict) else None)
 
     async def react_to_post(
@@ -483,7 +490,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             raise
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
         return ActionResult(ok=True, external_id=post_urn, meta=data if isinstance(data, dict) else None)
 
     async def latest_post_urn(self, account: Any, profile: ProfileRef) -> str | None:
@@ -534,7 +541,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             raise
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
         return ActionResult(ok=True, external_id=provider_id, meta=data if isinstance(data, dict) else None)
 
     async def send_dm(self, account: Any, profile: ProfileRef, text: str) -> ActionResult:
@@ -558,7 +565,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             raise
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
 
         msg_id = None
         if isinstance(data, dict):
@@ -656,7 +663,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
                     ok=False, error=str(exc),
                     meta={"premium_required": True, "code": exc.code},
                 )
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
         return ActionResult(ok=True, external_id=sn_id, meta=data if isinstance(data, dict) else None)
 
     async def comment_on_post(
@@ -674,7 +681,7 @@ class UnipileLinkedInProvider(LinkedInProvider):
             account.pending_challenge_url = exc.challenge_url or "https://www.linkedin.com"
             raise
         except UnipileError as exc:
-            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code})
+            return ActionResult(ok=False, error=str(exc), meta={"code": exc.code, "http_status": exc.status})
         return ActionResult(ok=True, external_id=post_urn, meta=data if isinstance(data, dict) else None)
 
     async def inbox_recent_events(

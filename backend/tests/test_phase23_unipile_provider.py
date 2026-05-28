@@ -112,6 +112,29 @@ async def test_request_4xx_raises_unipile_error():
 
 
 @pytest.mark.asyncio
+async def test_request_follows_unicode_slug_redirect():
+    """A LinkedIn slug with accented chars makes Unipile 301-redirect to a
+    Unicode-normalized URL.  The client must follow it (not surface the HTML
+    'Redirecting' page as a failure), so the profile resolves."""
+    calls: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(str(req.url))
+        if len(calls) == 1:
+            return httpx.Response(
+                301,
+                headers={"Location": "/api/v1/users/rahna%CC%80-wake%CC%A8-x/?account_id=acc-1"},
+                text="<!DOCTYPE html>\n<html><title>Redirecting</title></html>",
+            )
+        return httpx.Response(200, json={"provider_id": "ACoAA-resolved"})
+
+    prov = _provider_with(handler)
+    resolved = await prov._resolve_provider_id("acc-1", ProfileRef(public_id="rahnà-wakę-x"))
+    assert resolved == "ACoAA-resolved"
+    assert len(calls) == 2  # original (301) + followed redirect target (200)
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_error_maps_to_challenge_required():
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(

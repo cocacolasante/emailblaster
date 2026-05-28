@@ -100,23 +100,19 @@ async def check_rate_limits(
 ) -> dict[str, Any]:
     """Return {"ok": True} when the lead may send right now, else a dict
     describing the deferral with either retry_in (seconds) or retry_at (ISO datetime).
+
+    The min-delay check ATOMICALLY claims the window via ``SET NX EX`` — this
+    is the single serialization point that stops a burst of concurrent send
+    tasks (Celery prefork runs several at once) from all reading a stale
+    ``last_sent`` and firing together (the "bulk of N" the user saw).  Only
+    one task per ``min_delay_seconds`` claims the gate; the rest defer and
+    reschedule.  ``SET NX EX`` is atomic on both real Redis and fakeredis (no
+    Lua needed).
     """
     cid = str(campaign.id)
 
-    last_sent_raw = await redis_client.get(f"rate:{cid}:last_sent")
-    if last_sent_raw:
-        try:
-            last_sent_ts = float(last_sent_raw)
-        except (TypeError, ValueError):
-            last_sent_ts = 0.0
-        elapsed = time.time() - last_sent_ts
-        if elapsed < campaign.min_delay_seconds:
-            return {
-                "ok": False,
-                "reason": "min_delay",
-                "retry_in": int(campaign.min_delay_seconds - elapsed) + 1,
-            }
-
+    # Hard caps first (read-only).  Safe under the min-gate serialization
+    # below — only one send claims the gate per window, so caps aren't raced.
     if campaign.max_per_hour is not None:
         hour_raw = await redis_client.get(f"rate:{cid}:hour")
         hour_count = int(hour_raw) if hour_raw else 0
@@ -137,23 +133,62 @@ async def check_rate_limits(
                 "retry_at": tomorrow.isoformat(),
             }
 
+    # Atomic min-delay claim.  Whoever sets the gate key first owns this
+    # window; everyone else gets the key's TTL back as their retry interval.
+    min_delay = campaign.min_delay_seconds or 0
+    if min_delay > 0:
+        gate_key = f"rate:{cid}:min_gate"
+        claimed = await redis_client.set(
+            gate_key, str(time.time()), nx=True, ex=min_delay
+        )
+        if not claimed:
+            ttl = await redis_client.ttl(gate_key)
+            return {
+                "ok": False,
+                "reason": "min_delay",
+                "retry_in": max(int(ttl), 1),
+            }
+
     return {"ok": True}
+
+
+def _seconds_until_local_midnight(tz_name: str | None) -> int:
+    """Seconds until the next local midnight in ``tz_name`` (the campaign's
+    timezone), so the DAILY cap resets on the calendar-day boundary rather
+    than as a rolling 24h window anchored to the day's first send.  Falls
+    back to UTC on a missing/invalid timezone.
+    """
+    try:
+        tz = pytz.timezone(tz_name or "UTC")
+    except Exception:  # noqa: BLE001 — bad tz string → safe default
+        tz = pytz.UTC
+    now_local = datetime.now(tz)
+    tomorrow = (now_local + timedelta(days=1)).date()
+    next_midnight = tz.localize(
+        datetime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 0, 0)
+    )
+    secs = int((next_midnight - now_local).total_seconds())
+    return secs if 0 < secs <= 86400 else 86400
 
 
 async def increment_rate_counters(
     campaign: Campaign, redis_client: aioredis.Redis
 ) -> None:
+    """Count a successful send against the hourly/daily caps.
+
+    The min-delay window is claimed atomically in ``check_rate_limits`` (the
+    ``min_gate`` key), so it is NOT set here — this only bumps the caps.  The
+    daily counter expires at the next local midnight (calendar-day reset),
+    matching the ``daily_cap`` retry_at; the hourly counter stays a rolling
+    60-minute window.
+    """
     cid = str(campaign.id)
+    day_ttl = _seconds_until_local_midnight(campaign.schedule_timezone)
     pipe = redis_client.pipeline()
     pipe.incr(f"rate:{cid}:hour")
     pipe.expire(f"rate:{cid}:hour", 3600, nx=True)
     pipe.incr(f"rate:{cid}:day")
-    pipe.expire(f"rate:{cid}:day", 86400, nx=True)
-    pipe.set(
-        f"rate:{cid}:last_sent",
-        str(time.time()),
-        ex=max(campaign.min_delay_seconds + 10, 60),
-    )
+    pipe.expire(f"rate:{cid}:day", day_ttl, nx=True)
     await pipe.execute()
 
 

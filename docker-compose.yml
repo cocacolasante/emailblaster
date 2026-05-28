@@ -40,6 +40,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_RESEARCH_MODEL: ${ANTHROPIC_RESEARCH_MODEL:-claude-haiku-4-5-20251001}
+      RESEARCH_WEB_SEARCH_MAX_USES: ${RESEARCH_WEB_SEARCH_MAX_USES:-3}
       BREVO_API_KEY: ${BREVO_API_KEY:-}
       BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-noreply@example.com}
       BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Email Blaster}
@@ -80,6 +83,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_RESEARCH_MODEL: ${ANTHROPIC_RESEARCH_MODEL:-claude-haiku-4-5-20251001}
+      RESEARCH_WEB_SEARCH_MAX_USES: ${RESEARCH_WEB_SEARCH_MAX_USES:-3}
       BREVO_API_KEY: ${BREVO_API_KEY:-}
       BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-noreply@example.com}
       BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-Email Blaster}

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models import Campaign, Lead, ResearchMode, ResearchStatus
-from app.services import apollo, hunter, site_scraper, web_research
+from app.services import apollo, hunter, web_research
 from app.workers.celery_app import celery_app
 from app.workers.compose import compose_lead
 
@@ -25,12 +25,19 @@ logger = logging.getLogger(__name__)
 
 def _assess_quality(
     web_data: dict[str, Any],
-    site_data: dict[str, Any],
     apollo_data: dict[str, Any],
 ) -> str:
-    """3-tier quality signal driving the compose worker's prompt selection."""
+    """3-tier quality signal driving the compose worker's prompt selection.
+
+    ``web_data`` is the merged person+company research (person_news,
+    company_description, recent_updates, industry, ...).
+    """
     has_person = bool(web_data.get("person_news"))
-    has_company = bool(site_data.get("about")) or bool(web_data.get("company_description"))
+    has_company = (
+        bool(web_data.get("company_description"))
+        or bool(web_data.get("company_news"))
+        or bool(web_data.get("recent_updates"))
+    )
     has_enrichment = bool(apollo_data)
 
     signals = sum([has_person, has_company, has_enrichment])
@@ -84,12 +91,14 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             quality = "low"
             research_data: dict[str, Any] = {"quality": "low", "skipped": True}
         else:
+            # ONE web-search call covers person + company (was two: web_research
+            # + site_scraper).  Halves the per-lead web-search spend; the merged
+            # call returns company_description / recent_updates / industry too.
             tasks: list[asyncio.Future[Any]] = [
                 asyncio.ensure_future(
-                    web_research.research_person_web(first_name, last_name, company, job_title)
-                ),
-                asyncio.ensure_future(
-                    site_scraper.scrape_company_site(company, company_website or None)
+                    web_research.research_person_web(
+                        first_name, last_name, company, job_title, company_website
+                    )
                 ),
                 asyncio.ensure_future(hunter.verify_email_hunter(email)),
             ]
@@ -103,20 +112,17 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
             web_data = _safe(results[0], {})
-            site_data = _safe(results[1], {})
-            hunter_data = _safe(results[2], {"deliverable": True, "score": 0})
-            apollo_data: dict[str, Any] = _safe(results[3], {}) if run_apollo else {}
+            hunter_data = _safe(results[1], {"deliverable": True, "score": 0})
+            apollo_data: dict[str, Any] = _safe(results[2], {}) if run_apollo else {}
 
-            quality = _assess_quality(web_data, site_data, apollo_data)
+            quality = _assess_quality(web_data, apollo_data)
             research_data = {
                 "quality": quality,
                 "person_news": web_data.get("person_news", []),
                 "company_news": web_data.get("company_news", []),
-                "company_description": (
-                    site_data.get("about") or web_data.get("company_description") or ""
-                ),
-                "recent_updates": site_data.get("recent_updates", []),
-                "industry": site_data.get("industry") or apollo_data.get("company_industry") or "",
+                "company_description": web_data.get("company_description") or "",
+                "recent_updates": web_data.get("recent_updates", []),
+                "industry": web_data.get("industry") or apollo_data.get("company_industry") or "",
                 "linkedin_headline": apollo_data.get("linkedin_headline") or "",
                 "job_title": apollo_data.get("job_title") or job_title,
                 "seniority": apollo_data.get("seniority") or "",

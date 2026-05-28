@@ -25,6 +25,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -76,12 +77,56 @@ ADVANCE_BATCH_SIZE = 200
 # and we push next_run_at out so the step retries when the underlying issue
 # (account challenge, rate-limit cooldown, restriction) is resolved.
 # Anything NOT in this set is permanent: the cursor advances like a sent step.
-TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited"}
+TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited", "transient_error"}
+
+
+def _is_transient_failure(meta: dict[str, Any] | None) -> bool:
+    """Whether a failed LinkedIn action is an infrastructure/transient error
+    worth retrying (vs a permanent client error that should skip the lead).
+
+    Keys off the HTTP status Unipile returned (surfaced on the ActionResult
+    meta as ``http_status``): server errors (5xx), network failures (our
+    synthetic status 0), rate-limit (429), and any stray redirect (3xx — we
+    follow redirects, but a leftover shouldn't burn the lead) are transient.
+    Specific 4xx client errors (invalid recipient, profile locked, already
+    invited, ...) are permanent and advance the cursor as before.  An
+    unknown/absent status is treated as permanent so we never retry forever
+    on something we can't classify.
+    """
+    status = (meta or {}).get("http_status")
+    if not isinstance(status, int):
+        return False
+    return status == 0 or status == 429 or 300 <= status < 400 or 500 <= status < 600
 # LinkedIn cap deferral reasons that auto-pause a campaign when no email work
 # is reachable downstream (nothing useful can run until the cap window resets).
 # ``daily_cap`` is also an email (Brevo) gate reason, so callers must ALSO
 # check the node is a LinkedIn kind before acting on it.
 _LI_CAP_PAUSE_REASONS = {"daily_cap", "connect_cap", "dm_cap"}
+
+# Small cushion added to a cap auto-pause's resume time so the beat resumes a
+# campaign AFTER its cap counter has actually expired (not racing the exact
+# reset instant), avoiding a resume-then-immediately-recap flap.
+_CAP_RESUME_BUFFER_SECONDS = 60
+
+
+def _seconds_until_midnight(tz_name: str | None) -> int:
+    """Seconds from now until the next local midnight in ``tz_name``.
+
+    Used as the TTL for the daily LinkedIn caps so they reset on the
+    calendar-day boundary in the campaign's timezone (a "new day" lifts the
+    cap), instead of a rolling 24h window anchored to the day's first action.
+    Falls back to UTC (still a calendar-day reset) on a missing/invalid tz.
+    """
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+    except Exception:  # noqa: BLE001 — bad tz string → safe default
+        tz = timezone.utc
+    now_local = datetime.now(tz)
+    next_midnight = (now_local + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    secs = int((next_midnight - now_local).total_seconds())
+    return secs if 0 < secs <= 86400 else 86400
 # How long to wait before retrying a transient skip. 5 min is short enough
 # to be responsive after a user fixes their account, long enough not to
 # spin every 60s while they're still working on it.
@@ -317,11 +362,17 @@ async def _li_rate_acquire(
     account: LinkedInAccount,
     kind: SequenceNodeKind | None = None,
     page_id: str | None = None,
+    daily_ttl_seconds: int = 86400,
 ) -> dict[str, Any]:
     """Atomic check-and-bump.  Returns ``{"ok": True}`` when the slot is
     claimed (counters already incremented), otherwise the same reason
     dict shape ``_li_rate_check`` returned so callers don't need to
     change their handling of skip statuses.
+
+    ``daily_ttl_seconds`` is the TTL stamped on the daily-total + per-kind
+    cap counters when first created (NX), i.e. when the cap window resets.
+    Callers pass seconds-until-local-midnight so "daily" means the calendar
+    day in the campaign's timezone; defaults to a rolling 24h.
 
     Server-side Lua makes the whole gate sequence single-step so two
     concurrent invocations can't both pass when only one slot remains.
@@ -361,7 +412,7 @@ async def _li_rate_acquire(
         str(sub_cap),
         str(page_cap),
         str(last_ttl),
-        str(86400),
+        str(daily_ttl_seconds),
         str(60 * 60 * 24 * 30),
     )
     # Redis returns Lua arrays as Python lists.  Decoded with the
@@ -1026,7 +1077,12 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             # concurrent tick that races us reads the updated values and
             # gets denied.  Trade-off: a subsequent action failure
             # counts the slot anyway (no refund), bounded by the cap.
-            rate = await _li_rate_acquire(account, kind=kind, page_id=rate_page_id)
+            rate = await _li_rate_acquire(
+                account, kind=kind, page_id=rate_page_id,
+                # Daily caps reset at local midnight in the campaign's tz, so a
+                # "new day" lifts the cap (vs a rolling 24h window).
+                daily_ttl_seconds=_seconds_until_midnight(campaign.schedule_timezone),
+            )
             if not rate.get("ok"):
                 reason = rate.get("reason")
                 if reason == "min_delay":
@@ -1163,6 +1219,15 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             # Slot was already claimed inside the atomic acquire above —
             # no separate bump.
             return {"status": "sent", "external_id": result.external_id, "meta": result.meta}
+        # A transient infra failure (5xx / network / stray redirect) parks the
+        # lead and retries instead of permanently skipping it; permanent client
+        # errors fall through to "failed" (advance the cursor) as before.
+        if _is_transient_failure(result.meta):
+            return {
+                "status": "transient_error",
+                "error": result.error or "transient provider error",
+                "meta": result.meta,
+            }
         return {"status": "failed", "error": result.error or "unknown error"}
     finally:
         await engine.dispose()
@@ -1234,7 +1299,7 @@ async def _record_execution_and_advance(
                 mapped = LeadStepResult.SENT
             elif status in {"suppressed", "skipped", "paused", "rate_limited",
                             "misconfigured", "challenged", "restricted",
-                            "not_found", "deferred"}:
+                            "not_found", "deferred", "transient_error"}:
                 mapped = LeadStepResult.SKIPPED
             else:
                 mapped = LeadStepResult.FAILED
@@ -1310,7 +1375,7 @@ async def _record_execution_and_advance(
                             if campaign is not None and campaign.status == CampaignStatus.RUNNING:
                                 campaign.status = CampaignStatus.PAUSED
                                 campaign.auto_paused_until = _now() + timedelta(
-                                    seconds=int(retry_in)
+                                    seconds=int(retry_in) + _CAP_RESUME_BUFFER_SECONDS
                                 )
                                 logger.info(
                                     "Auto-paused campaign %s at LinkedIn %s cap; "

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from '../components/Toast.jsx';
@@ -24,6 +24,10 @@ vi.mock('../api/campaigns.js', () => ({
   }),
   listCampaignErrors: vi.fn().mockResolvedValue([]),
   retryFailedLeads: vi.fn(),
+  updateCampaign: vi.fn().mockResolvedValue({}),
+  applySignature: vi.fn().mockResolvedValue({ updated: 3 }),
+  updateLeadEmail: vi.fn().mockResolvedValue({}),
+  getLeadDetail: vi.fn(),
 }));
 
 // Recharts stub
@@ -178,5 +182,59 @@ describe('CampaignDetail', () => {
     expect(screen.getByText(/direct/i)).toBeInTheDocument();
     expect(screen.getByText(/anthony/i)).toBeInTheDocument();
     expect(screen.getByText(/09:00.*17:00.*utc/i)).toBeInTheDocument();
+  });
+
+  it('Leads tab signature editor saves via updateCampaign', async () => {
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    const editor = await screen.findByTestId('signature-editor');
+    fireEvent.change(within(editor).getByRole('textbox'), {
+      target: { value: 'Anthony\n555-1234\nacme.com' },
+    });
+    fireEvent.click(screen.getByTestId('save-signature-btn'));
+    await waitFor(() => expect(api.updateCampaign).toHaveBeenCalledWith('c1', {
+      signature: 'Anthony\n555-1234\nacme.com',
+    }));
+  });
+
+  it('Apply-to-all calls applySignature when a saved signature exists', async () => {
+    api.getCampaign.mockResolvedValue({ ...RUNNING_CAMPAIGN, signature: 'Saved sig' });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    await screen.findByTestId('signature-editor');
+    const apply = screen.getByTestId('apply-signature-btn');
+    expect(apply).not.toBeDisabled();  // saved sig, not dirty
+    fireEvent.click(apply);
+    await waitFor(() => expect(api.applySignature).toHaveBeenCalledWith('c1'));
+  });
+
+  it('editing a composed email saves via updateLeadEmail', async () => {
+    api.listCampaignLeads.mockResolvedValue({
+      items: [{
+        id: 'L1', email: 'l@x.com', first_name: 'Jane', last_name: 'Doe',
+        company: 'Acme', research_status: 'done', compose_status: 'done',
+        send_status: 'pending',
+      }],
+      total: 1, page: 1, page_size: 50, total_pages: 1,
+    });
+    api.getLeadDetail.mockResolvedValue({
+      composed_subject: 'Hi', composed_body: 'Body here',
+      send_status: 'pending', research_data: { quality: 'low' },
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    fireEvent.click(await screen.findByText('View email'));
+    fireEvent.click(await screen.findByTestId('edit-email-btn'));
+    const editor = await screen.findByTestId('email-editor');
+    // [0] = subject input, [1] = body textarea
+    const bodyField = within(editor).getAllByRole('textbox')[1];
+    fireEvent.change(bodyField, { target: { value: 'Body here\n\nAnthony\n555-1234' } });
+    fireEvent.click(screen.getByTestId('save-email-btn'));
+    await waitFor(() => expect(api.updateLeadEmail).toHaveBeenCalledWith(
+      'c1', 'L1', expect.objectContaining({ composed_body: 'Body here\n\nAnthony\n555-1234' }),
+    ));
   });
 });

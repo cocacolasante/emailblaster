@@ -22,7 +22,99 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Paused campaigns freeze; LinkedIn cap
+- **Last completed:** **Edit composed emails + bulk signature.**  Two
+  related editing features:
+  - **Reusable campaign signature.**  New nullable `campaigns.signature`
+    column (migration 0012) — the sender's contact / website / calendar
+    block.  New pure service `app/services/signature.py`
+    `apply_signature(body, signature)`: finds the AI's sign-off (a
+    closing-phrase line like ``Best,`` near the end, `_CLOSINGS` set,
+    within the last 6 lines) and replaces from there to the end with the
+    signature; falls back to appending when no sign-off is found;
+    idempotent (a body already ending with the signature is returned
+    unchanged, so bulk-apply / re-compose are safe to repeat).
+    `compose_lead_async` applies it to every AI-composed body (template
+    mode is left verbatim).  `POST /campaigns/{id}/apply-signature`
+    bulk-applies to all composed, not-yet-sent leads (returns
+    `{updated}`); sent emails are skipped.
+  - **Per-email edit.**  `PATCH /campaigns/{id}/leads/{lid}` edits
+    `composed_subject`/`composed_body` for ANY lead (not just preview
+    samples); 409 if already sent.  Frontend: the `LeadEmailModal`
+    ("View email") gained an Edit mode (subject + body, save via
+    `updateLeadEmail`), and the Leads tab has a `SignatureEditor`
+    (textarea + Save + "Apply to all emails").
+  - `signature` on Campaign Create/Update/Response + `campaign_to_dict`
+    (+ `_blank_to_none`).  **`update_campaign`'s draft/previewing-only
+    content guard exempts `signature`** (alongside the account-id
+    fields) so it's editable on paused/running campaigns — it only
+    affects emails on Apply / future composes.  Tests: 7
+    signature-service unit + 1 compose (sign-off swap) + 4+3 endpoint
+    (edit, edit-blocked-when-sent, bulk-apply, no-signature-400,
+    signature-editable-in-any-status×3) + 3 frontend.  Tests:
+    **backend 548, frontend 173**.
+
+- **Previously:** **Email sends staggered by the campaign's
+  min_delay (no more bulk-of-N).**  Emails were going out in bursts of
+  ~8 (Celery prefork concurrency) because the rate gate was
+  read-then-act: `check_rate_limits` GET `last_sent`, and the bump
+  (`increment_rate_counters`) ran AFTER the Brevo send — so N concurrent
+  send tasks all read the stale timestamp, all passed `min_delay`, and
+  all sent.  Same TOCTOU race the LinkedIn limiter had.  Two changes:
+  - **Atomic min-delay gate.**  `check_rate_limits` now claims the
+    window with `SET rate:{cid}:min_gate <now> NX EX min_delay` — the
+    single serialization point; only one task per `min_delay_seconds`
+    claims it, the rest defer with `retry_in = TTL` and reschedule.
+    `SET NX EX` is atomic on real Redis AND fakeredis (no Lua, so the
+    existing fakeredis-based send tests keep working).  Hard caps
+    (hour/day) are read-checked first but aren't raced since the gate
+    serializes.  `increment_rate_counters` now only bumps hour/day
+    (the `last_sent` key is gone — the gate replaces it).
+  - **Staggered approve-all dispatch.**  `_kick_off_full_campaign`
+    schedules sends `min_delay` apart via `apply_async(eta=...)` instead
+    of firing the whole composed batch with `.delay()` at once, so the
+    common in-window case spaces cleanly without relying on gate
+    bounces.  The atomic gate is the backstop for residual collisions
+    (compose-trickle, beat follow-ups, out-of-window re-bunching).
+  - Tests: atomic-gate (first claims, second bounces), approve-all eta
+    spacing, updated min_delay + increment tests.  Tests: **backend
+    531, frontend 170**.
+  - **Follow-up: email daily cap resets on the calendar day too.**
+    `increment_rate_counters` now expires the `rate:{cid}:day` counter
+    at the next local midnight (campaign tz) via
+    `_seconds_until_local_midnight` (pytz, mirrors the LinkedIn
+    `_seconds_until_midnight`), instead of a rolling 86400 — matching
+    the `daily_cap` retry_at.  Hourly counter stays a rolling 60-min
+    window.  2 tests (helper + day-counter TTL).  Tests: **backend
+    533, frontend 170**.
+
+- **Previously:** **AI cost optimization (research ~$40→~$12 per
+  300 leads).**  "Fast" research was making TWO Sonnet+web-search calls
+  per lead — `web_research.research_person_web` AND
+  `site_scraper.scrape_company_site`, each `max_uses=5` (up to 10 web
+  searches/lead) — and the ingested search-result pages on Sonnet were
+  the dominant spend.  Three levers:
+  - **Merged the two research calls into ONE.**  `research_person_web`
+    now returns person + company fields (person_news, company_news,
+    company_description, recent_updates, industry, size_hint) in a
+    single call.  **Deleted `site_scraper.py`** (+ its test); the worker
+    fan-out dropped from `[web, site, hunter, (apollo)]` to `[web,
+    hunter, (apollo)]`.  `_assess_quality` is now `(web_data,
+    apollo_data)` (2-arg).
+  - **Research runs on Haiku, compose stays on Sonnet.**  New
+    `ANTHROPIC_RESEARCH_MODEL` (default `claude-haiku-4-5-20251001`)
+    used by `research_person_web`; `ANTHROPIC_MODEL` (Sonnet) still
+    composes the emails (quality).  Research is extraction, so Haiku is
+    ~3.75x cheaper on the dominant ingested-token cost.  (The one-off
+    `research_client` tool keeps Sonnet — it's interactive, one call per
+    request.)
+  - **`max_uses` 5→3** via new `RESEARCH_WEB_SEARCH_MAX_USES`.
+  - All three settings wired into docker-compose for backend+worker (and
+    `ANTHROPIC_MODEL`, which wasn't configurable before).  Tests updated
+    (merged single-call shape, 2-arg `_assess_quality`, model+max_uses
+    assertions); `test_phase6_site_scraper.py` deleted.  Tests:
+    **backend 529, frontend 170**.
+
+- **Previously:** **Paused campaigns freeze; LinkedIn cap
   auto-pauses (and auto-resumes) the campaign.**  Two related scheduler
   changes:
   - **Paused = frozen in place.**  The beat (`_advance_sequences_async`)
@@ -51,6 +143,18 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   - Tests: paused-freeze, cap-auto-pause (no email downstream),
     no-pause (email downstream), auto-resume vs manual/future, + 2
     frontend.  Tests: **backend 524, frontend 170**.
+  - **Follow-up: daily cap resets on the calendar day, not a rolling
+    24h window.**  The cap counters used `EXPIRE 86400 NX`, anchoring
+    the reset to the day's first action (so a "new day" didn't lift the
+    cap until ~24h after you first started).  Now `_li_rate_acquire`
+    takes `daily_ttl_seconds` = `_seconds_until_midnight(campaign.
+    schedule_timezone)`, so the daily + per-kind counters expire at
+    local midnight in the campaign's tz.  `auto_paused_until` (from the
+    cap `retry_in`) therefore lands at midnight + a 60s
+    `_CAP_RESUME_BUFFER_SECONDS` cushion so the beat resumes AFTER the
+    counter clears (no resume-then-recap flap).  3 tests
+    (seconds-to-midnight align + bad-tz fallback + calendar-day TTL
+    stamped).  Tests: **backend 527, frontend 170**.
 
 - **Previously:** **Staggered LinkedIn dispatch (one lead at a
   time, not bulk).**  The sequencer beat (`_advance_sequences_async`)
@@ -498,7 +602,8 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 |---|---|
 | Backend | FastAPI · async SQLAlchemy 2 · Celery 5 |
 | DB / cache | PostgreSQL 15 · Redis 7 |
-| AI compose | Anthropic Claude Sonnet 4.6 |
+| AI compose | Anthropic Claude Sonnet 4.6 (`ANTHROPIC_MODEL`) |
+| AI research | Anthropic Claude Haiku 4.5 (`ANTHROPIC_RESEARCH_MODEL`) — cheaper; extraction only |
 | Email | Brevo transactional API + webhooks |
 | Reply tracking | IMAP poller (Celery beat, every 20 min) |
 | Frontend | React 18 · Vite 6 · TanStack Query · `@xyflow/react` |
@@ -738,6 +843,24 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   blocked on the lock until the commit; the second one then reads
   `SendStatus.SENT` and short-circuits.  Defends against the duplicate-
   send race the audit flagged.
+- **The email min-delay gate is an atomic CLAIM, not a read.**
+  `check_rate_limits` does `SET rate:{cid}:min_gate <now> NX EX
+  min_delay` — whoever sets it first owns that `min_delay` window; the
+  rest get the key's TTL as `retry_in`.  This is what stops Celery
+  prefork (N tasks at once) from all passing a read-only check and
+  bulk-sending.  Consequences: (1) it has a SIDE EFFECT inside a
+  "check" function, so it's the LAST gate (after suppression/paused/
+  window) — only claimed when everything else passed; (2) a send that
+  then fails at Brevo still "wastes" that window (acceptable over-
+  spacing, never under); (3) `increment_rate_counters` only bumps
+  hour/day now — the old `rate:{cid}:last_sent` key is gone.
+  `SET NX EX` is atomic on fakeredis too, so no Lua / real-Redis test
+  swap was needed (unlike the LinkedIn limiter).  approve-all also
+  pre-spaces dispatch by `min_delay` (`apply_async eta`) so the gate
+  rarely has to bounce in the common in-window case.  The daily cap
+  counter (`rate:{cid}:day`) expires at the next local midnight in the
+  campaign tz (`_seconds_until_local_midnight`), so "daily" is a
+  calendar day — same as LinkedIn; the hourly counter stays rolling 60m.
 - **Unsubscribe link is HMAC-signed + POST-confirm.**  GET renders a
   confirm page (no side effect), POST applies the suppression.  Token is
   `hmac_sha256(SECRET_KEY, lead.id.bytes)[:32]` so email-scanner GET
@@ -787,6 +910,43 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   Brevo email-gate reason, so without that gate an email rate-limit
   would wrongly pause the campaign.  Email-bearing sequences keep
   running at the cap (email isn't LinkedIn-capped).
+- **Transient LinkedIn failures park-and-retry; only permanent ones
+  skip the lead.**  A failed action's `ActionResult.meta` now carries
+  `http_status` (the Unipile HTTP status; network failures use the
+  synthetic `0`).  `_send_linkedin_step_async` classifies via
+  `_is_transient_failure`: 5xx / 0 (network) / 429 / 3xx (stray
+  redirect) → status `transient_error` (in `TRANSIENT_SKIP_STATUSES`,
+  so it parks on the node and retries every `TRANSIENT_RETRY_MINUTES`
+  up to `MAX_TRANSIENT_RETRIES`, then advances).  Specific 4xx client
+  errors (invalid recipient, profile locked, already-invited, ...) and
+  unknown/absent status stay `failed` → advance the cursor (permanent
+  skip), as before.  `transient_error` maps to a SKIPPED execution row
+  so it counts against the per-visit retry budget like the other
+  transient statuses.
+- **The Unipile httpx client follows redirects (`follow_redirects=True`).**
+  A LinkedIn public slug with accented characters (e.g.
+  `rahnà-wakę-...`, `josé-...`) makes Unipile **301-redirect**
+  `GET /api/v1/users/{slug}` to a Unicode-normalized (NFD +
+  percent-encoded) URL.  httpx does NOT follow redirects by default, so
+  without this the client returned the 301's HTML "Redirecting" page,
+  which surfaced as `{"status": "failed", "error": "<!DOCTYPE html>…"}`
+  — and since a failed LinkedIn step *advances the cursor*, the lead
+  got skipped past the connect without ever sending it.  If you ever
+  rebuild the client kwargs, keep `follow_redirects=True`.  (One-off
+  remediation when this bit us: find `lead_step_executions` with
+  `result='failed'` and `error ILIKE '%DOCTYPE%'` on connect nodes,
+  then reset those leads' `current_node_id` back to the live connect
+  node.)
+- **The LinkedIn daily cap resets on the calendar day (campaign tz),
+  not a rolling 24h.**  `_li_rate_acquire(daily_ttl_seconds=...)` is
+  passed `_seconds_until_midnight(campaign.schedule_timezone)`, so the
+  `li-rate:{aid}:day[:connect|:dm]` counters expire at local midnight
+  (set NX on the day's first action).  A "new day" lifts the cap.  The
+  per-account counter's TTL is set by whichever campaign acts first
+  that day (its tz wins) — fine for the common single-tz case.  When
+  changing this, note the auto-pause `retry_in` (and thus
+  `auto_paused_until`) rides on this TTL, so the campaign auto-resumes
+  at the next local midnight + a 60s buffer.
 - **LinkedIn dispatch is staggered, not bulk — with DISTINCT slots.**
   The sequencer beat releases at most one LinkedIn step per account per
   `LINKEDIN_STAGGER_SECONDS` (default 120; 0 disables).  Due leads
@@ -901,13 +1061,20 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-26 — Paused campaigns now freeze in place (the
-beat only drives RUNNING campaigns); a LinkedIn-only campaign that hits
-its daily cap auto-pauses (`auto_paused_until`) and auto-resumes when the
-cap resets.  (Earlier same day: staggered LinkedIn dispatch w/ distinct
-slots + view_profile exempt; any-node entry; "template"/"none" modes.)_
+_Last updated: 2026-05-27 — Edit composed emails (per-email modal +
+`PATCH .../leads/{lid}`) and a reusable campaign signature that swaps the
+AI's sign-off for your contact/website/calendar block (auto on compose +
+bulk `POST .../apply-signature`).  Earlier 2026-05-27: email send
+staggering (atomic min-gate + approve-all spacing) + calendar-day daily
+cap; AI cost optimization; LinkedIn cap calendar-day reset; Unipile
+redirect-follow + transient-retry._
 
-_Backend tests: **524 passing**.  Frontend tests: **170 passing**._
+_Also fixed: the Unipile client now follows 301 redirects (accented-slug
+profiles resolve instead of failing on the HTML "Redirecting" page); and
+transient LinkedIn failures (5xx / network / 3xx) now park-and-retry
+instead of permanently skipping the lead — only 4xx client errors skip._
+
+_Backend tests: **548 passing**.  Frontend tests: **173 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

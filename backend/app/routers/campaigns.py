@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.workers.send import compute_next_send_window
 from app.schemas.campaign import (
+    ApplySignatureResponse,
     CampaignActivity,
     CampaignCreate,
     CampaignResponse,
@@ -43,8 +44,9 @@ from app.schemas.campaign import (
     SequenceStepEvent,
     campaign_to_dict,
 )
-from app.schemas.lead import LeadResponse, LeadSummary, PaginatedLeads
+from app.schemas.lead import LeadEmailUpdate, LeadResponse, LeadSummary, PaginatedLeads
 from app.services.sequence_service import ensure_default_sequence
+from app.services.signature import apply_signature
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -200,10 +202,12 @@ async def update_campaign(
 
     updates = payload.model_dump(exclude_unset=True)
 
-    # Account assignments are safe to change on any active campaign.
-    # Only enforce the status guard when content fields are also being edited.
-    _account_only_fields = {"linkedin_account_id", "connected_account_id"}
-    if updates.keys() - _account_only_fields:
+    # Account assignments and the email signature are safe to change on any
+    # status — the signature only affects emails when you click "Apply to all"
+    # or on future composes, so it shouldn't be gated.  Only OTHER content
+    # fields (goal, tone, schedule, ...) enforce the draft/previewing guard.
+    _status_exempt_fields = {"linkedin_account_id", "connected_account_id", "signature"}
+    if updates.keys() - _status_exempt_fields:
         if c.status not in {CampaignStatus.DRAFT, CampaignStatus.PREVIEWING}:
             raise HTTPException(
                 status_code=409,
@@ -331,6 +335,63 @@ async def get_campaign_lead(
     if lead is None or lead.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="Lead not found")
     return LeadResponse.model_validate(lead)
+
+
+@router.patch("/{campaign_id}/leads/{lead_id}", response_model=LeadResponse)
+async def update_campaign_lead_email(
+    campaign_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    payload: LeadEmailUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> LeadResponse:
+    """Edit a lead's composed email (subject / body).  Works for any lead,
+    not just preview samples — but a SENT email can't be changed."""
+    await _get_or_404(db, campaign_id)
+    lead = await db.get(Lead, lead_id)
+    if lead is None or lead.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.send_status == SendStatus.SENT:
+        raise HTTPException(
+            status_code=409, detail="Cannot edit an email that has already been sent"
+        )
+    updates = payload.model_dump(exclude_unset=True)
+    if "composed_subject" in updates and updates["composed_subject"] is not None:
+        lead.composed_subject = updates["composed_subject"]
+    if "composed_body" in updates and updates["composed_body"] is not None:
+        lead.composed_body = updates["composed_body"]
+    await db.commit()
+    await db.refresh(lead)
+    return LeadResponse.model_validate(lead)
+
+
+@router.post("/{campaign_id}/apply-signature", response_model=ApplySignatureResponse)
+async def apply_campaign_signature(
+    campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> ApplySignatureResponse:
+    """Apply the campaign's signature to every composed, not-yet-sent email —
+    swapping each one's AI sign-off for the signature block.  Idempotent: an
+    email that already ends with the signature is left unchanged, so it's safe
+    to run more than once.  Sent emails are skipped (can't be unsent)."""
+    c = await _get_or_404(db, campaign_id)
+    if not (c.signature or "").strip():
+        raise HTTPException(status_code=400, detail="Campaign has no signature set")
+
+    leads = (await db.execute(
+        select(Lead).where(
+            Lead.campaign_id == campaign_id,
+            Lead.compose_status == ComposeStatus.DONE,
+            Lead.send_status != SendStatus.SENT,
+        )
+    )).scalars().all()
+
+    updated = 0
+    for lead in leads:
+        new_body = apply_signature(lead.composed_body, c.signature)
+        if new_body != (lead.composed_body or ""):
+            lead.composed_body = new_body
+            updated += 1
+    await db.commit()
+    return ApplySignatureResponse(updated=updated)
 
 
 @router.delete("/{campaign_id}/leads/{lead_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

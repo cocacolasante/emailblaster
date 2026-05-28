@@ -41,6 +41,10 @@ class FailedLeadInfo(BaseModel):
     failed_stage: str  # "research" | "compose" | "send"
 
 
+class ApplySignatureResponse(BaseModel):
+    updated: int
+
+
 class RetryFailedResponse(BaseModel):
     research_retried: int
     compose_retried: int
@@ -102,6 +106,7 @@ class CampaignCreate(BaseModel):
     research_mode: ResearchMode = ResearchMode.FAST
     template_subject: str | None = None
     template_body: str | None = None
+    signature: str | None = None
     sample_count: int = Field(default=5, ge=1)
     connected_account_id: uuid.UUID | None = None
     linkedin_account_id: uuid.UUID | None = None
@@ -114,7 +119,7 @@ class CampaignCreate(BaseModel):
     min_delay_seconds: int = Field(default=60, ge=0)
 
     _v_days = field_validator("schedule_days")(_validate_days)
-    _v_tmpl = field_validator("template_subject", "template_body")(_blank_to_none)
+    _v_tmpl = field_validator("template_subject", "template_body", "signature")(_blank_to_none)
 
     @model_validator(mode="after")
     def _check_time_order(self) -> "CampaignCreate":
@@ -138,6 +143,7 @@ class CampaignUpdate(BaseModel):
     research_mode: ResearchMode | None = None
     template_subject: str | None = None
     template_body: str | None = None
+    signature: str | None = None
     sample_count: int | None = Field(default=None, ge=1)
     connected_account_id: uuid.UUID | None = None
     linkedin_account_id: uuid.UUID | None = None
@@ -150,7 +156,7 @@ class CampaignUpdate(BaseModel):
     min_delay_seconds: int | None = Field(default=None, ge=0)
 
     _v_days = field_validator("schedule_days")(_validate_days)
-    _v_tmpl = field_validator("template_subject", "template_body")(_blank_to_none)
+    _v_tmpl = field_validator("template_subject", "template_body", "signature")(_blank_to_none)
 
     @model_validator(mode="after")
     def _check_time_order(self) -> "CampaignUpdate":
@@ -252,6 +258,7 @@ class CampaignResponse(BaseModel):
     research_mode: ResearchMode
     template_subject: str | None
     template_body: str | None
+    signature: str | None
     sample_count: int
     connected_account_id: uuid.UUID | None
     connected_account: ConnectedAccountInfo | None
@@ -287,6 +294,7 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "research_mode": c.research_mode,
         "template_subject": c.template_subject,
         "template_body": c.template_body,
+        "signature": c.signature,
         "sample_count": c.sample_count,
         "connected_account_id": c.connected_account_id,
         "linkedin_account_id": c.linkedin_account_id,

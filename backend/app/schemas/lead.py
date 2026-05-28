@@ -28,6 +28,12 @@ class LeadSummary(BaseModel):
     created_at: datetime
 
 
+class LeadEmailUpdate(BaseModel):
+    """Edit a lead's composed email (subject and/or body)."""
+    composed_subject: str | None = None
+    composed_body: str | None = None
+
+
 class LeadResponse(LeadSummary):
     """Per-lead detail, including the composed email and research blob."""
     phone: str | None

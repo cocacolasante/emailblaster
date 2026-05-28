@@ -26,6 +26,9 @@ async def test_returns_default_when_no_api_key(monkeypatch):
         "person_news": [],
         "company_news": [],
         "company_description": "",
+        "recent_updates": [],
+        "industry": "",
+        "size_hint": "",
         "found": False,
     }
 
@@ -119,3 +122,30 @@ async def test_invokes_web_search_tool(monkeypatch):
     kwargs = create_mock.call_args.kwargs
     tools = kwargs["tools"]
     assert any(t.get("type") == "web_search_20250305" for t in tools)
+    # Cost levers: research runs on the (cheaper) research model with a
+    # bounded web-search budget — not the compose model / max_uses 5.
+    assert kwargs["model"] == web_research.settings.ANTHROPIC_RESEARCH_MODEL
+    search_tool = next(t for t in tools if t.get("type") == "web_search_20250305")
+    assert search_tool["max_uses"] == web_research.settings.RESEARCH_WEB_SEARCH_MAX_USES
+
+
+async def test_merged_call_returns_company_fields(monkeypatch):
+    """The single research call now also returns company recent_updates +
+    industry + size_hint (previously a separate site_scraper call)."""
+    monkeypatch.setattr(web_research.settings, "ANTHROPIC_API_KEY", "test-key")
+    response_text = (
+        '{"person_news": [], "company_news": [], "company_description": "AI for SMB", '
+        '"recent_updates": ["launched v2"], "industry": "SaaS", '
+        '"size_hint": "growth", "found": true}'
+    )
+    with patch.object(
+        web_research, "_get_client",
+        return_value=SimpleNamespace(
+            messages=SimpleNamespace(create=AsyncMock(return_value=_anthropic_text_response(response_text)))
+        ),
+    ):
+        result = await web_research.research_person_web("J", "D", "Acme", "CEO", "acme.com")
+
+    assert result["recent_updates"] == ["launched v2"]
+    assert result["industry"] == "SaaS"
+    assert result["size_hint"] == "growth"

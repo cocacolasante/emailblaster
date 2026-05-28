@@ -26,6 +26,7 @@ async def _make_campaign(
     db_session, *,
     status: CampaignStatus = CampaignStatus.PREVIEWING,
     sample_count: int = 2,
+    min_delay_seconds: int = 0,
 ) -> Campaign:
     c = Campaign(
         name="Phase 8 test",
@@ -38,6 +39,7 @@ async def _make_campaign(
         schedule_time_start=time(9, 0),
         schedule_time_end=time(17, 0),
         status=status,
+        min_delay_seconds=min_delay_seconds,
     )
     db_session.add(c)
     await db_session.commit()
@@ -301,6 +303,31 @@ async def test_approve_all_transitions_to_running_and_dispatches_composed(
     refreshed_c = await db_session.get(Campaign, campaign.id)
     await db_session.refresh(refreshed_c)
     assert refreshed_c.status == CampaignStatus.RUNNING
+
+
+async def test_approve_all_staggers_dispatch_by_min_delay(client, db_session):
+    """With a min_delay, approve-all schedules sends spaced by min_delay (via
+    apply_async eta) instead of firing the whole batch at once."""
+    campaign = await _make_campaign(db_session, min_delay_seconds=120)
+    for i in range(3):
+        await _make_lead(
+            db_session, campaign, email=f"s{i}@x.com", is_sample=False,
+            compose_status=ComposeStatus.DONE,
+            composed_subject="Hi", composed_body="Body",
+        )
+
+    with patch("app.routers.preview.send_lead.apply_async") as enqueue, \
+         patch("app.routers.preview.send_lead.delay") as delay_mock:
+        resp = await client.post(f"/campaigns/{campaign.id}/preview/approve-all")
+
+    assert resp.status_code == 200
+    # All sends went through apply_async (staggered), none through bare delay.
+    delay_mock.assert_not_called()
+    assert enqueue.call_count == 3
+    etas = sorted(call.kwargs["eta"] for call in enqueue.call_args_list)
+    # Consecutive etas are exactly min_delay apart.
+    gaps = [(etas[i + 1] - etas[i]).total_seconds() for i in range(len(etas) - 1)]
+    assert all(g == 120 for g in gaps), gaps
 
 
 async def test_approve_all_only_allowed_when_previewing(client, db_session):

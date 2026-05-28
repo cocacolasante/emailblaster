@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from sqlalchemy import func, select, update
@@ -190,8 +191,20 @@ async def _kick_off_full_campaign(
 
     await db.commit()
 
-    for lid in composed_ids:
-        send_lead.delay(str(lid))
+    # Stagger the dispatch by the campaign's min_delay so we don't fire the
+    # whole batch at once and rely on the rate gate to bounce the losers.
+    # Sends are spaced min_delay apart (eta); the atomic min-gate in
+    # check_rate_limits is the backstop for anything that still collides
+    # (out-of-window deferrals re-bunch at window open, etc.).
+    min_delay = max(campaign.min_delay_seconds or 0, 0)
+    base = datetime.now(timezone.utc)
+    for i, lid in enumerate(composed_ids):
+        if min_delay:
+            send_lead.apply_async(
+                args=[str(lid)], eta=base + timedelta(seconds=i * min_delay)
+            )
+        else:
+            send_lead.delay(str(lid))
 
     return samples_approved, len(composed_ids)
 

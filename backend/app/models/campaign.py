@@ -61,6 +61,11 @@ class Campaign(Base):
     # compose worker renders these per-lead instead of calling Anthropic.
     template_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     template_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional signature block (sender name + contact / website / calendar).
+    # When set, the compose worker replaces the AI's sign-off with this on
+    # each email, and `POST /campaigns/{id}/apply-signature` applies it in
+    # bulk to already-composed emails.
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
     connected_account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

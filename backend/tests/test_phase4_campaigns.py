@@ -7,6 +7,7 @@ import pytest
 from app.models import (
     Campaign,
     CampaignStatus,
+    ComposeStatus,
     ConnectedAccount,
     EmailEvent,
     EmailEventType,
@@ -165,6 +166,26 @@ async def test_patch_rejected_outside_draft_or_previewing(
     assert resp.status_code == 409
 
 
+@pytest.mark.parametrize("status_val", ["running", "paused", "complete"])
+async def test_patch_signature_allowed_in_any_status(client, db_session, status_val):
+    """The signature bypasses the draft/previewing content guard — it's
+    editable even on a paused/running campaign (only affects emails on Apply)."""
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    c = await db_session.get(Campaign, uuid.UUID(created["id"]))
+    c.status = CampaignStatus(status_val)
+    await db_session.commit()
+
+    resp = await client.patch(
+        f"/campaigns/{created['id']}", json={"signature": "Anthony\n555-1234"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["signature"] == "Anthony\n555-1234"
+
+    # Other content fields are still gated.
+    blocked = await client.patch(f"/campaigns/{created['id']}", json={"goal": "new"})
+    assert blocked.status_code == 409
+
+
 async def test_patch_validates_time_order_when_both_provided(client):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     resp = await client.patch(
@@ -234,6 +255,87 @@ async def test_delete_lead_404_when_lead_missing(client):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     resp = await client.delete(f"/campaigns/{created['id']}/leads/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+# ---------- per-lead email edit + bulk signature ----------
+
+
+async def test_edit_lead_email_updates_composed_fields(client, db_session):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    lead = Lead(
+        campaign_id=cid, email="e@x.com",
+        compose_status=ComposeStatus.DONE,
+        composed_subject="Old subject", composed_body="Old body",
+        send_status=SendStatus.PENDING,
+    )
+    db_session.add(lead)
+    await db_session.commit()
+
+    resp = await client.patch(
+        f"/campaigns/{created['id']}/leads/{lead.id}",
+        json={"composed_subject": "New subject", "composed_body": "New body"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["composed_subject"] == "New subject"
+    assert body["composed_body"] == "New body"
+
+
+async def test_edit_lead_email_blocked_when_already_sent(client, db_session):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    lead = Lead(
+        campaign_id=cid, email="s@x.com",
+        compose_status=ComposeStatus.DONE, composed_body="Body",
+        send_status=SendStatus.SENT,
+    )
+    db_session.add(lead)
+    await db_session.commit()
+
+    resp = await client.patch(
+        f"/campaigns/{created['id']}/leads/{lead.id}", json={"composed_body": "x"},
+    )
+    assert resp.status_code == 409
+
+
+async def test_apply_signature_swaps_signoff_on_unsent_composed(client, db_session):
+    from sqlalchemy import select
+    sig = "Anthony Colasante\n555-1234\nacme.com\ncal.com/anthony"
+    created = (await client.post(
+        "/campaigns/", json=_campaign_payload(signature=sig)
+    )).json()
+    cid = uuid.UUID(created["id"])
+    pending = Lead(
+        campaign_id=cid, email="p@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Hi,\n\nBody.\n\nBest,\nAnthony", send_status=SendStatus.PENDING,
+    )
+    sent = Lead(
+        campaign_id=cid, email="sent@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Hi,\n\nBody.\n\nBest,\nAnthony", send_status=SendStatus.SENT,
+    )
+    db_session.add_all([pending, sent])
+    await db_session.commit()
+    pending_id, sent_body = pending.id, sent.composed_body
+
+    resp = await client.post(f"/campaigns/{created['id']}/apply-signature")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated"] == 1  # only the pending one
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == pending_id))
+    await db_session.refresh(refreshed)
+    assert refreshed.composed_body.endswith(sig)
+    assert "Best,\nAnthony" not in refreshed.composed_body
+    # Sent email untouched.
+    sent_refreshed = await db_session.scalar(select(Lead).where(Lead.id == sent.id))
+    await db_session.refresh(sent_refreshed)
+    assert sent_refreshed.composed_body == sent_body
+
+
+async def test_apply_signature_400_when_campaign_has_no_signature(client):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    resp = await client.post(f"/campaigns/{created['id']}/apply-signature")
+    assert resp.status_code == 400
 
 
 async def test_delete_campaign_cascades_to_leads_and_events(client, db_session):

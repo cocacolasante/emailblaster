@@ -20,6 +20,9 @@ _DEFAULT: dict[str, Any] = {
     "person_news": [],
     "company_news": [],
     "company_description": "",
+    "recent_updates": [],
+    "industry": "",
+    "size_hint": "",
     "found": False,
 }
 
@@ -64,28 +67,47 @@ async def research_person_web(
     last_name: str,
     company: str,
     job_title: str,
+    company_website: str = "",
 ) -> dict[str, Any]:
     if not settings.ANTHROPIC_API_KEY:
         return dict(_DEFAULT)
 
+    website_line = (
+        f"Company website: {company_website}\n" if company_website else ""
+    )
+    # ONE web-search call covers both the person and the company.  Previously
+    # this was two separate Sonnet+web-search calls per lead (here +
+    # site_scraper), which roughly doubled the per-lead cost.  Merged into a
+    # single Haiku call with a tighter search budget.
     prompt = (
-        "You are researching a person for a personalized cold email.\n"
-        f"Subject: {first_name} {last_name}, {job_title} at {company}\n\n"
-        "Use web search to find:\n"
+        "You are researching a person AND their company for a personalized "
+        "cold email.\n"
+        f"Subject: {first_name} {last_name}, {job_title} at {company}\n"
+        f"{website_line}\n"
+        "Use web search (be efficient — a couple of focused searches) to find:\n"
         "1. Recent news, achievements, public quotes, or interviews from this person.\n"
         "2. Recent company news, product launches, or announcements.\n"
-        "3. A short description of the company.\n\n"
+        "3. A short description of what the company does (1-2 sentences).\n"
+        "4. The company's industry / sector.\n"
+        '5. A size hint — one of: "startup", "growth", "mid-market", '
+        '"enterprise", or "" if unsure.\n\n'
         "Respond ONLY with one JSON object, no preamble, no markdown:\n"
-        '{"person_news": ["item 1", "item 2"], "company_news": ["item 1"], '
-        '"company_description": "short description", "found": true}\n\n'
+        '{"person_news": ["item 1"], "company_news": ["item 1"], '
+        '"company_description": "short description", '
+        '"recent_updates": ["update 1"], "industry": "SaaS", '
+        '"size_hint": "startup", "found": true}\n\n'
         'If nothing useful is found, return found: false and empty lists.'
     )
 
     try:
         message = await _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=settings.ANTHROPIC_RESEARCH_MODEL,
             max_tokens=2000,
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": settings.RESEARCH_WEB_SEARCH_MAX_USES,
+            }],
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as e:  # noqa: BLE001
@@ -100,5 +122,8 @@ async def research_person_web(
         "person_news": list(data.get("person_news") or []),
         "company_news": list(data.get("company_news") or []),
         "company_description": str(data.get("company_description") or ""),
+        "recent_updates": list(data.get("recent_updates") or []),
+        "industry": str(data.get("industry") or ""),
+        "size_hint": str(data.get("size_hint") or ""),
         "found": bool(data.get("found", False)),
     }

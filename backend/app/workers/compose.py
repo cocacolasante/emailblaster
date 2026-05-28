@@ -32,6 +32,7 @@ from app.models import (
     StyleCorrection,
 )
 from app.services.sequence_service import campaign_sends_legacy_first_email
+from app.services.signature import apply_signature
 from app.services.template_render import build_merge_context, render_template
 from app.services.web_research import _extract_text, _parse_json
 from app.workers.celery_app import celery_app
@@ -350,6 +351,7 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             # render (below) doesn't touch the closed session.
             template_subject = campaign.template_subject
             template_body = campaign.template_body
+            signature = campaign.signature
             merge_ctx = build_merge_context(lead) if mode == ResearchMode.TEMPLATE else {}
             is_sample = lead.is_sample
             campaign_status_now = campaign.status
@@ -391,6 +393,10 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             # person-to-person messages, not bulk transactional mail.
             subject_clean = _strip_long_dashes(composed["subject"])
             body_clean = _strip_long_dashes(composed["body"])
+            # Swap the AI's sign-off for the campaign signature (contact info,
+            # website, calendar link).  Template mode is the user's verbatim
+            # copy, so it's left alone.
+            body_clean = apply_signature(body_clean, signature)
 
         # Re-open session to persist the result.
         async with AsyncSession(engine, expire_on_commit=False) as session:

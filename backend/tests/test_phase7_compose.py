@@ -152,6 +152,27 @@ async def test_template_mode_renders_without_calling_anthropic(db_session):
     assert refreshed.composed_body == "Hi there,\n\nLove what Acme does in fintech."
 
 
+async def test_campaign_signature_replaces_ai_signoff(db_session):
+    campaign = await _make_campaign(db_session)
+    campaign.signature = "Anthony Colasante\n555-1234\nacme.com\ncal.com/anthony"
+    await db_session.commit()
+    lead = await _make_lead(db_session, campaign)
+
+    create_mock = AsyncMock(return_value=_anthropic_text(
+        '{"subject": "Quick question", "body": "Hi Jane, value here.\\n\\nBest,\\nAnthony"}'
+    ))
+    with _patch_create(create_mock), patch.object(compose_mod.send_lead, "delay"):
+        result = await compose_mod.compose_lead_async(str(lead.id))
+
+    assert result["status"] == "done"
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.composed_body.endswith(
+        "Anthony Colasante\n555-1234\nacme.com\ncal.com/anthony"
+    )
+    assert "Best,\nAnthony" not in refreshed.composed_body  # AI sign-off swapped
+
+
 async def test_low_quality_lead_uses_generic_prompt(db_session):
     campaign = await _make_campaign(db_session)
     lead = await _make_lead(
