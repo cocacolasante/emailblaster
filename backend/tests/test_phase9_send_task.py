@@ -334,8 +334,12 @@ async def test_missing_lead_returns_not_found(db_session, fake_redis):
 # --------------------------------------------------------------------------
 
 
-async def test_celery_wrapper_reenqueues_on_paused(db_session, fake_redis):
-    """Confirm the sync send_lead wrapper translates async 'paused' into a 5-min apply_async."""
+async def test_celery_wrapper_does_not_reenqueue_on_paused(db_session, fake_redis):
+    """Paused is a hard stop — no self-re-enqueue.  The previous behaviour
+    (apply_async countdown=300) kept every paused-campaign lead in a 5-min
+    retry loop, burning queue depth while the campaign was supposed to be
+    "off".  Resume re-enqueues every composed PENDING+SCHEDULED lead, so
+    pause stops cleanly and resume IS the trigger."""
     import asyncio as _asyncio
     campaign = await _make_campaign(db_session, status=CampaignStatus.PAUSED)
     lead = await _make_lead(db_session, campaign)
@@ -348,8 +352,7 @@ async def test_celery_wrapper_reenqueues_on_paused(db_session, fake_redis):
         result = await _asyncio.to_thread(send_mod.send_lead.run, lead_id)
 
     assert result["status"] == "paused"
-    enqueue.assert_called_once()
-    assert enqueue.call_args.kwargs["countdown"] == 300
+    enqueue.assert_not_called()
 
 
 async def test_celery_wrapper_reenqueues_on_scheduled(db_session, fake_redis):

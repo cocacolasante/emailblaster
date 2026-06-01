@@ -1,29 +1,117 @@
 # Email Blaster
 
-AI-powered cold email platform. Upload a CSV of leads → each lead gets researched (web search + optional LinkedIn enrichment + email verification) → personalized email composed by Claude → reviewed in a sample preview → sent on your schedule with rate limiting → replies tracked via your own inbox.
+AI-powered cold outreach platform — multi-channel (email + LinkedIn), built around per-lead research and Claude-composed personalization.
+
+Upload a CSV → each lead gets researched (web search + optional Apollo + Hunter) → Claude composes a personalized email → reviewed in a sample preview → sent on your schedule with rate limiting + suppression + reply tracking. A visual sequence builder lets you chain email follow-ups, waits, and LinkedIn actions (view, follow, connect, DM, react, comment, page invite, InMail) behind conditional branches.
+
+This README is intentionally exhaustive so it can be fed to an LLM as the single source of truth about the project.
+
+---
 
 ## What you get
 
-- **Per-lead research**: Anthropic web search + company site scrape + optional Apollo.io (LinkedIn, seniority, employee count) + optional Hunter.io (deliverability)
-- **Personalized composition**: subject + body written by Claude, tailored to the research; falls back to a generic template when research yields little
-- **Style-correction feedback loop**: edits you make to sample emails are saved as exemplars that improve the rest of the batch
-- **Pre-send preview**: review N sample emails, approve or reject each, edit inline
-- **Scheduled sending**: days-of-week + time window + timezone + hourly cap + daily cap + min delay between sends
-- **Compliance**: CAN-SPAM unsubscribe link in every email, suppression list, bounce/spam auto-suppression
-- **Reply tracking**: IMAP polling against your own inbox (Gmail/Outlook/Yahoo/custom) — credentials encrypted at rest with Fernet
-- **Analytics**: open / click / reply / bounce rates, sender reputation score, research-quality breakdown, best subject lines, timeline chart, per-lead drilldown
+- **Per-lead research** — Anthropic Claude (Haiku) + web search; optional Apollo.io for company / seniority / employee count; optional Hunter.io for deliverability. Research output cached for 90 days keyed by lowercased email (cuts repeated API spend on overlapping campaigns).
+- **AI composition** — subject + body written by Claude Sonnet, tailored to the research. Falls back to a name+company prompt when research is thin. Optional fully-templated mode (no AI, you write the copy with `{{merge_fields}}`).
+- **Style-correction feedback loop** — your edits to sample emails become exemplars fed to subsequent composes, so the first few samples teach the model your voice.
+- **Pre-send preview** — review N sample emails, edit inline, approve/reject the batch.
+- **Reusable campaign signature** — saved on the campaign, swapped in for the AI's sign-off on every email. Bulk-applies to already-composed unsent emails with one click.
+- **Scheduled sending** — days-of-week + send window + timezone + min delay between sends + hourly cap + daily cap. All editable on a running/paused campaign; schedule edits automatically re-queue waiting leads under the new window.
+- **Compliance** — HMAC-signed CAN-SPAM unsubscribe link in every email; bounce / spam / unsub events auto-populate the suppression list and prevent future sends across all campaigns.
+- **Multi-step sequences** — visual DAG builder (React Flow) with email + wait + LinkedIn nodes connected by conditional edges (`replied`, `opened`, `clicked`, `bounced`, `linkedin_connection`, `days_since_entered_node`, plus `and`/`or`/`not` compounds).
+- **LinkedIn outreach** — via [Unipile](https://www.unipile.com)'s hosted-Chrome integration (real desktop browser, residential IPs). Eight action kinds: view profile, follow, connect, DM, react to post, comment on post, invite to company page, InMail.
+- **Reply tracking** — IMAP polling against your own inbox (Gmail / Outlook / Yahoo / custom). Credentials encrypted at rest with Fernet. Read-only (never marks messages seen in your mailbox).
+- **Lite-CRM Leads tab** — global cross-campaign lead view with per-lead notes (editable even after the email has sent). Searchable / filterable by campaign / send status / has-notes.
+- **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap.
+- **Analytics** — open / click / reply / bounce / spam / unsub rates, sender reputation score (0–100), research-quality breakdown (rich/partial/generic open rates), best subject lines, per-step funnel, timeline chart, per-lead activity drilldown.
 
 ## Stack
 
 | Layer | Tech |
 |---|---|
-| Backend | FastAPI (Python 3.12), Celery 5, async SQLAlchemy 2 |
-| Datastore | Postgres 15, Redis 7 |
-| AI | Anthropic Claude Sonnet 4.6 (web search tool) |
-| Email | Brevo transactional API + webhooks |
-| Enrichment | Apollo.io, Hunter.io *(both optional)* |
-| Reply tracking | Stdlib IMAP poller, Fernet-encrypted credentials |
-| Frontend | React 18, Vite 6, TanStack Query, Recharts, React Router |
+| Backend | FastAPI (Python 3.12) · Celery 5 · async SQLAlchemy 2 |
+| Datastore | Postgres 15 · Redis 7 |
+| AI compose | Anthropic Claude Sonnet 4.6 (`ANTHROPIC_MODEL`, default `claude-sonnet-4-6`) |
+| AI research | Anthropic Claude Haiku 4.5 (`ANTHROPIC_RESEARCH_MODEL`, default `claude-haiku-4-5-20251001`) — cheaper, extraction-only |
+| Email send | Brevo transactional API |
+| Email events | Brevo polled (`GET /v3/smtp/statistics/events`) — no public webhook required |
+| Enrichment | Apollo.io + Hunter.io *(both optional)* |
+| Reply tracking | Python stdlib IMAP poller, Fernet-encrypted credentials |
+| LinkedIn | Unipile hosted-API (real desktop Chrome on residential IPs) |
+| Frontend | React 18 · Vite 6 · TanStack Query · `@xyflow/react` · Recharts |
+| Infra | docker-compose: postgres, redis, backend, worker, beat, frontend |
+
+---
+
+## Architecture
+
+### Service topology
+
+`docker-compose.yml` runs six containers, all bound to `127.0.0.1`:
+
+| Container | Process | Role |
+|---|---|---|
+| `postgres` | Postgres 15 | Source of truth for campaigns / leads / sequences / events |
+| `redis` | Redis 7 | Celery broker + result backend; rate-limit counters; min-delay atomic gate; LinkedIn stagger keys |
+| `backend` | `uvicorn app.main:app` | FastAPI HTTP server (port 8000) |
+| `worker` | `celery -A app.workers worker` | Task executor (prefork pool, 8 by default) |
+| `beat` | `celery -A app.workers beat` | Schedules recurring tasks (see beat schedule below) |
+| `frontend` | `vite dev` | React app on port 5173 |
+
+### Beat schedule
+
+| Task | Cadence | What it does |
+|---|---|---|
+| `sequencer.advance_sequences` | every 60s | Walks every running campaign's `lead_sequence_state` cursors, dispatches due steps |
+| `reply_poller.poll_all_replies` | `IMAP_POLL_INTERVAL_MINUTES` (default 20) | Polls every connected inbox for replies via IMAP `BODY.PEEK` (read-only) |
+| `linkedin_poller.poll_all` | `LINKEDIN_POLL_INTERVAL_MINUTES` (default 30) | Polling fallback for Unipile webhook misses (inbound DMs, accepted invites) |
+| `brevo_events_poller.poll` | `BREVO_EVENTS_POLL_INTERVAL_MINUTES` (default 10) | Pulls `delivered`/`opened`/`clicked`/`bounced`/`spam`/`unsubscribed` from Brevo's events API |
+| `lead_sweeper.sweep_stale` | every 5min | Resets `compose_status`/`research_status` rows stuck in RUNNING > 15min back to PENDING + re-enqueues |
+
+### Per-lead pipeline (legacy first-email path)
+
+```
+CSV upload  →  ingest  →  research  →  compose  →  send_lead  →  Brevo API
+                  │           │            │             │
+                  │           │            │             └─ writes EmailEvent(SENT)
+                  │           │            └─ writes lead.composed_subject/body, enqueues send_lead
+                  │           └─ writes lead.research_data (and caches it for 90d)
+                  └─ writes Lead rows from the CSV, kicks off research
+```
+
+Each stage is a separate Celery task. The legacy path is the **source of truth for the first email** when the sequence entry node is an email node — gated via `sequence_service.campaign_sends_legacy_first_email`. When a sequence starts with a non-email node (LinkedIn connect, wait, etc.), `compose_lead_async` skips the AI call and `confirm_upload` auto-launches into RUNNING with no preview step.
+
+### Sequence engine (follow-ups, branching, LinkedIn)
+
+- **Tables:** `sequences`, `sequence_nodes`, `sequence_edges`, `lead_sequence_states`, `lead_step_executions`.
+- **Node kinds:** `email`, `wait`, `linkedin_view_profile`, `linkedin_follow_profile`, `linkedin_react_post`, `linkedin_comment_post`, `linkedin_connect`, `linkedin_dm`, `linkedin_inmail`, `linkedin_invite_to_page`.
+- **Conditional edges** — JSON expression language in `services/sequence_conditions.py`. Leaf ops: `always`, `replied`, `opened`, `clicked`, `bounced`, `linkedin_connection` (value: `connected` / `invited` / `unknown` / `declined`), `days_since_entered_node`. Compounds: `and` / `or` / `not`.
+- **Sequencer beat task** (`workers/sequencer.py`) — every 60s, selects `LeadSequenceState` rows where `next_run_at <= now` AND `campaign.status == RUNNING`. For each, evaluates outgoing edges from `current_node_id`, advances cursor or dispatches the next step's channel handler.
+- **Dispatch handlers:**
+  - `_send_email_step_async` — follow-up email. Honors the same gates as `send_lead`.
+  - `_send_linkedin_step_async` — every LinkedIn kind. Uses Unipile + per-account rate limits.
+- **Async-event parking** — when an edge condition isn't currently true but uses a "deferrable" op (replied / opened / clicked / linkedin_connection / days_since_entered_node), the lead is parked on the current node and re-evaluated every 30min for up to 14 days. Lets `linkedin_connect → DM (when linkedin_connection=connected)` wait for the invite to be accepted.
+- **Lifetime per-node idempotency** — `_already_executed_ever()` short-circuits any node that's ever produced a SENT execution row for a lead. Multi-touch ("view profile 3x") must be modeled as separate nodes.
+
+### LinkedIn engine
+
+- **Provider:** `services/linkedin/unipile_impl.py` — async httpx wrapper around Unipile's REST API.
+- **Per-account rate limits** (Redis Lua, atomic):
+  - `LINKEDIN_DAILY_ACTION_CAP` (default 20) — total writeable actions / day
+  - `LINKEDIN_MIN_ACTION_DELAY_SECONDS` (default 30) — gap between actions
+  - `LINKEDIN_DAILY_CONNECT_CAP` (20) — connect requests / day
+  - `LINKEDIN_DAILY_DM_CAP` (30) — DMs / day (InMail counts here too)
+  - `LINKEDIN_MONTHLY_PAGE_INVITE_CAP` (250 per **page**, not per account)
+- **Stagger** — at most one LinkedIn action per account per `LINKEDIN_STAGGER_SECONDS` (default 120). Beat releases one due lead per account per interval; others get parked on a future slot. `view_profile` is exempt (low-risk read).
+- **Calendar-day caps** — daily counters expire at next local midnight in the campaign's tz (not a rolling 24h).
+- **Auto-pause** — when a LinkedIn step hits a daily cap AND no email node is reachable downstream, the campaign is paused with `auto_paused_until = cap reset time`. The beat auto-resumes at that time. Manual pauses (`auto_paused_until IS NULL`) stay paused.
+- **Hosted-auth flow** — `POST /linkedin-accounts/connect-via-unipile` returns a Unipile-hosted login URL. User completes LinkedIn login in Unipile's browser. Unipile fires `account.connected` webhook → our handler flips the local row to OK. 3s polling fallback for missed webhooks.
+
+### Rate / pause semantics (worth knowing)
+
+- **Email min-delay gate** — atomic `SET rate:{cid}:min_gate <now> NX EX min_delay` on Redis. First to set claims the window; rest get TTL back as `retry_in`. Stops Celery prefork (N tasks at once) from bulk-sending.
+- **Pause is a hard stop** — when a queued `send_lead` task fires for a paused campaign, the gate returns `paused` and the Celery wrapper acks-and-drops (no self-re-enqueue). Beat already filters paused campaigns out for sequencer-driven steps. Resume re-enqueues every composed PENDING+SCHEDULED lead via staggered `send_lead.apply_async(eta=...)`.
+- **Schedule edits are live** — schedule + throughput fields are edit-on-any-status. A schedule change on a running/paused campaign re-queues every composed PENDING+SCHEDULED lead so they pick up the new window immediately. Content fields (goal, tone, sender_*, research_mode, templates) are still 409-gated to draft/previewing (changing voice mid-flight would split it across sent/unsent).
+- **Lead sweeper** — every 5min, flips `compose_status`/`research_status` rows stuck in RUNNING >15min back to PENDING and re-enqueues. Catches "worker crashed between RUNNING commit and final commit."
 
 ---
 
@@ -31,14 +119,20 @@ AI-powered cold email platform. Upload a CSV of leads → each lead gets researc
 
 ### Prerequisites
 
-- **Docker Desktop** running
-- An **Anthropic API key** — https://console.anthropic.com
-- A **Brevo account + API key** — https://app.brevo.com/settings/keys/api
-- *(Optional)* Apollo.io API key for richer enrichment
-- *(Optional)* Hunter.io API key for email verification
-- *(Optional)* An inbox you control — needed for reply tracking only
+| Required | Used for |
+|---|---|
+| Docker Desktop | Run the stack |
+| **Anthropic API key** — https://console.anthropic.com | Research + compose |
+| **Brevo account + API key** — https://app.brevo.com/settings/keys/api | Transactional sends + event polling |
 
-### 1. Clone and create the env file
+| Optional | Used for |
+|---|---|
+| Apollo.io API key | Richer company/seniority enrichment in "Deep" research mode |
+| Hunter.io API key | Email verification before sends |
+| An inbox you control (Gmail / Outlook / Yahoo / custom) | Reply tracking |
+| Unipile account + a public tunnel (ngrok/cloudflared) | LinkedIn outreach |
+
+### 1. Clone + env file
 
 ```bash
 git clone <repo-url> emailblaster
@@ -48,17 +142,13 @@ cp backend/.env.example .env
 
 ### 2. Generate the encryption key
 
-This key encrypts stored inbox passwords. **If you lose it, all saved inbox passwords are unrecoverable** — back it up the same way you'd back up a database password.
+This key encrypts stored inbox passwords (Fernet AES-128-CBC + HMAC-SHA256). **If you lose it, all saved inbox passwords are unrecoverable.** Back it up like a DB password.
 
 ```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Paste the 44-character output into `.env`:
-
-```
-ENCRYPTION_KEY=put-the-key-here
-```
+Paste the 44-character output into `.env` as `ENCRYPTION_KEY=...`.
 
 ### 3. Fill in `.env`
 
@@ -69,14 +159,46 @@ ANTHROPIC_API_KEY=sk-ant-...
 BREVO_API_KEY=xkeysib-...
 BREVO_SENDER_EMAIL=you@yourdomain.com
 BREVO_SENDER_NAME=Your Name
+ENCRYPTION_KEY=<44-char Fernet key from step 2>
+SECRET_KEY=<random 32+ chars — used for HMAC-signed unsubscribe tokens>
 ```
 
-Optional but recommended:
+Optional:
 
 ```env
-APOLLO_API_KEY=...               # LinkedIn / company enrichment
-HUNTER_API_KEY=...               # email verification before send
-WEBHOOK_BASE_URL=https://...     # required for Brevo webhooks + unsubscribe links
+# Enrichment (degrades gracefully without these)
+APOLLO_API_KEY=...
+HUNTER_API_KEY=...
+
+# Reply tracking IMAP poll cadence
+IMAP_POLL_INTERVAL_MINUTES=20
+
+# Brevo event polling cadence
+BREVO_EVENTS_POLL_INTERVAL_MINUTES=10
+
+# Anthropic model overrides
+ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_RESEARCH_MODEL=claude-haiku-4-5-20251001
+RESEARCH_WEB_SEARCH_MAX_USES=3
+RESEARCH_CACHE_TTL_DAYS=90
+
+# Public URL for the unsubscribe link + Unipile webhooks (set when you tunnel)
+WEBHOOK_BASE_URL=https://your-tunnel.ngrok-free.app
+
+# LinkedIn (Unipile) — see "LinkedIn setup" below
+UNIPILE_DSN=api12.unipile.com:13443
+UNIPILE_API_KEY=...
+UNIPILE_WEBHOOK_SECRET=...
+UNIPILE_WEBHOOK_AUTH_HEADER=X-Unipile-Auth
+
+# LinkedIn rate caps
+LINKEDIN_DAILY_ACTION_CAP=20
+LINKEDIN_MIN_ACTION_DELAY_SECONDS=30
+LINKEDIN_STAGGER_SECONDS=120
+LINKEDIN_DAILY_CONNECT_CAP=20
+LINKEDIN_DAILY_DM_CAP=30
+LINKEDIN_MONTHLY_PAGE_INVITE_CAP=250
+LINKEDIN_POLL_INTERVAL_MINUTES=30
 ```
 
 Anything left blank degrades gracefully — the app still runs, with less data.
@@ -84,16 +206,11 @@ Anything left blank degrades gracefully — the app still runs, with less data.
 ### 4. Start everything
 
 ```bash
-docker compose up --build
-```
-
-This brings up: postgres, redis, FastAPI backend, Celery worker, Celery beat scheduler, Vite frontend.
-
-In a separate terminal, apply the database schema:
-
-```bash
+docker compose up --build -d
 docker compose exec backend alembic upgrade head
 ```
+
+This brings up postgres + redis + backend + worker + beat + frontend, and applies all 13 migrations.
 
 When it's done:
 
@@ -101,17 +218,89 @@ When it's done:
 - **API** — http://localhost:8000
 - **OpenAPI docs** — http://localhost:8000/docs
 
-### 5. Wire up Brevo webhooks (optional but recommended)
+### 5. Brevo events — no webhook needed
 
-Brevo POSTs event notifications (delivered / opened / clicked / bounced / spam / unsubscribed) to your `WEBHOOK_BASE_URL`.
+Events are **polled** from `GET /v3/smtp/statistics/events` every `BREVO_EVENTS_POLL_INTERVAL_MINUTES` (default 10). No need to configure an inbound webhook in the Brevo dashboard, no public tunnel required.
 
-In the Brevo dashboard:
+Trade-off: up to 10 min lag from event-at-Brevo to event-row-in-DB. Free with the regular API key, works behind the localhost-only port bindings. Per-event dedup is built into the poller.
 
-1. **Settings → Webhooks → Add new webhook**
-2. URL: `{WEBHOOK_BASE_URL}/webhooks/brevo`
-3. Enable events: `delivered`, `opened`, `clicked`, `soft_bounce`, `hard_bounce`, `spam`, `unsubscribed`
+### 6. LinkedIn (Unipile) setup *(optional)*
 
-For local development without a public URL, run `ngrok http 8000` and put the ngrok URL in `WEBHOOK_BASE_URL`. Without webhooks, the app still works — you just won't have open/click/bounce metrics.
+Required for any LinkedIn action (view / follow / connect / DM / etc.). If you only need email, skip this section.
+
+#### One-time Unipile signup
+
+1. Sign up at https://www.unipile.com.
+2. Top-bar **DSN** like `api12.unipile.com:13443` — copy it.
+3. Sidebar **Access Tokens → Generate** — copy the token (only shown once).
+
+#### Public tunnel (required for Unipile to reach us)
+
+Unipile's servers can't reach `localhost`. Two options:
+
+```bash
+# ngrok (recommended — has a request inspector at http://127.0.0.1:4040)
+ngrok http 8000
+
+# cloudflared (no signup)
+cloudflared tunnel --url http://localhost:8000
+```
+
+⚠ **Free tunnels rotate URLs on every restart.** Re-run `scripts/dev_tunnel.py` (described below) whenever the URL changes.
+
+#### Quick-refresh script
+
+```bash
+python3 scripts/dev_tunnel.py
+```
+
+Detects (or starts) ngrok pointing at `localhost:8000`, deletes every Unipile webhook on the workspace, recreates the three canonical ones (`messaging`, `account_status`, `users`) pointing at the live tunnel, patches `.env` with `WEBHOOK_BASE_URL` (and optionally rotates `UNIPILE_WEBHOOK_SECRET` with `--rotate-secret`), and force-recreates `backend`/`worker`/`beat` if `.env` changed. Pure stdlib, no `pip install`. Useful flags: `--dry-run`, `--rotate-secret`, `--no-recreate`, `--port N`.
+
+#### Manual webhook creation (if you'd rather)
+
+```bash
+DSN=$(grep '^UNIPILE_DSN=' .env | cut -d'=' -f2-)
+KEY=$(grep '^UNIPILE_API_KEY=' .env | cut -d'=' -f2-)
+SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+TUNNEL=https://<your-tunnel-host>
+
+for SRC in messaging account_status users; do
+  curl -s -X POST "https://$DSN/api/v1/webhooks" \
+    -H "X-API-KEY: $KEY" -H "content-type: application/json" \
+    -d "{
+      \"name\": \"emailblaster - $SRC\",
+      \"request_url\": \"$TUNNEL/webhooks/unipile\",
+      \"source\": \"$SRC\",
+      \"headers\": [
+        {\"key\": \"Content-Type\", \"value\": \"application/json\"},
+        {\"key\": \"X-Unipile-Auth\", \"value\": \"$SECRET\"}
+      ]
+    }"
+done
+echo "$SECRET"   # paste into .env as UNIPILE_WEBHOOK_SECRET
+```
+
+Then update `.env`:
+
+```env
+UNIPILE_DSN=api12.unipile.com:13443
+UNIPILE_API_KEY=<token>
+UNIPILE_WEBHOOK_SECRET=<the secret you just generated>
+WEBHOOK_BASE_URL=<tunnel host, no trailing slash>
+```
+
+And force-recreate (plain `restart` doesn't re-read `.env`):
+
+```bash
+docker compose up -d --force-recreate backend worker beat
+```
+
+#### Connect a LinkedIn account
+
+1. UI → **Settings → LinkedIn accounts → Connect new**.
+2. Enter a label, click **Connect via Unipile**.
+3. Unipile-hosted login opens in a new tab.
+4. Complete LinkedIn login. Webhook flips the local row to OK (3s polling fallback for misses).
 
 ---
 
@@ -119,117 +308,146 @@ For local development without a public URL, run `ngrok http 8000` and put the ng
 
 ### Connect an inbox *(optional — required only for reply tracking)*
 
-Sidebar → **Settings** → **Connected inboxes** → **+ Connect inbox**.
-
-Pick the right preset and fill in your credentials. The form auto-tests the connection after you save.
+Sidebar → **Settings → Connected inboxes → + Connect inbox**.
 
 #### Gmail
-- IMAP host: `imap.gmail.com`, port 993, SSL on (auto-filled by the preset)
+- Host: `imap.gmail.com`, port 993, SSL on (auto-filled by the preset).
 - **You need an App Password — not your regular Google password.** Gmail blocks regular passwords for IMAP.
   1. Enable 2-Step Verification on your Google account first
   2. Go to https://myaccount.google.com/apppasswords
-  3. Create a new app password, label it "Email Blaster"
+  3. Create a new app password labeled "Email Blaster"
   4. Paste the 16-character app password into the form
+- **Gmail aliases share their parent mailbox.** Set `email_address` to the alias, `username` to the primary mailbox.
 
 #### Outlook / Office 365
-- IMAP host: `outlook.office365.com`, port 993, SSL on
-- Use your regular password, or an app password if MFA is enabled
+- Host: `outlook.office365.com`, port 993, SSL on. Use your regular password, or an app password if MFA is enabled.
 
 #### Yahoo
-- IMAP host: `imap.mail.yahoo.com`, port 993, SSL on
-- Generate an app password from **Yahoo Account Security**
+- Host: `imap.mail.yahoo.com`, port 993, SSL on. Generate an app password from Yahoo Account Security.
 
 #### Any other IMAP server
-- Use the **Custom** preset and fill in your provider's host/port/SSL settings
+- Use the **Custom** preset; fill in your provider's host/port/SSL settings.
 
-A green **Connected** badge after saving means it worked. A red **Failed** badge surfaces the IMAP error inline — usually authentication.
+A green **Connected** badge means it worked. Red **Failed** surfaces the IMAP error inline (usually auth).
 
----
+### Create a campaign
 
-### Create a campaign (3-step wizard)
-
-Sidebar → **Campaigns** → **+ New campaign**.
+Sidebar → **Campaigns → + New campaign**. The 4-step wizard:
 
 #### Step 1 — Details
 
-- **Name** — internal label
-- **Goal** — what you want from the recipient (e.g. "Book a 30-minute discovery call")
-- **Tone** — Professional / Friendly / Direct / Conversational / Formal
-- **Sender name + email** — must be authorized in Brevo as a sender
-- **Sample count** — how many emails you want to review before the batch goes out (default 5)
+- **Name**, **Goal** (e.g. "Book a 30-minute discovery call"), **Tone** (Professional / Friendly / Direct / Conversational / Formal)
+- **Sender name + email** — must be a verified sender in Brevo
+- **Sample count** — how many emails to review before launch (default 5)
 - **Research mode**
-  - **Fast** — web search + company scrape, ~10s/lead
-  - **Deep** — adds Apollo enrichment, ~45s/lead (requires `APOLLO_API_KEY`)
+  - **Fast** — one Anthropic+web-search call per lead (~10s, `max_uses=3`), ~$0.04/lead
+  - **Deep** — same + Apollo enrichment (~45s, requires `APOLLO_API_KEY`), ~$0.06/lead
+  - **None** — no research; AI composes from name + company alone, ~$0.005/lead
+  - **Template** — no AI; you write the copy with `{{first_name}}` / `{{company}}` merge fields, $0
 - **Reply tracking** *(optional)* — pick a connected inbox or leave on "No reply tracking"
-- **Schedule**
-  - Days of week (multi-select pills)
-  - Send window (start/end time + timezone)
-  - Optional caps: max per hour, max per day
-  - Minimum delay between sends
+- **Schedule** — days-of-week pills, start/end time, timezone, optional max/hour and max/day caps, min delay between sends
+- **Signature** *(optional)* — saved on the campaign, swapped in for the AI's sign-off on every email. Bulk-applies to composed unsent emails.
 
 #### Step 2 — Upload leads
 
-Drop in a CSV. The app shows the detected columns + suggested mapping. **One column must map to `email`** — that's the only required field. Other supported fields: `first_name`, `last_name`, `company`, `job_title`, `linkedin_url`, `phone`. Unmapped columns are preserved in the raw row for audit but not used in composition.
+Drop a CSV. The app detects columns + suggests mapping. **One column must map to `email`** — that's the only required field. Supported: `first_name`, `last_name`, `company`, `job_title`, `linkedin_url`, `phone`, `company_website`. Unmapped columns are preserved in `lead.raw` for audit but not used in composition.
 
 The system:
 - Lowercases all emails, deduplicates within the CSV
 - Skips any email in the suppression list (previous unsubs/bounces)
 - Picks `sample_count` leads spread evenly across the deduped list as samples
-- Kicks off background research for every lead
+- Kicks off background research for every lead (or skips it for `none`/`template` modes)
 
-#### Step 3 — Auto-research
+#### Step 3 — Live progress
 
-The wizard shows a live progress bar (`composed / total`). When all samples are composed, it auto-advances to the preview page.
+Mode-aware progress screen:
+- Fast/Deep → "Researching and composing emails… X of Y composed · Z researched"
+- None → "Composing emails… X of Y composed"
+- Template → "Rendering your templated emails… X of Y rendered"
 
----
+When all samples are composed, the wizard auto-advances to the preview page. If the sequence entry node isn't an email (e.g. starts with a LinkedIn connect), it auto-launches into RUNNING and skips preview.
 
-### Review samples
+#### Step 4 — Review samples
 
 Each sample card shows:
+- Lead name, title, company
+- Research quality badge (Rich / Partial / Generic)
+- Expandable research summary — exactly what the system found
+- Composed subject + body (both editable inline)
+- Approve / Reject buttons
 
-- The lead's name, title, company
-- A **research quality badge** (Rich / Partial / Generic)
-- An expandable **research summary** — exactly what the system found
-- The composed **subject** and **body** (both editable)
-- **Approve** / **Reject** buttons
+Edits to the body auto-save on blur and become **style corrections** fed to subsequent composes — the first samples teach the composer your voice.
 
-Edits to the body auto-save on blur. Any edit you make is recorded as a **style correction** and fed into the prompt for the remaining leads — so the first samples teach the composer your voice.
+When you're happy:
+- **Approve all and launch** → status flips to RUNNING. Every composed lead is dispatched with `send_lead.apply_async(eta=base + i*min_delay)` so sends are pre-spaced. Remaining leads continue researching/composing; sends auto-trigger as they finish.
+- **Reject and reconfigure** → status flips to DRAFT, all composed bodies cleared. Fix the campaign and start again.
 
-When you're happy with all samples:
+### Monitor / control a campaign
 
-- **Approve and launch campaign** → status flips to **running**, every already-composed lead is dispatched to send, and remaining leads continue research/compose with sends triggered automatically as they finish.
-- **Reject and reconfigure** → status flips back to **draft**, all composed bodies cleared. You can fix the campaign and start again.
+#### Campaign list
+Cards: name · status · sent/total progress · open/click/reply rates · created date · View / Pause / Resume / Delete.
 
----
+#### Campaign detail page (4 tabs)
 
-### Monitor the campaign
-
-#### Campaign list (sidebar → Campaigns)
-
-Each campaign card: name, status badge, sent/total progress bar, open/click/reply rates, created date, quick actions (View / Pause / Resume / Delete).
-
-#### Campaign detail page
-
-Three tabs:
-
-- **Overview** — status with Pause/Resume control, quick stats, connected inbox info, campaign config summary
-- **Leads** — paginated table; search by name/email, filter by send status, export to CSV
-- **Analytics** — live metrics that refresh every 30 seconds:
-  - Sent, Delivered, Open rate, Click rate, Reply rate, Bounce rate, Spam, Unsubscribed
-  - Timeline chart (Recharts) — opens (teal), clicks (purple), replies (amber)
+- **Overview**
+  - Pipeline card with live progress (composed / researched / sent counts, ETA)
+  - Status panel with Pause/Resume (and auto-paused note if a LinkedIn cap was hit)
+  - Quick stats (open / click / reply / bounce rates)
+  - Reply tracking info
+  - LinkedIn account binding
+  - **Schedule & pacing editor** — read-only summary by default; "Edit" toggles a form with day chips, time pickers, timezone dropdown, min_delay / max_per_hour / max_per_day. Editable on any status; schedule changes auto re-queue waiting leads.
+  - Campaign config summary (goal / tone / sender / research mode / sample count)
+- **Sequence** — the React-Flow DAG builder (see below)
+- **Activity** — clustered execution log: 30 most recent `(lead, node)` clusters with `×N attempt count`, earliest+latest attempt time tooltip
+- **Leads** — paginated table, search by name/email, filter by send status. Per-row "View email" / Edit composed / **Delete** (cascades the lead + history). The signature editor lives here too.
+- **Analytics** — refreshes every 30s
+  - Sent / Delivered / Open / Click / Reply / Bounce / Spam / Unsub counts + rates
+  - Timeline chart (Recharts) — opens, clicks, replies
   - **Sender reputation score** 0–100 (green ≥80, amber 50–79, red <50)
-  - Research quality breakdown — open rate per research tier (rich/partial/generic)
+  - Research-quality breakdown — open rate per research tier
   - Best subject lines (min 5 sends to qualify)
-  - **Failed-leads banner** — appears when any lead failed research/compose/send, with a single-click "Retry failed" button
+  - Failed-leads banner with single-click **Retry failed**
 
-#### Pause / resume mid-flight
+#### Pause / resume
 
-- Click **Pause** on the campaign card or detail page → in-flight sends finish their current attempt, then new sends are deferred (re-enqueued every 5 minutes)
-- Click **Resume** → scheduled re-enqueues drain immediately
+- **Pause** → campaign frozen in place. All in-flight `send_lead` tasks that fire after pause hit the gate and **acks-and-drops** (no self-re-enqueue). The sequencer beat skips paused campaigns entirely. LinkedIn stagger slots are released for other running campaigns.
+- **Resume** → status flips to RUNNING and every composed PENDING+SCHEDULED lead is staggered-dispatched (`apply_async eta`) so the queue gets repopulated without you needing to nudge anything.
 
-#### Reply detection
+### Sequences
 
-If you connected an inbox, a Celery beat task polls IMAP every `IMAP_POLL_INTERVAL_MINUTES` (default 20). When a reply is detected (matched via In-Reply-To header, then References, then subject+from), it's recorded as a `replied` event and counted in reply rate.
+Sidebar → campaign **→ Sequence tab**. Built on React Flow:
+
+- Drag nodes from the palette: email, wait, or any LinkedIn kind
+- Connect them with edges
+- Click a node to edit its config (subject/body for email, duration for wait, action params for LinkedIn)
+- Click an edge to set a condition (JSON expression with `op`, leaf args, optional `not`/`and`/`or` wrappers)
+- Pick the entry node (any kind — entry no longer has to be an email)
+- **Publish** validates the graph (cycles rejected, undefined node refs rejected, LinkedIn kinds gated to `PUBLISHABLE_KINDS` whitelist) and stamps a new `published_at`
+
+When published, every active lead in the campaign gets re-enrolled at the entry node. Old node rows aren't deleted — they're soft-deleted (`deleted_at` stamped) so historical `lead_step_executions` remain queryable.
+
+### Lite-CRM Leads tab (global)
+
+Sidebar → **Leads**. Cross-campaign view of every lead. Filter by:
+- Campaign dropdown
+- Send status pill
+- Search (email / name / company)
+- Has-notes toggle
+
+Click a row → opens a modal with:
+- Composed email preview (read-only)
+- **Notes** textarea — saves via `PATCH /campaigns/{cid}/leads/{lid}` with `{notes}`. Notes are editable **even after the email has sent** (only composed_subject/body are locked when SENT).
+
+### Research a client
+
+Sidebar → **Research a client**. One-off prospect research from a LinkedIn URL. Two modes:
+
+- **Fast** (~10s) — single Anthropic+web-search call, `max_uses=3`
+- **Deep** (~30-45s) — `max_uses=8` + richer prompt
+
+Pick output kind (email subject+body, or LinkedIn DM body-only) and a char limit. Char limit is enforced both in the prompt AND by a post-truncate that prefers sentence boundaries.
+
+**No LinkedIn views fire from this tool** — it's pure Anthropic + web search, so it doesn't surface in the prospect's "who viewed your profile" feed.
 
 ---
 
@@ -239,89 +457,170 @@ If you connected an inbox, a Celery beat task polls IMAP every `IMAP_POLL_INTERV
 emailblaster/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py             FastAPI app + middleware + exception handler
-│   │   ├── config.py           Settings via pydantic-settings
-│   │   ├── database.py         Async SQLAlchemy engine + get_db
-│   │   ├── models/             6 ORM models
-│   │   ├── schemas/            Pydantic request/response shapes
-│   │   ├── routers/            campaigns, leads, preview, analytics, settings,
-│   │   │                       webhooks, connected_accounts
-│   │   ├── services/           encryption, imap_client, brevo, web_research,
-│   │   │                       site_scraper, apollo, hunter, csv_parser,
-│   │   │                       email_template
-│   │   └── workers/            celery_app, ingest, research, compose, send,
-│   │                           reply_poller
-│   ├── alembic/                Migrations
-│   └── tests/                  261 backend tests
+│   │   ├── main.py                  FastAPI app + CORS middleware + 500-handler with CORS
+│   │   ├── config.py                pydantic-settings (all env vars)
+│   │   ├── database.py              Async SQLAlchemy engine + get_db + AsyncSessionLocal
+│   │   ├── models/                  10 ORM models
+│   │   │   ├── campaign.py          Campaign + CampaignStatus + ResearchMode enums
+│   │   │   ├── connected_account.py Inbox credential record (Fernet-encrypted password)
+│   │   │   ├── email_event.py       sent / delivered / opened / clicked / replied / bounced / spam / unsub
+│   │   │   ├── lead.py              Lead + ResearchStatus / ComposeStatus / SendStatus / LinkedInConnectionStatus enums
+│   │   │   ├── linkedin_account.py  Unipile-bound LinkedIn account row
+│   │   │   ├── research_cache.py    Email-keyed JSONB research cache (90d TTL)
+│   │   │   ├── sequence.py          Sequence + SequenceNode + SequenceEdge + LeadSequenceState + LeadStepExecution
+│   │   │   ├── style_correction.py  User edits to sample emails (fed back into compose prompt)
+│   │   │   ├── suppression.py       Per-email suppression list (auto-populated by bounces / spam / unsub)
+│   │   │   └── webhook_event.py     Idempotency table for Unipile webhook deliveries
+│   │   ├── schemas/                 Pydantic request/response shapes
+│   │   ├── routers/
+│   │   │   ├── analytics.py         GET /campaigns/{id}/analytics + activity
+│   │   │   ├── campaigns.py         CRUD + pause/resume + retry-failed + signature + leads list + delete
+│   │   │   ├── connected_accounts.py Inbox CRUD + test connection
+│   │   │   ├── leads.py             Upload preview + confirm-upload + global GET /leads
+│   │   │   ├── linkedin_accounts.py LinkedIn account CRUD + Unipile hosted-auth + discoverable / import
+│   │   │   ├── preview.py           Sample preview + approve-all + reject
+│   │   │   ├── research_client.py   POST /research-client (one-off research tool)
+│   │   │   ├── sequences.py         GET / replace / publish sequence graphs
+│   │   │   ├── settings.py          App-level settings exposure
+│   │   │   └── webhooks.py          /webhooks/unipile (Brevo events are polled, no inbound webhook)
+│   │   ├── services/
+│   │   │   ├── encryption.py        Fernet wrapper. ONLY consumer is imap_client.py (grep-enforced)
+│   │   │   ├── imap_client.py       Stdlib IMAP wrapper; read-only fetch via BODY.PEEK
+│   │   │   ├── brevo.py             Brevo send wrapper
+│   │   │   ├── brevo_events.py      Event-row writer + per-event dedup
+│   │   │   ├── web_research.py      Anthropic+web-search merged person+company research
+│   │   │   ├── apollo.py            Apollo.io enrichment client
+│   │   │   ├── hunter.py            Hunter.io email verification client
+│   │   │   ├── research_cache.py    lookup / upsert helpers
+│   │   │   ├── research_client.py   One-off research generator (Anthropic-only, no Unipile)
+│   │   │   ├── compose_client.py    One-off compose with char-limit enforcement
+│   │   │   ├── csv_parser.py        CSV column detection + auto-mapping
+│   │   │   ├── email_template.py    HTML+text rendering, unsubscribe link injection
+│   │   │   ├── template_render.py   {{merge_field}} substitution for template-mode campaigns
+│   │   │   ├── signature.py         Sign-off detection + replacement
+│   │   │   ├── sequence_conditions.py JSON expression language + evaluator + DAG cycle detector
+│   │   │   ├── sequence_service.py  ensure_default_sequence, enroll_leads, validate_graph, replace_graph
+│   │   │   └── linkedin/            Unipile provider
+│   │   │       ├── base.py          LinkedInProvider ABC + ProfileRef + ActionResult + ChallengeRequired + AccountRestricted types
+│   │   │       └── unipile_impl.py  The only concrete impl (Unipile REST wrapper)
+│   │   └── workers/
+│   │       ├── celery_app.py        Celery app + beat schedule
+│   │       ├── ingest.py            CSV row → Lead row
+│   │       ├── research.py          Cache lookup → Apollo/Hunter/web fan-out → cache upsert → enqueue compose
+│   │       ├── compose.py           Anthropic call → composed_subject/body → enqueue send_lead (when entry is email)
+│   │       ├── send.py              Brevo send + suppression check + atomic rate gate + schedule window
+│   │       ├── sequencer.py         Beat task that walks lead_sequence_states; dispatches email + LinkedIn step handlers
+│   │       ├── reply_poller.py      IMAP poll + match via Message-ID / In-Reply-To / References / subject+from
+│   │       ├── linkedin_poller.py   Unipile webhook fallback (inbox events, accepted invites)
+│   │       ├── brevo_events_poller.py Polls Brevo events API every 10min
+│   │       └── lead_sweeper.py      Resets stale RUNNING rows to PENDING and re-enqueues
+│   ├── alembic/versions/            13 migrations (0001 initial → 0013 research_cache + lead notes)
+│   ├── scripts/                     One-off remediation scripts (see below)
+│   └── tests/                       563 backend tests
 ├── frontend/
 │   └── src/
-│       ├── pages/              Campaigns, CampaignCreate, CampaignDetail,
-│       │                       Preview, Analytics, Settings
-│       ├── components/         Nav, Toast, ErrorBoundary, EmailPreviewCard,
-│       │                       LeadTable, LeadUpload, ScheduleConfig,
-│       │                       MetricsGrid, ConnectInboxModal
-│       └── api/                axios wrappers per resource
-├── docker-compose.yml
-└── README.md (this file)
+│       ├── pages/
+│       │   ├── Campaigns.jsx        Campaign list
+│       │   ├── CampaignCreate.jsx   4-step wizard
+│       │   ├── CampaignDetail.jsx   Overview / Sequence / Activity / Leads / Analytics tabs
+│       │   ├── Preview.jsx          Sample review + approve/reject
+│       │   ├── SequenceBuilder.jsx  React-Flow DAG editor
+│       │   ├── Analytics.jsx        Full-page analytics view
+│       │   ├── Leads.jsx            Global cross-campaign leads + notes modal
+│       │   ├── ResearchClient.jsx   One-off research tool
+│       │   └── Settings.jsx         Inboxes + LinkedIn accounts
+│       ├── components/              Nav, Toast, ErrorBoundary, EmailPreviewCard, LeadTable, LeadUpload,
+│       │                            ScheduleConfig, MetricsGrid, ConnectInboxModal, ConnectLinkedInModal,
+│       │                            SignatureEditor (inline in CampaignDetail)
+│       └── api/                     axios wrappers per resource
+├── docker-compose.yml               6 services, all bound to 127.0.0.1
+├── scripts/dev_tunnel.py            ngrok + Unipile webhook resync (pure stdlib)
+├── docs/
+│   ├── outline.md                   Original product outline
+│   └── roadmap.md                   Phase 1.5 milestones (M1-M5)
+├── CLAUDE.md                        Running session context for Claude/Codex assistants
+└── README.md                        This file
 ```
+
+### One-off scripts (`backend/scripts/`)
+
+| Script | When to use |
+|---|---|
+| `backfill_research_cache.py` | Push existing per-lead `research_data` into the cross-campaign cache table. Useful after first deploying the cache. Preserves each lead's `updated_at` as `refreshed_at` so old data correctly falls past the TTL. `--dry-run` supported. |
+| `reenqueue_stuck_scheduled.py <campaign_id>` | One-off remediation for leads orphaned in `send_status=SCHEDULED` with `scheduled_send_at` in the past. Stagger-dispatches them. `--all` for every running/paused campaign. |
+| `reconcile_linkedin_connections.py` | Pulls `GET /api/v1/users/relations` from Unipile and flips matching INVITED/UNKNOWN leads to CONNECTED. Useful after webhook drops. |
+| `unmark_seen_replies.py` | Historical remediation: the old IMAP poller used to mark messages as read. This flips them back to unread. |
+| `test_unipile_endpoints.py` / `test_unipile_post_actions.py` | Ad-hoc smoke tests against the live Unipile API. |
 
 ---
 
 ## Running tests
 
 ```bash
-# Backend (261 tests; spins up postgres if not already running)
+# Backend (563 tests; spins up postgres if not already running)
 docker compose run --rm backend pytest
 
-# Frontend (119 tests; pure jsdom, no services needed)
-docker compose run --rm --no-deps frontend npm test
+# Frontend (181 tests; pure jsdom, no services needed)
+docker compose exec frontend npm test --run
+
+# Quick: one specific file
+docker compose run --rm backend pytest tests/test_phase4_campaigns.py -v
 ```
+
+Test DB has a `truncate every table between tests` fixture in `tests/conftest.py`. **Update the truncate list when you add a new table.**
+
+LinkedIn rate-limit tests must monkeypatch `sequencer._LI_REDIS_CLIENT=None` per-test because the global is cached at module scope. `test_phase18_linkedin_write.py` has an `autouse` fixture that does this — copy that pattern in any new LinkedIn-touching test file.
 
 ---
 
 ## Troubleshooting
 
-### `ENCRYPTION_KEY is not configured`
-You skipped setup step 2. Generate a key, paste it into `.env`, then:
-```bash
-docker compose restart backend worker beat
-```
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ENCRYPTION_KEY is not configured` | Setup step 2 skipped | Generate a Fernet key, paste into `.env`, `docker compose up -d --force-recreate backend worker beat` |
+| Migrations fail / DB looks stale | Schema drift | `docker compose down --volumes` *(⚠️ wipes all campaign data)*, then `up postgres -d`, then `alembic upgrade head` |
+| Gmail "authentication failed" | Using regular password | Use a 16-char **App Password** with 2-Step Verification enabled. Some Workspace orgs disable IMAP — ask your admin |
+| Brevo "sender not authorized" | Sender not added in Brevo | Add `BREVO_SENDER_EMAIL` in Brevo dashboard → **Senders & IP** |
+| Webhook events not appearing | Brevo events poller is async (up to 10min lag) | Wait. If still missing, check `docker compose logs worker \| grep brevo_events` |
+| `socket.gaierror: Name or service not known` in backend logs | Docker network detached postgres after Desktop restart | `docker network connect --alias postgres emailblaster_default emailblaster-postgres-1` |
+| Worker logs `ModuleNotFoundError` after editing `requirements.txt` | `docker compose build backend` doesn't rebuild worker/beat | `docker compose build backend worker beat` |
+| Config change in `.env` not taking effect | `restart` doesn't re-read `.env` | `docker compose up -d --force-recreate backend worker beat`. Verify with `docker compose exec backend printenv VAR_NAME` |
+| New `.env` var doesn't reach containers | Not in compose `environment:` allowlist | Add `FOO: ${FOO:-default}` to backend/worker/beat blocks in `docker-compose.yml`, force-recreate |
+| `401 invalid auth header` after Unipile send-test | `UNIPILE_WEBHOOK_SECRET` mismatch | Re-copy from Unipile webhook config OR rotate via `scripts/dev_tunnel.py --rotate-secret` |
+| Campaign stuck — leads in SCHEDULED, `scheduled_send_at` in past | Pre-fix orphan (before pause = hard stop landed) | `docker compose exec worker python scripts/reenqueue_stuck_scheduled.py <campaign-id>` |
+| Anthropic rate limits | Burst of leads | Lower `max_per_hour` on the campaign; switch from Deep to Fast research mode; rely on the 90-day research cache for repeat prospects |
+| Pre-M1 campaign showing `total_leads=0` in analytics | Pre-existed before the sequence-state backfill | Recreate the campaign |
 
-### Migrations fail or the DB looks stale
-```bash
-docker compose down --volumes      # ⚠️ deletes all campaign data
-docker compose up postgres -d
-docker compose exec backend alembic upgrade head
-```
+---
 
-### IMAP "authentication failed"
-- **Gmail** — confirm you're using an **App Password** (16 chars, no spaces), not your Google password. App Passwords require 2-Step Verification to be enabled. Some Google Workspace orgs disable IMAP — ask your admin to enable it.
-- **Outlook** — try an app password if MFA is on.
-- Watch for stale credentials: the Settings page surfaces the IMAP error from the most recent connection test.
+## Conventions worth knowing
 
-### Brevo "sender not authorized"
-Brevo only sends from senders explicitly added in **Settings → Senders & IP** on the Brevo dashboard. Add `BREVO_SENDER_EMAIL` (and any campaign-level sender_email you use) there first.
+These are gotchas that have bitten enough times to be documented.
 
-### Anthropic rate limits
-Research and compose workers retry transient failures with exponential backoff. If you hit limits often:
-- Lower `max_per_hour` on the campaign
-- Switch the campaign from **Deep** to **Fast** research mode
-- Upgrade your Anthropic plan
-
-### Webhook events not appearing in analytics
-- Confirm `WEBHOOK_BASE_URL` is reachable from the public internet (use ngrok for local dev)
-- Confirm Brevo's webhook in the dashboard points at `{WEBHOOK_BASE_URL}/webhooks/brevo`
-- Check the backend logs for `POST /webhooks/brevo -> 200`
-
-### "Reply tracking is not configured" banner won't go away
-Reply tracking is per-campaign. To enable it on an existing campaign you'd need to recreate the campaign (or extend the PATCH endpoint to accept `connected_account_id` changes — currently only draft/previewing campaigns are editable).
+- **Encryption allowlist.** `app/services/imap_client.py` and `app/services/encryption.py` are the only modules allowed to call `encryption.decrypt(`. A pytest in `test_phase15_hardening.py` greps the codebase to enforce. When adding a credential consumer, update the allowlist AND keep plaintext local to the function (delete before return).
+- **`docker compose restart` does NOT re-read `.env`.** Use `up -d --force-recreate`. Verify with `docker compose exec backend printenv`.
+- **Rebuild ALL THREE Python services after `requirements.txt` changes.** `backend`, `worker`, `beat` are separately-tagged images. `docker compose build backend` doesn't rebuild the other two.
+- **A new env var must be added to the compose `environment:` block** for backend + worker + beat (not just `.env`). They use an explicit allowlist, not `env_file`.
+- **Don't cache aioredis at module scope in worker code.** Celery prefork tasks each call `asyncio.run()`, building a fresh event loop. A cached `aioredis.Redis` carries connection-pool state bound to the FIRST loop and fails with "Event loop is closed" on the second task. The legacy `sequencer._LI_REDIS_CLIENT` cache survives because it resets to None on task entry; don't add new ones.
+- **Stale LinkedIn dispatch guard.** After a worker restart, the same `send_linkedin_step` task can re-deliver with its original `node_id` even though the cursor advanced. `_send_linkedin_step_async` checks `state.current_node_id == node_id` at the top; mismatch → `stale_dispatch` (no API call, no slot burn, no execution row).
+- **Soft-deleted sequence nodes** (graph edits): old nodes get `deleted_at` stamped, not deleted. Live queries (router / scheduler / analytics) must filter `deleted_at IS NULL` — there's a partial index `ix_sequence_nodes_live` for this. Leads whose `current_node_id` points at a soft-deleted node get auto-halted.
+- **Pause is a hard stop.** The legacy `send_lead` wrapper used to self-re-enqueue every 5 min on `{status: paused}` (was line 370 of `workers/send.py`). Now it acks-and-drops. Resume re-enqueues every composed PENDING+SCHEDULED lead. Sequencer-driven follow-ups don't need this — the beat already filters by `Campaign.status == RUNNING`.
+- **Schedule edits live re-queue.** Editing any of the 4 schedule fields on a running/paused campaign auto-fires the same re-enqueue. Throughput-only edits (min_delay / hour cap / day cap) don't — they take effect on the next gate claim.
+- **`scheduled_send_at` is write-only.** Nothing reads it. Don't add code that depends on a cron sweeper for it — use the resume re-enqueue path instead.
 
 ---
 
 ## Security notes
 
-- Inbox passwords are encrypted at rest with **Fernet (AES-128-CBC + HMAC-SHA256)**. The key lives in `ENCRYPTION_KEY` (env var only — never committed).
-- Decryption is **confined to `app/services/imap_client.py`**. A pytest in the suite greps the codebase to prevent `encryption.decrypt(` from creeping into other modules.
-- Plaintext passwords live only inside two wrapper functions (`test_imap_with_account`, `fetch_unseen_with_account`) and are explicitly `del`'d before return.
-- Every outbound email has a **CAN-SPAM-compliant unsubscribe link** appended automatically. Clicking it adds the address to the suppression list and prevents all future sends to that address from any campaign.
-- Suppression list is also auto-populated by Brevo `hard_bounce`, `spam`, and `unsubscribed` webhook events.
+- **Inbox passwords are encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256).** The key lives in `ENCRYPTION_KEY` (env var only — never committed). Decryption is confined to `app/services/imap_client.py`; a pytest greps the codebase to enforce.
+- **IMAP fetch is read-only.** The poller uses `BODY.PEEK[HEADER]` (RFC 3501 §6.4.5) on a `readonly=True`-selected mailbox. It does NOT call `STORE +FLAGS \Seen` — your replies stay unread in your inbox.
+- **Per-event Unipile webhook idempotency.** `webhook_events(provider, event_id)` table dedups by Unipile event_id (or SHA256 of raw body when no id). UniqueViolation → 200 OK no-op.
+- **Unsubscribe link is HMAC-signed.** Token is `hmac_sha256(SECRET_KEY, lead.id.bytes)[:32]`. GET renders a confirm page (no side effect), POST applies the suppression — so email-scanner prefetchers can't auto-unsubscribe leads, and knowing one lead's URL doesn't let an attacker forge another's.
+- **Suppression cascade.** Brevo `hard_bounce` / `spam` / `unsubscribed` events auto-add the email to the suppression list. The list is checked by `send.check_send_gates` before every send. A suppressed lead returns `{status: suppressed}` and is permanently advanced past (no retries, no re-enqueue, no future-campaign sends).
+- **All four exposed ports bound to `127.0.0.1` only.** The unauthenticated API can't be reached from LAN. Tunnels (ngrok/cloudflared) still work because they forward via the host loopback.
+
+---
+
+## License
+
+Private / proprietary. All rights reserved.

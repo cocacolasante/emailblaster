@@ -198,6 +198,63 @@ describe('CampaignDetail', () => {
     }));
   });
 
+  it('Schedule editor renders a read-only summary on overview', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN,
+      schedule_days: [1, 2, 3, 4, 5],
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    const editor = await screen.findByTestId('schedule-editor');
+    const summary = within(editor).getByTestId('schedule-summary');
+    expect(summary.textContent).toMatch(/09:00.*17:00.*UTC/);
+    expect(summary.textContent).toMatch(/Mon, Tue, Wed, Thu, Fri/);
+  });
+
+  it('Schedule editor saves a new window via updateCampaign on a running campaign', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN,
+      schedule_days: [1, 2, 3, 4, 5],
+      min_delay_seconds: 60,
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(await screen.findByTestId('schedule-editor-toggle'));
+
+    fireEvent.change(screen.getByTestId('schedule-time-start'), { target: { value: '08:00' } });
+    fireEvent.change(screen.getByTestId('schedule-time-end'),   { target: { value: '20:00' } });
+    fireEvent.change(screen.getByTestId('schedule-timezone'),   { target: { value: 'America/New_York' } });
+    fireEvent.click(screen.getByTestId('day-6'));  // add Saturday
+
+    fireEvent.click(screen.getByTestId('save-schedule-btn'));
+    await waitFor(() => expect(api.updateCampaign).toHaveBeenCalledTimes(1));
+    const [cid, payload] = api.updateCampaign.mock.calls[0];
+    expect(cid).toBe('c1');
+    expect(payload).toMatchObject({
+      schedule_time_start: '08:00:00',
+      schedule_time_end: '20:00:00',
+      schedule_timezone: 'America/New_York',
+      schedule_days: [1, 2, 3, 4, 5, 6],
+      min_delay_seconds: 60,
+    });
+  });
+
+  it('Schedule editor blocks save when start >= end', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, schedule_days: [1, 2, 3, 4, 5],
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(await screen.findByTestId('schedule-editor-toggle'));
+
+    fireEvent.change(screen.getByTestId('schedule-time-start'), { target: { value: '18:00' } });
+    fireEvent.change(screen.getByTestId('schedule-time-end'),   { target: { value: '09:00' } });
+
+    expect(screen.getByTestId('schedule-validation-error').textContent)
+      .toMatch(/start time must be before end time/i);
+    expect(screen.getByTestId('save-schedule-btn')).toBeDisabled();
+  });
+
   it('Apply-to-all calls applySignature when a saved signature exists', async () => {
     api.getCampaign.mockResolvedValue({ ...RUNNING_CAMPAIGN, signature: 'Saved sig' });
     renderPage();

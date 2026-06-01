@@ -22,7 +22,79 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Lite-CRM Leads tab + 90-day research
+- **Last completed:** **Schedule & throughput editable on a running /
+  paused campaign.**  `update_campaign` previously rejected any edit
+  outside DRAFT/PREVIEWING with 409.  Added `_SCHEDULE_FIELDS`
+  (`schedule_days`, `schedule_time_start`, `schedule_time_end`,
+  `schedule_timezone`) and `_THROUGHPUT_FIELDS` (`min_delay_seconds`,
+  `max_per_hour`, `max_per_day`) to `_status_exempt_fields` so they're
+  edit-on-any-status.  Content fields (goal, tone, sender_*,
+  research_mode, templates, ...) stay 409-gated to draft/previewing
+  since changing them mid-flight would split voice between sent and
+  unsent batches.
+  - **Schedule changes re-enqueue waiting leads.**  When any of the 4
+    schedule fields changes on a RUNNING / PAUSED campaign,
+    `update_campaign` snapshots every `compose_status=DONE` lead with
+    `send_status IN (PENDING, SCHEDULED)` and stagger-dispatches
+    `send_lead.apply_async(eta=base + i*min_delay)` — same shape as
+    `resume_campaign` and `_kick_off_full_campaign`.  Required because
+    nothing reads `lead.scheduled_send_at`; without this, widening the
+    window wouldn't unstick orphans parked at the OLD eta.  Throughput-
+    only edits don't re-enqueue (new `min_delay` takes effect on the
+    next gate claim naturally).
+  - **Frontend `ScheduleEditor`** card on the Overview tab right
+    column (above Campaign config).  Read-only summary by default;
+    "Edit" toggles a form with day chips, start/end time pickers, a
+    curated tz dropdown (with a fallback `<option>` for whatever the
+    campaign currently has), and the 3 throughput knobs.  Validates
+    start<end inline; save flashes a toast that reads "Schedule saved
+    — waiting leads re-queued under the new window" when schedule
+    fields changed, else "Pacing updated".
+  - Tests: 4 new in `test_phase4_campaigns.py` (schedule edit allowed
+    on running/paused, schedule change re-enqueues staggered,
+    throughput-only does NOT re-enqueue, content fields still 409) +
+    3 new in `CampaignDetail.test.jsx` (renders summary, saves new
+    window, blocks save on bad time ordering).  Tests: **backend 563,
+    frontend 181**.
+
+- **Previously:** **Pause = hard stop; resume re-enqueues.**  Two
+  changes that together make the pause / resume cycle behave correctly
+  for the legacy `send_lead` pipeline:
+  - **Pause is a hard stop.**  `workers/send.py:370` previously
+    re-enqueued itself via `apply_async(countdown=300)` whenever
+    `send_lead_async` returned `{status: paused}` — meaning every
+    paused-campaign queued task respawned every 5 min, holding tens of
+    thousands of zombie tasks for as long as the campaign stayed
+    paused.  Now the task acks-and-drops on paused; the lead's
+    `send_status` is left alone (the gate doesn't mutate it on the
+    paused branch), and resume re-enqueues.
+  - **Resume re-enqueues PENDING + SCHEDULED.**  `routers/campaigns.py`
+    `resume_campaign` now snapshots every `compose_status=DONE` lead
+    where `send_status IN (PENDING, SCHEDULED)` and stagger-dispatches
+    `send_lead.apply_async(eta=base + i*min_delay)` — same pattern as
+    `_kick_off_full_campaign`.  Required because nothing reads
+    `lead.scheduled_send_at` (write-only DB stamp); without this,
+    SCHEDULED orphans sit forever.  Sequencer-driven follow-up /
+    LinkedIn steps don't need parallel treatment — the beat already
+    filters `Campaign.status == RUNNING`, so paused campaigns aren't
+    visited.
+  - **Bug story.**  Diagnosed when the user reported the csuite tech
+    advisor campaign stuck.  Found: (a) the `worker` container had died
+    17h prior — only `beat` was up, queue piled to 7,200+ tasks with
+    no consumer; (b) 148 csuite leads sat in `SCHEDULED` orphan state;
+    (c) once the worker came back, the 594 PENDING leads of the paused
+    `grantmind email` campaign churned thousands of self-respawned
+    paused-retries every 5 min.  Fix lands all three: worker restart
+    + resume re-enqueue + paused hard-stop.
+  - Tests: 2 new in `test_phase4_campaigns.py` (resume re-enqueues
+    PENDING+SCHEDULED staggered; clean no-op when nothing pending),
+    1 updated in `test_phase9_send_task.py` (paused does NOT
+    re-enqueue).  Tests: **backend 559, frontend 178**.
+  - Remediation script `backend/scripts/reenqueue_stuck_scheduled.py
+    <campaign-id>` re-dispatches existing orphans — used to recover
+    the 148 csuite leads.
+
+- **Previously:** **Lite-CRM Leads tab + 90-day research
   cache + per-lead notes.**  Three threads:
   - **Research cache (cuts repeated API spend).**  New `research_cache`
     table — primary key is the lowercased+stripped lead email; columns
@@ -882,6 +954,24 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   blocked on the lock until the commit; the second one then reads
   `SendStatus.SENT` and short-circuits.  Defends against the duplicate-
   send race the audit flagged.
+- **Pause is a HARD STOP.**  When `send_lead_async` returns `{status:
+  paused}`, the Celery wrapper does NOT self-re-enqueue (`workers/send.
+  py:370` — was `apply_async(countdown=300)`, now an early `return`).
+  Previously every paused-campaign queued task was respawning every 5
+  min, holding tens of thousands of zombie tasks for as long as the
+  campaign stayed paused.  Now the task is acked-and-gone; the lead's
+  `send_status` is left at whatever the gate left it (PENDING for
+  legacy first-email, SCHEDULED if a prior pass deferred it on the
+  window), and `resume_campaign` re-enqueues every composed
+  PENDING+SCHEDULED lead via staggered `send_lead.apply_async(eta=...)`
+  — same pattern as `_kick_off_full_campaign`.  **Resume IS the
+  trigger; pause is the off switch.**  Required because nothing reads
+  `lead.scheduled_send_at` (it's a write-only DB stamp); without the
+  resume re-enqueue, SCHEDULED leads are orphans forever.  Sequencer-
+  driven follow-up / LinkedIn steps don't need this same treatment —
+  the beat already filters `Campaign.status == RUNNING`, so paused
+  campaigns aren't visited.  Remediation for pre-fix orphans:
+  `backend/scripts/reenqueue_stuck_scheduled.py <campaign-id>`.
 - **The email min-delay gate is an atomic CLAIM, not a read.**
   `check_rate_limits` does `SET rate:{cid}:min_gate <now> NX EX
   min_delay` — whoever sets it first owns that `min_delay` window; the
@@ -1100,16 +1190,16 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-28 — Lite-CRM Leads tab + 90-day research
-cache + per-lead notes.  New global `/leads` page (paginated, filterable
-by campaign / search / has-notes) opens a per-lead modal with composed-
-email preview + notes textarea; `PATCH .../leads/{lid}` now accepts
-`notes` (editable even on SENT leads).  Research worker consults a new
-`research_cache` table keyed by lowercased email; hits within
-`RESEARCH_CACHE_TTL_DAYS` (90) skip every Apollo / Hunter / web call.
-Migration 0013 adds `research_cache` + `leads.notes`._
+_Last updated: 2026-05-30 — Schedule + throughput fields are now
+edit-on-any-status (running, paused, complete) in `update_campaign`.
+A schedule change on a live campaign automatically re-queues every
+composed PENDING + SCHEDULED lead via staggered `send_lead.apply_async`,
+so the new window takes effect immediately for waiting orphans.  New
+`ScheduleEditor` card on the campaign detail page (Overview tab, right
+column) with day chips, time pickers, timezone dropdown, and the 3
+pacing knobs._
 
-_Backend tests: **557 passing**.  Frontend tests: **178 passing**._
+_Backend tests: **563 passing**.  Frontend tests: **181 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

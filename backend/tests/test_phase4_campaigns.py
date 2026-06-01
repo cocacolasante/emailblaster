@@ -1,6 +1,7 @@
 """Phase 4: Campaign CRUD, status transitions, stats, paginated leads."""
 import uuid
 from datetime import time
+from unittest.mock import patch
 
 import pytest
 
@@ -184,6 +185,132 @@ async def test_patch_signature_allowed_in_any_status(client, db_session, status_
     # Other content fields are still gated.
     blocked = await client.patch(f"/campaigns/{created['id']}", json={"goal": "new"})
     assert blocked.status_code == 409
+
+
+@pytest.mark.parametrize("status_val", ["running", "paused"])
+async def test_patch_schedule_window_allowed_on_live_campaigns(client, db_session, status_val):
+    """The 4 schedule fields and the 3 throughput fields are editable on a
+    running/paused campaign — they take effect on the next send_lead gate
+    check.  Content fields (goal/tone/sender_*) are still gated."""
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    c = await db_session.get(Campaign, uuid.UUID(created["id"]))
+    c.status = CampaignStatus(status_val)
+    await db_session.commit()
+
+    # Schedule window change.
+    with patch("app.workers.send.send_lead.apply_async"), \
+         patch("app.workers.send.send_lead.delay"):
+        resp = await client.patch(
+            f"/campaigns/{created['id']}",
+            json={
+                "schedule_days": [0, 1, 2, 3, 4, 5],
+                "schedule_time_start": "08:00:00",
+                "schedule_time_end": "20:00:00",
+                "schedule_timezone": "America/Los_Angeles",
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["schedule_days"] == [0, 1, 2, 3, 4, 5]
+    assert body["schedule_time_start"] == "08:00:00"
+    assert body["schedule_time_end"] == "20:00:00"
+    assert body["schedule_timezone"] == "America/Los_Angeles"
+
+    # Throughput change is also exempt.
+    with patch("app.workers.send.send_lead.apply_async"), \
+         patch("app.workers.send.send_lead.delay"):
+        resp = await client.patch(
+            f"/campaigns/{created['id']}",
+            json={"min_delay_seconds": 180, "max_per_hour": 30, "max_per_day": 200},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["min_delay_seconds"] == 180
+    assert body["max_per_hour"] == 30
+    assert body["max_per_day"] == 200
+
+    # But content fields are still 409.
+    blocked = await client.patch(
+        f"/campaigns/{created['id']}", json={"goal": "new goal"}
+    )
+    assert blocked.status_code == 409
+
+
+async def test_patch_schedule_change_re_enqueues_waiting_leads_staggered(
+    client, db_session,
+):
+    """When the schedule window shifts on a running campaign, every composed
+    PENDING+SCHEDULED lead should re-fire so they pick up the new window.
+    SENT/FAILED/composing leads are not touched.  Sends are eta-spaced by
+    min_delay (same shape as resume_campaign + _kick_off_full_campaign)."""
+    created = (await client.post(
+        "/campaigns/", json=_campaign_payload(min_delay_seconds=120)
+    )).json()
+    cid = uuid.UUID(created["id"])
+
+    c = await db_session.get(Campaign, cid)
+    c.status = CampaignStatus.RUNNING
+    await db_session.commit()
+
+    # 1 PENDING-composed + 2 SCHEDULED + 1 SENT + 1 PENDING-but-not-composed.
+    for i, (s_status, c_status) in enumerate([
+        (SendStatus.PENDING, ComposeStatus.DONE),
+        (SendStatus.SCHEDULED, ComposeStatus.DONE),
+        (SendStatus.SCHEDULED, ComposeStatus.DONE),
+        (SendStatus.SENT, ComposeStatus.DONE),
+        (SendStatus.PENDING, ComposeStatus.RUNNING),  # compose not done yet
+    ]):
+        db_session.add(Lead(
+            campaign_id=cid, email=f"l{i}@x.com",
+            send_status=s_status, compose_status=c_status,
+            composed_subject="Hi" if c_status == ComposeStatus.DONE else None,
+            composed_body="Body" if c_status == ComposeStatus.DONE else None,
+        ))
+    await db_session.commit()
+
+    with patch("app.workers.send.send_lead.apply_async") as enqueue, \
+         patch("app.workers.send.send_lead.delay") as delay_mock:
+        resp = await client.patch(
+            f"/campaigns/{cid}",
+            json={"schedule_time_start": "08:00:00", "schedule_time_end": "22:00:00"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    delay_mock.assert_not_called()
+    # Only the 3 composed PENDING+SCHEDULED leads (1 + 2) re-enqueue.
+    assert enqueue.call_count == 3, [c.kwargs for c in enqueue.call_args_list]
+
+    etas = sorted(call.kwargs["eta"] for call in enqueue.call_args_list)
+    gaps = [(etas[i + 1] - etas[i]).total_seconds() for i in range(len(etas) - 1)]
+    assert all(g == 120 for g in gaps), gaps
+
+
+async def test_patch_throughput_only_does_not_re_enqueue(client, db_session):
+    """Editing only throughput knobs (min_delay/hour/day) takes effect on the
+    next gate claim naturally — no re-enqueue needed.  This is the cheap-
+    edit path."""
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    c = await db_session.get(Campaign, cid)
+    c.status = CampaignStatus.RUNNING
+    await db_session.commit()
+
+    db_session.add(Lead(
+        campaign_id=cid, email="ready@x.com",
+        send_status=SendStatus.SCHEDULED, compose_status=ComposeStatus.DONE,
+        composed_subject="Hi", composed_body="Body",
+    ))
+    await db_session.commit()
+
+    with patch("app.workers.send.send_lead.apply_async") as enqueue, \
+         patch("app.workers.send.send_lead.delay") as delay_mock:
+        resp = await client.patch(
+            f"/campaigns/{cid}", json={"min_delay_seconds": 300},
+        )
+
+    assert resp.status_code == 200
+    enqueue.assert_not_called()
+    delay_mock.assert_not_called()
 
 
 async def test_patch_validates_time_order_when_both_provided(client):
@@ -455,9 +582,89 @@ async def test_resume_only_works_when_paused(client, db_session):
     c.status = CampaignStatus.PAUSED
     await db_session.commit()
 
-    resp = await client.post(f"/campaigns/{created['id']}/resume")
+    # Campaign has no leads → resume should still succeed and not enqueue.
+    with patch("app.workers.send.send_lead.apply_async"), \
+         patch("app.workers.send.send_lead.delay"):
+        resp = await client.post(f"/campaigns/{created['id']}/resume")
     assert resp.status_code == 200
     assert resp.json()["status"] == "running"
+
+
+async def test_resume_re_enqueues_pending_and_scheduled_leads_staggered(client, db_session):
+    """Resume should fire `send_lead.apply_async` for every composed lead that
+    hasn't sent yet (PENDING + SCHEDULED), spaced by min_delay.  Without this,
+    leads orphaned in SCHEDULED during a pause window never get re-dispatched."""
+    created = (await client.post(
+        "/campaigns/", json=_campaign_payload(min_delay_seconds=240)
+    )).json()
+    cid = uuid.UUID(created["id"])
+
+    # Set the campaign to PAUSED so resume is legal.
+    c = await db_session.get(Campaign, cid)
+    c.status = CampaignStatus.PAUSED
+    await db_session.commit()
+
+    # Two PENDING-composed, two SCHEDULED (orphans), one SENT, one FAILED, one
+    # whose compose hasn't finished — only the first four should re-enqueue.
+    composed = []
+    for i, status_ in enumerate([
+        SendStatus.PENDING, SendStatus.PENDING,
+        SendStatus.SCHEDULED, SendStatus.SCHEDULED,
+        SendStatus.SENT, SendStatus.FAILED,
+    ]):
+        db_session.add(Lead(
+            campaign_id=cid, email=f"l{i}@x.com", send_status=status_,
+            compose_status=ComposeStatus.DONE,
+            composed_subject="Hi", composed_body="Body",
+        ))
+        composed.append(status_)
+    # Compose-not-done lead — should be skipped even though pending.
+    db_session.add(Lead(
+        campaign_id=cid, email="notyet@x.com",
+        send_status=SendStatus.PENDING, compose_status=ComposeStatus.RUNNING,
+    ))
+    await db_session.commit()
+
+    with patch("app.workers.send.send_lead.apply_async") as enqueue, \
+         patch("app.workers.send.send_lead.delay") as delay_mock:
+        resp = await client.post(f"/campaigns/{cid}/resume")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "running"
+
+    # Only the 4 composed PENDING+SCHEDULED leads got dispatched.
+    delay_mock.assert_not_called()
+    assert enqueue.call_count == 4, [c.kwargs for c in enqueue.call_args_list]
+
+    # Sends are spaced exactly min_delay apart.
+    etas = sorted(call.kwargs["eta"] for call in enqueue.call_args_list)
+    gaps = [(etas[i + 1] - etas[i]).total_seconds() for i in range(len(etas) - 1)]
+    assert all(g == 240 for g in gaps), gaps
+
+
+async def test_resume_with_no_pending_leads_is_a_noop_dispatch(client, db_session):
+    """A resume on a paused campaign with nothing to send shouldn't enqueue
+    anything — and must NOT 500."""
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    c = await db_session.get(Campaign, cid)
+    c.status = CampaignStatus.PAUSED
+    await db_session.commit()
+
+    # One SENT lead — nothing else to dispatch.
+    db_session.add(Lead(
+        campaign_id=cid, email="done@x.com",
+        send_status=SendStatus.SENT, compose_status=ComposeStatus.DONE,
+    ))
+    await db_session.commit()
+
+    with patch("app.workers.send.send_lead.apply_async") as enqueue, \
+         patch("app.workers.send.send_lead.delay") as delay_mock:
+        resp = await client.post(f"/campaigns/{cid}/resume")
+
+    assert resp.status_code == 200
+    enqueue.assert_not_called()
+    delay_mock.assert_not_called()
 
 
 # ---------- Stats wiring ----------

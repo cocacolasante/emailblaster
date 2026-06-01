@@ -278,6 +278,8 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
           saving={savingLinkedIn}
         />
 
+        <ScheduleEditor campaignId={campaign.id} campaign={campaign} />
+
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 className="text-base font-semibold text-slate-900 mb-4">Campaign config</h2>
           <dl className="space-y-2">
@@ -287,10 +289,6 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
               { label: 'Sender', value: `${campaign.sender_name} <${campaign.sender_email}>` },
               { label: 'Research mode', value: campaign.research_mode },
               { label: 'Sample count', value: campaign.sample_count },
-              {
-                label: 'Schedule',
-                value: `${campaign.schedule_time_start?.slice(0, 5)} – ${campaign.schedule_time_end?.slice(0, 5)} (${campaign.schedule_timezone})`,
-              },
             ].map(({ label, value }) => (
               <div key={label} className="flex gap-4">
                 <dt className="text-sm text-slate-500 w-32 flex-shrink-0">{label}</dt>
@@ -717,6 +715,284 @@ function ActivityTab({ campaignId, campaign }) {
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+
+const DAY_OPTIONS = [
+  { value: 0, label: 'Sun' },
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+];
+
+const TIMEZONES = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Europe/London',
+  'Europe/Berlin',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+];
+
+function _normTime(t) {
+  // Backend returns "HH:MM:SS"; the <input type="time"> wants "HH:MM".
+  return (t || '').slice(0, 5);
+}
+
+function ScheduleEditor({ campaignId, campaign }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const initial = {
+    schedule_days: campaign.schedule_days || [],
+    schedule_time_start: _normTime(campaign.schedule_time_start),
+    schedule_time_end: _normTime(campaign.schedule_time_end),
+    schedule_timezone: campaign.schedule_timezone || 'UTC',
+    min_delay_seconds: campaign.min_delay_seconds ?? 60,
+    max_per_hour: campaign.max_per_hour ?? '',
+    max_per_day: campaign.max_per_day ?? '',
+  };
+  const [draft, setDraft] = useState(initial);
+  const [open, setOpen] = useState(false);
+
+  const dirty = (
+    JSON.stringify(draft.schedule_days) !== JSON.stringify(initial.schedule_days)
+    || draft.schedule_time_start !== initial.schedule_time_start
+    || draft.schedule_time_end !== initial.schedule_time_end
+    || draft.schedule_timezone !== initial.schedule_timezone
+    || Number(draft.min_delay_seconds) !== Number(initial.min_delay_seconds)
+    || String(draft.max_per_hour) !== String(initial.max_per_hour)
+    || String(draft.max_per_day) !== String(initial.max_per_day)
+  );
+
+  const validationError = (() => {
+    if (!draft.schedule_time_start || !draft.schedule_time_end) return null;
+    if (draft.schedule_time_start >= draft.schedule_time_end) {
+      return 'Start time must be before end time';
+    }
+    if (Number(draft.min_delay_seconds) < 0) return 'Min delay cannot be negative';
+    return null;
+  })();
+
+  const scheduleChanged = (
+    JSON.stringify(draft.schedule_days) !== JSON.stringify(initial.schedule_days)
+    || draft.schedule_time_start !== initial.schedule_time_start
+    || draft.schedule_time_end !== initial.schedule_time_end
+    || draft.schedule_timezone !== initial.schedule_timezone
+  );
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const payload = {
+        schedule_days: draft.schedule_days,
+        schedule_time_start: `${draft.schedule_time_start}:00`,
+        schedule_time_end: `${draft.schedule_time_end}:00`,
+        schedule_timezone: draft.schedule_timezone,
+        min_delay_seconds: Number(draft.min_delay_seconds),
+      };
+      if (draft.max_per_hour !== '' && draft.max_per_hour !== null) {
+        payload.max_per_hour = Number(draft.max_per_hour);
+      }
+      if (draft.max_per_day !== '' && draft.max_per_day !== null) {
+        payload.max_per_day = Number(draft.max_per_day);
+      }
+      return updateCampaign(campaignId, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+      queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] });
+      toast.success(
+        scheduleChanged
+          ? 'Schedule saved — waiting leads re-queued under the new window'
+          : 'Pacing updated',
+      );
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save'),
+  });
+
+  const toggleDay = (d) => {
+    setDraft((prev) => {
+      const has = prev.schedule_days.includes(d);
+      return {
+        ...prev,
+        schedule_days: has
+          ? prev.schedule_days.filter((x) => x !== d)
+          : [...prev.schedule_days, d].sort((a, b) => a - b),
+      };
+    });
+  };
+
+  // Read-only summary while collapsed.
+  const summary = `${_normTime(campaign.schedule_time_start)} – ${_normTime(campaign.schedule_time_end)} ${campaign.schedule_timezone || ''} · `
+    + (campaign.schedule_days?.length
+      ? campaign.schedule_days.map((d) => DAY_OPTIONS[d]?.label).join(', ')
+      : 'no days');
+
+  return (
+    <div
+      className="bg-white rounded-xl border border-slate-200 shadow-sm p-6"
+      data-testid="schedule-editor"
+    >
+      <div className="flex justify-between items-start mb-2">
+        <h2 className="text-base font-semibold text-slate-900 m-0">Schedule &amp; pacing</h2>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-sm text-blue-600 hover:text-blue-700"
+          data-testid="schedule-editor-toggle"
+        >
+          {open ? 'Cancel' : 'Edit'}
+        </button>
+      </div>
+      <p className="text-sm text-slate-600 m-0" data-testid="schedule-summary">{summary}</p>
+
+      {open && (
+        <div className="mt-4 space-y-4">
+          {/* Days */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Days</label>
+            <div className="flex flex-wrap gap-1.5">
+              {DAY_OPTIONS.map((d) => {
+                const active = draft.schedule_days.includes(d.value);
+                return (
+                  <button
+                    key={d.value}
+                    type="button"
+                    onClick={() => toggleDay(d.value)}
+                    data-testid={`day-${d.value}`}
+                    aria-pressed={active}
+                    className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                      active
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Window */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Start</label>
+              <input
+                type="time"
+                value={draft.schedule_time_start}
+                onChange={(e) => setDraft({ ...draft, schedule_time_start: e.target.value })}
+                data-testid="schedule-time-start"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">End</label>
+              <input
+                type="time"
+                value={draft.schedule_time_end}
+                onChange={(e) => setDraft({ ...draft, schedule_time_end: e.target.value })}
+                data-testid="schedule-time-end"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          {/* Timezone */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Timezone</label>
+            <select
+              value={draft.schedule_timezone}
+              onChange={(e) => setDraft({ ...draft, schedule_timezone: e.target.value })}
+              data-testid="schedule-timezone"
+              className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            >
+              {TIMEZONES.map((tz) => (
+                <option key={tz} value={tz}>{tz}</option>
+              ))}
+              {!TIMEZONES.includes(draft.schedule_timezone) && (
+                <option value={draft.schedule_timezone}>{draft.schedule_timezone}</option>
+              )}
+            </select>
+          </div>
+
+          {/* Throughput */}
+          <div className="border-t border-slate-200 pt-3 grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Min delay (s)</label>
+              <input
+                type="number" min={0}
+                value={draft.min_delay_seconds}
+                onChange={(e) => setDraft({ ...draft, min_delay_seconds: e.target.value })}
+                data-testid="min-delay-seconds"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Max / hr</label>
+              <input
+                type="number" min={1}
+                value={draft.max_per_hour ?? ''}
+                onChange={(e) => setDraft({ ...draft, max_per_hour: e.target.value })}
+                placeholder="—"
+                data-testid="max-per-hour"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Max / day</label>
+              <input
+                type="number" min={1}
+                value={draft.max_per_day ?? ''}
+                onChange={(e) => setDraft({ ...draft, max_per_day: e.target.value })}
+                placeholder="—"
+                data-testid="max-per-day"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <p className="text-xs text-slate-500 m-0">
+            Schedule edits on a running/paused campaign automatically re-queue
+            every composed but unsent lead under the new window. Pacing edits
+            take effect on the next send.
+          </p>
+
+          {validationError && (
+            <div className="text-xs text-red-600" data-testid="schedule-validation-error">
+              {validationError}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setDraft(initial); setOpen(false); }}
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={!dirty || !!validationError || saveMutation.isPending}
+              data-testid="save-schedule-btn"
+              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

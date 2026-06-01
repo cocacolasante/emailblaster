@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -202,11 +202,28 @@ async def update_campaign(
 
     updates = payload.model_dump(exclude_unset=True)
 
-    # Account assignments and the email signature are safe to change on any
-    # status — the signature only affects emails when you click "Apply to all"
-    # or on future composes, so it shouldn't be gated.  Only OTHER content
-    # fields (goal, tone, schedule, ...) enforce the draft/previewing guard.
-    _status_exempt_fields = {"linkedin_account_id", "connected_account_id", "signature"}
+    # Account assignments + signature + the schedule/throughput family are
+    # safe to change on any status:
+    #   - signature only affects emails on "Apply to all" or future composes
+    #   - schedule (days / start / end / timezone) and throughput (min_delay,
+    #     hour cap, day cap) take effect on the next send_lead invocation;
+    #     existing eta-deferred tasks re-check the window when they fire.
+    # Content fields (goal, tone, sender_*, research_mode, templates, ...)
+    # are still gated to draft/previewing because changing them mid-flight
+    # would split the campaign's voice between already-sent and unsent
+    # batches.
+    _SCHEDULE_FIELDS = {
+        "schedule_days",
+        "schedule_time_start",
+        "schedule_time_end",
+        "schedule_timezone",
+    }
+    _THROUGHPUT_FIELDS = {"min_delay_seconds", "max_per_hour", "max_per_day"}
+    _status_exempt_fields = (
+        {"linkedin_account_id", "connected_account_id", "signature"}
+        | _SCHEDULE_FIELDS
+        | _THROUGHPUT_FIELDS
+    )
     if updates.keys() - _status_exempt_fields:
         if c.status not in {CampaignStatus.DRAFT, CampaignStatus.PREVIEWING}:
             raise HTTPException(
@@ -219,10 +236,46 @@ async def update_campaign(
     if "linkedin_account_id" in updates:
         await _verify_linkedin_account_exists(db, updates["linkedin_account_id"])
 
+    schedule_touched = bool(updates.keys() & _SCHEDULE_FIELDS)
+
     for key, value in updates.items():
         setattr(c, key, value)
+
+    # When the schedule shifts on a live campaign, re-enqueue every composed
+    # PENDING+SCHEDULED lead so they pick up the new window.  Required
+    # because nothing reads `lead.scheduled_send_at` — a SCHEDULED orphan
+    # parked at the OLD eta would otherwise stay parked even after you
+    # widen the window.  Throughput-only edits don't need this: the new
+    # `min_delay` takes effect on the next gate claim naturally.  Snapshot
+    # IDs before commit so the rowset is captured.
+    requeue_ids: list[uuid.UUID] = []
+    if schedule_touched and c.status in {
+        CampaignStatus.RUNNING, CampaignStatus.PAUSED,
+    }:
+        requeue_ids = list((await db.execute(
+            select(Lead.id).where(
+                Lead.campaign_id == c.id,
+                Lead.compose_status == ComposeStatus.DONE,
+                Lead.send_status.in_((SendStatus.PENDING, SendStatus.SCHEDULED)),
+            )
+        )).scalars().all())
+
     await db.commit()
     await db.refresh(c)
+
+    if requeue_ids:
+        from app.workers.send import send_lead
+
+        min_delay = max(c.min_delay_seconds or 0, 0)
+        base = datetime.now(timezone.utc)
+        for i, lid in enumerate(requeue_ids):
+            if min_delay:
+                send_lead.apply_async(
+                    args=[str(lid)], eta=base + timedelta(seconds=i * min_delay)
+                )
+            else:
+                send_lead.delay(str(lid))
+
     return await _build_response(db, c)
 
 
@@ -271,8 +324,41 @@ async def resume_campaign(
         )
     c.status = CampaignStatus.RUNNING
     c.auto_paused_until = None
+
+    # Re-enqueue every composed lead that hasn't sent yet.  Without this,
+    # leads that hit the paused / out-of-window gate during the pause window
+    # are orphaned in send_status=SCHEDULED — their send tasks were acked
+    # when they returned `{status: paused}` and nothing else dispatches them
+    # (the sequencer beat defers on entry-email nodes waiting for the legacy
+    # pipeline; nothing reads `scheduled_send_at`).  Snapshot the IDs before
+    # commit so the rowset is captured even after the transaction closes.
+    pending_ids = list((await db.execute(
+        select(Lead.id).where(
+            Lead.campaign_id == c.id,
+            Lead.compose_status == ComposeStatus.DONE,
+            Lead.send_status.in_((SendStatus.PENDING, SendStatus.SCHEDULED)),
+        )
+    )).scalars().all())
+
     await db.commit()
     await db.refresh(c)
+
+    # Stagger by min_delay so we don't fire the whole batch at once and
+    # rely on the rate gate to bounce the losers — same pattern as
+    # _kick_off_full_campaign in routers/preview.py.
+    if pending_ids:
+        from app.workers.send import send_lead
+
+        min_delay = max(c.min_delay_seconds or 0, 0)
+        base = datetime.now(timezone.utc)
+        for i, lid in enumerate(pending_ids):
+            if min_delay:
+                send_lead.apply_async(
+                    args=[str(lid)], eta=base + timedelta(seconds=i * min_delay)
+                )
+            else:
+                send_lead.delay(str(lid))
+
     return await _build_response(db, c)
 
 

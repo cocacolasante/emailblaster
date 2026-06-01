@@ -368,8 +368,15 @@ def send_lead(self, lead_id: str) -> dict[str, Any]:  # noqa: D401
 
     status = result.get("status")
     if status == "paused":
-        send_lead.apply_async(args=[lead_id], countdown=300)
-    elif status == "scheduled":
+        # Hard stop: pause means stop the queue.  We don't self-re-enqueue
+        # (the old behaviour was a 5-min loop that kept the queue churning
+        # for every paused lead) — `resume_campaign` re-enqueues every
+        # composed PENDING+SCHEDULED lead, so the resume IS the trigger.
+        # Lead's send_status is whatever the gate left it (PENDING for the
+        # legacy first-email, possibly SCHEDULED if a prior pass deferred
+        # it on the schedule window); either way resume picks it up.
+        return result
+    if status == "scheduled":
         eta_str = result.get("eta")
         if eta_str:
             send_lead.apply_async(args=[lead_id], eta=datetime.fromisoformat(eta_str))
