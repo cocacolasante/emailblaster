@@ -699,8 +699,11 @@ async def test_send_endpoint_html_signature_renders_as_real_html(client, monkeyp
     assert "Quick thought." in html
     # The AI sign-off was stripped before render (not duplicated).
     assert html.count("Anthony") == 1
-    # Signature tags came through as REAL HTML, not escaped.
-    assert '<a href="https://csuitecode.com">' in html
+    # Signature tags came through as REAL HTML, not escaped.  Bare
+    # anchors get the default blue+underline style auto-injected so
+    # links look consistent across clients (Gmail strips defaults).
+    assert 'href="https://csuitecode.com"' in html
+    assert "color:#1d4ed8;text-decoration:underline;" in html
     assert '<img src="https://example.com/logo.png"' in html
     assert "<strong>" in html
     # And the signature lives inside the <body> wrapper, not after.

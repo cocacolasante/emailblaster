@@ -181,7 +181,11 @@ describe('ConnectInboxModal', () => {
 
     await user.click(screen.getByTestId('signature-insert-link'));
 
-    expect(sig.value).toContain('<a href="https://csuitecode.com">csuitecode.com</a>');
+    // The link snippet includes inline blue+underline so the link
+    // renders the same way across clients (Gmail strips defaults).
+    expect(sig.value).toContain('href="https://csuitecode.com"');
+    expect(sig.value).toContain('style="color:#1d4ed8;text-decoration:underline;"');
+    expect(sig.value).toContain('>csuitecode.com</a>');
   });
 
   it('Insert image button inserts an <img> tag with alt + size cap', async () => {

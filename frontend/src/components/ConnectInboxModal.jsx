@@ -85,7 +85,16 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
     const url = (window.prompt('Link URL (https://…)') || '').trim();
     if (!url) return;
     const text = (window.prompt('Link text', url) || url).trim();
-    insertSignatureSnippet(`<a href="${url}">${text}</a>`);
+    // Inline-style the link: blue + underlined.  Gmail and a couple of
+    // mobile clients strip the user-agent default <a> styling, so we
+    // pin it explicitly here.  The backend's signature_to_html will
+    // also auto-inject this default on any bare <a> the user
+    // hand-types (or already has from before this change), but
+    // injecting it here too means the WYSIWYG preview in the modal
+    // shows the final styling immediately.
+    insertSignatureSnippet(
+      `<a href="${url}" style="color:#1d4ed8;text-decoration:underline;">${text}</a>`,
+    );
   }
 
   useEffect(() => {

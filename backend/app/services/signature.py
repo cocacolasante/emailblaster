@@ -117,6 +117,30 @@ def strip_signoff(body: str | None) -> str:
 # ``signature_to_html``.
 _HTML_TAG_RE = re.compile(r"<[a-zA-Z!/][^>]*>")
 
+# Default inline style applied to bare ``<a>`` tags in a signature.  Gmail
+# and a handful of mobile clients strip the user-agent default <a>
+# styling, so we pin blue + underlined explicitly to keep links readable.
+# Only injected when the anchor doesn't carry its own ``style=`` already —
+# a user who wants a different colour can set ``style="color:#000;…"``
+# and we won't override it.
+_DEFAULT_LINK_STYLE = "color:#1d4ed8;text-decoration:underline;"
+
+_ANCHOR_OPEN_RE = re.compile(r"<a\s+([^>]*)>", re.IGNORECASE)
+_HAS_STYLE_ATTR_RE = re.compile(r"\bstyle\s*=", re.IGNORECASE)
+
+
+def _inject_default_link_style(html: str) -> str:
+    """Add the default blue+underline style to ``<a>`` tags that don't
+    already carry an inline ``style`` attribute.  Idempotent — anchors
+    already styled are returned unchanged."""
+    def _repl(m: re.Match[str]) -> str:
+        attrs = m.group(1)
+        if _HAS_STYLE_ATTR_RE.search(attrs):
+            return m.group(0)  # leave user styling alone
+        # Insert style attribute, preserving the existing attribute string.
+        return f'<a {attrs.rstrip()} style="{_DEFAULT_LINK_STYLE}">'
+    return _ANCHOR_OPEN_RE.sub(_repl, html)
+
 # Tags we know how to translate to plain text.  Anything not in this map
 # is stripped (its inner text content is kept).  Used by
 # ``signature_to_text``.
@@ -167,7 +191,10 @@ def signature_to_html(signature: str | None) -> str:
     tail = sig[last_end:]
     if tail:
         out.append(tail.replace("\n", "<br>\n"))
-    return "".join(out)
+    rendered = "".join(out)
+    # Pin the default link styling so emails look the same in clients
+    # that strip the user-agent default <a> styling (Gmail, some mobile).
+    return _inject_default_link_style(rendered)
 
 
 def signature_to_text(signature: str | None) -> str:

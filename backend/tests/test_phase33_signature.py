@@ -112,8 +112,11 @@ def test_signature_to_html_preserves_anchor_tags():
     from app.services.signature import signature_to_html
     sig = 'Best,\n<a href="https://csuitecode.com">csuitecode.com</a>'
     out = signature_to_html(sig)
-    # The <a> tag passes through verbatim.
-    assert '<a href="https://csuitecode.com">csuitecode.com</a>' in out
+    # The <a> tag passes through (now with auto-injected blue+underline
+    # style — see test_signature_to_html_auto_styles_bare_anchor below
+    # for the dedicated assertion on that).
+    assert 'href="https://csuitecode.com"' in out
+    assert ">csuitecode.com</a>" in out
     # And the newline before it became a <br>.
     assert "Best,<br>" in out
 
@@ -142,6 +145,52 @@ def test_signature_to_html_does_not_escape_existing_html():
     out = signature_to_html(sig)
     assert "<strong>" in out
     assert "&lt;" not in out
+
+
+def test_signature_to_html_auto_styles_bare_anchor_blue_underline():
+    """A bare <a href=…>text</a> gets the default blue+underline style
+    inline so it renders consistently across clients (Gmail and some
+    mobile email clients strip user-agent default <a> styling)."""
+    from app.services.signature import signature_to_html
+    out = signature_to_html('Best,\n<a href="https://csuitecode.com">csuitecode.com</a>')
+    assert 'style="color:#1d4ed8;text-decoration:underline;"' in out
+    # And the href / text are still there.
+    assert 'href="https://csuitecode.com"' in out
+    assert '>csuitecode.com</a>' in out
+
+
+def test_signature_to_html_leaves_user_styled_anchor_alone():
+    """If the user wrote their own ``style=`` on the anchor (e.g. black
+    or a custom brand color), respect that — don't clobber with default."""
+    from app.services.signature import signature_to_html
+    sig = '<a href="https://csuitecode.com" style="color:#000;">csuitecode.com</a>'
+    out = signature_to_html(sig)
+    # User's color preserved, default NOT injected on top.
+    assert 'style="color:#000;"' in out
+    assert "#1d4ed8" not in out
+
+
+def test_signature_to_html_styles_multiple_anchors_independently():
+    from app.services.signature import signature_to_html
+    sig = (
+        '<a href="https://csuitecode.com">site</a> · '
+        '<a href="https://calendly.com/me" style="color:#000;">book</a>'
+    )
+    out = signature_to_html(sig)
+    # First anchor gets the default style; second keeps the user's.
+    assert out.count("#1d4ed8") == 1
+    assert "color:#000;" in out
+
+
+def test_signature_to_html_inject_is_idempotent():
+    """Running the renderer twice (e.g. preview then send) doesn't
+    duplicate the inline style attribute."""
+    from app.services.signature import signature_to_html
+    sig = '<a href="https://csuitecode.com">x</a>'
+    once = signature_to_html(sig)
+    twice = signature_to_html(once)
+    assert once == twice
+    assert twice.count("style=") == 1
 
 
 # ---- signature_to_text ----------------------------------------------------
