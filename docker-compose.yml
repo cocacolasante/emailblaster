@@ -82,7 +82,16 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    # ``--max-tasks-per-child=50`` recycles each forked worker process
+    # after 50 tasks.  Catches slow memory leaks in long-lived task code
+    # (httpx connection pools, sqlalchemy session caches, anthropic SDK
+    # state) before they accumulate into a hard OOM kill (exit 137,
+    # which is what knocked the worker over on 2026-06-08).
+    command: celery -A app.workers.celery_app worker --loglevel=info --max-tasks-per-child=50
+    # 1.5GB hard ceiling so a single misbehaving task can't take down the
+    # whole worker.  Combined with --max-tasks-per-child this is
+    # belt-and-suspenders against the OOM kill failure mode.
+    mem_limit: 1536m
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
       REDIS_URL: redis://redis:6379/0
