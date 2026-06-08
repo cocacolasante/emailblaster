@@ -62,7 +62,18 @@ def _freshness_block() -> str:
         "- If the research signals look stale (no parenthetical date in "
         "the recent window, vague phrasing like \"former\" / \"ex-\"), "
         "SKIP that signal and write a less-personalized message instead "
-        "of name-checking a stale reference."
+        "of name-checking a stale reference.\n"
+        "- REPOST RULE: if a research bullet describes a REPOST or "
+        "RESHARE the prospect made without adding their own commentary "
+        "(phrases like \"reposted\", \"reshared\", \"shared a post about\" "
+        "with no \"commented\" / \"saying\" / \"added\" qualifier), DO NOT "
+        "reference it as if they wrote it.  A naked reshare is not their "
+        "content; treating it as their thought reads as cringe in a cold "
+        "outreach.  Skip it or paraphrase neutrally (\"I saw the X piece "
+        "in your feed\") rather than \"loved your post on X\".  Bullets "
+        "that DO include their own commentary (e.g. \"commented on a "
+        "repost about X, saying Y\") are fair game — reference what THEY "
+        "said, not the original."
     )
 
 

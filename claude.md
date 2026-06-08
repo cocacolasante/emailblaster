@@ -22,7 +22,379 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Schedule & throughput editable on a running /
+- **Last completed:** **Social Listening Radar — intent-feed for
+  LinkedIn posts.**  New sidebar item with two tabs (Feed + Searches).
+  The user types a plain-English topic ("frustrated with our IT
+  provider"), Claude (Haiku) fans it out to 15-30 LinkedIn search
+  phrases, Claude (Sonnet+web_search) finds matching public posts,
+  Claude (Haiku) scores each post 1-10 for buying intent + drafts a
+  suggested comment / connection request / follow-up DM.  **All
+  LinkedIn writes stay manual** — the feature never auto-posts; the
+  Copy buttons drop suggested copy onto the clipboard.
+  - **3 new tables** (migration 0014): `social_listening_searches`,
+    `social_listening_posts` (unique on `(provider, post_url)`),
+    `social_listening_opportunities` (1:1 with post via UNIQUE
+    `post_id`).  7 new enums for source / frequency / status /
+    provider / category / action / opp-status.
+  - **Discovery is Anthropic web_search**, NOT Unipile.  Unipile's
+    raw passthrough is on a narrow allowlist and `/posts/search`
+    isn't on it.  We use the same `web_search_20250305` tool already
+    powering `web_research.py` + `research_client.py`.  URL filter
+    drops hallucinated links (must contain `linkedin.com/posts/` or
+    `/feed/update/`).
+  - **Per-search frequency** via the sequencer pattern: a new beat
+    task `social_listening.scheduled_runner` runs every 60s, selects
+    `status=active AND frequency!=manual AND next_run_at<=now AND
+    last_run_status!=running`, dispatches `run_social_search.delay(...)`
+    for each.  `last_run_status != "running"` is NULL-safe via
+    `or_(is_(None), != "running")` (vanilla SQL `NULL != 'x'` would
+    silently exclude fresh rows).
+  - **Soft cost caps per search** (`max_queries_per_run` default 20,
+    `max_posts_per_query` 30, `max_qualified_per_run` 100) keep a
+    runaway topic from burning ~$50 on Anthropic.  Default config
+    runs ~$0.50-$1 per full search.
+  - **Re-qualification overwrites AI fields but preserves user-set
+    `status` and `notes`** via `on_conflict_do_update(set_={...AI
+    fields only})`.  So a user marking an opportunity "Saved" or
+    adding CRM notes won't have those wiped on re-run.
+  - **Suggested copy length-capped** at 500 chars (comment), 280
+    chars (connect note), 600 chars (follow-up) via
+    `compose_client._truncate_at_sentence` — same helper the
+    research-a-client tool already uses.
+  - **Shared `_anthropic.py` helpers** — when the third copy of
+    `get_client()` / `extract_text()` / `parse_json_*()` was about
+    to land, factored those into `app/services/_anthropic.py`.  The
+    existing `web_research.py` + `research_client.py` keep their own
+    inline copies (no scope creep into refactoring them).
+  - Frontend: 9 new tests + new `SocialRadar.jsx` page with Feed +
+    Searches tabs, opportunity cards with copy buttons + score badge
+    + status pill + per-row status dropdown, and an editor modal with
+    a "Preview queries" button that runs the AI expansion
+    synchronously so you can see what Claude generated before saving.
+  - Tests: 47 new backend + 9 new frontend.  Tests: **backend 610,
+    frontend 190**.
+  - **Follow-up: stricter qualifier rubric + re-qualify-all endpoint.**
+    After Reddit-RSS started returning hundreds of real posts, the
+    qualifier was scoring most of them generously — a score-9 "buying
+    signal" was *"What obligations do I have to an ex employer?"*
+    (employment-law question), a score-8 was vendor self-promotion
+    ("we built X"), and a score-6 was unrelated humanitarian aid.
+    Two changes:
+    1. **Shared ``_RUBRIC`` constant** consumed by BOTH the single-post
+       and batch prompt templates so they apply identical strictness:
+       - Required checklist: must hit ≥2 of (specific vendor named,
+         buying event mentioned, decision-maker title, time-bound
+         urgency) to score ≥ 5.
+       - Explicit named anti-patterns ALWAYS score 1: career/job posts,
+         vendor self-promotion, blog/listicle/article content, for-sale
+         listings, news/commentary, recruiting posts, off-topic personal,
+         generic rants with no vendor.
+       - Score 10 reserved for decision-maker + specific vendor +
+         buying event + urgency; score 7-9 walks down from there.
+       - ``buying_signal=true`` ONLY when score ≥ 5.
+       - Suggested-copy fields are empty strings when action=ignore
+         (no more wasted output tokens on rejected posts).
+    2. **``POST /social-radar/searches/{id}/requalify-all``** endpoint
+       enqueues batch-qualify for every post in the search.  Lets the
+       user rescore the whole backlog after a rubric tighten without
+       running discovery again.  Preserves user-set ``status`` /
+       ``notes`` (already the case in ``_upsert_opportunity``).
+       Frontend: "Re-score all" button on the detail header next to
+       Run now / Edit / Clean up.  Cost: ~$0.10 per 100 posts (Haiku-
+       batched at 10/call).
+    Live verification on csuite (290 posts): old rubric scored
+    66 posts as 1, 18 as 2, 7 marked buying-signal at 5+.  New rubric:
+    269 of 290 correctly at score 1 (93%), only 6 real buying signals
+    surface — and the top ones are actual buying-intent posts like
+    "Aircall vs Nextiva" and "How do you prevent cloud vendor lock-in
+    when planning an ERP".  4 new tests (prompt-contains-anti-patterns,
+    batch-shares-rubric, requalify enqueue, requalify empty no-op).
+    Tests: **backend 656**.
+
+  - **Follow-up: direct Reddit RSS replaces Anthropic for Reddit
+    discovery.**  After all the prompt tuning, runs were STILL
+    returning ``total_raw=0`` across every pair.  Direct probe of
+    Anthropic confirmed:
+    > *"the site-specific search for Reddit did not return usable
+    > results"*
+    Brave (the engine behind Anthropic's ``web_search_20250305``)
+    deprioritizes Reddit pages, so even perfect queries like
+    ``"ringcentral alternatives"`` returned nothing.  This was a
+    structural limit of the discovery channel, not the prompts.
+    Replaced with direct hits against Reddit's free RSS endpoint
+    ``reddit.com/search.rss?q=<query>&sort=new&type=link``:
+    - New ``app/services/social_listening_reddit_api.py``: parses
+      the Atom feed via stdlib ``xml.etree.ElementTree``, extracts
+      title + body + author + subreddit + post_date from each
+      ``<entry>``, returns the same ``DiscoveryResult`` shape so the
+      worker doesn't care which backend surfaced the posts.
+    - ``discover_posts`` is now a front-door dispatcher: ``source=
+      reddit`` routes to the new RSS service; ``linkedin`` /
+      ``twitter`` still go through Anthropic.  Old Anthropic-path
+      function renamed to ``_discover_via_anthropic``.
+    - **Twitter dropped from default sources.**  Anthropic
+      web_search can't reach it (same Brave issue) and the X API v2
+      is paid-only ($100/mo).  ``SocialListeningSearchCreate.sources``
+      now defaults to ``[linkedin, reddit]``.
+    - **Router gate added**: ``run-now`` 409s on paused/archived
+      searches (previously the worker would dispatch + bail, wasting
+      a task slot).
+    - **NOT** adding ``t=month`` to the Reddit RSS params: it filters
+      Reddit-side and very frequently returns an empty feed.
+      ``sort=new`` + our own ``max_post_age_days`` filter does the
+      job better.
+    Live verification on csuite search: 0 raw → **475 raw, 303 kept,
+    289 new posts at $0.00 discovery cost** in a single run.  Tests:
+    5 new for the Reddit service + 1 router gate + 5 existing-fixture
+    updates (sources/dispatch changes).  Tests: **backend 652**.
+  - **Follow-up: web_search recall bundle — shorter queries, multi-
+    variation prompt, lenient date gate for Reddit/Twitter.**  After
+    the cost-cut work, a clean run still returned `total_raw=0` across
+    40 (source, query) pairs.  Root cause: topic expansion was
+    generating verbose 10+ word sentences ("anyone else fed up with
+    their msp not returning calls").  Web search engines treat 10+
+    word strings as near-exact-match, so they returned zero hits.
+    Three coordinated fixes:
+    1. **Expansion produces SHORT keyword queries.**  Prompt rewritten
+       with keyword-style examples ("msp slow response time",
+       "ringcentral alternatives small business").  Server-side
+       enforces `3 ≤ word_count ≤ 8`.  ``include_keywords`` also pass
+       through the same min-words filter now (users were typing
+       single-word junk like "hacked", "phished" that surfaced SEO
+       listicles).
+    2. **Discovery prompts handle long queries gracefully.**  Reddit +
+       Twitter prompts explicitly say "if the query is long, break it
+       into 2-3 short keyword variations and search each one."  Bumped
+       `SOCIAL_DISCOVERY_WEB_SEARCH_MAX_USES` default 2 → 3 so Claude
+       has the budget to try those variations.  Small cost bump,
+       large recall lift.
+    3. **Date gate lenient for Reddit/Twitter (still strict on
+       LinkedIn).**  Reddit `/comments/<id>/` URLs and Twitter
+       `/status/<id>` URLs are intrinsically time-ordered; web-search
+       ranking surfaces fresh first.  Undated posts from those
+       sources now pass through and land in a new ``kept_undated``
+       counter (separate from ``dropped_undated``).  LinkedIn keeps
+       the strict gate (undated LinkedIn results are usually stale
+       SEO articles).  Bonus: a Twitter snowflake decoder
+       (`_twitter_id_to_date`) extracts the real post timestamp from
+       any `/status/<id>` URL when Anthropic didn't.
+    Tests: 5 new (drops too-long, drops short include_keywords, Reddit
+    keeps undated, LinkedIn still drops undated, Twitter snowflake
+    decoder).  Tests: **backend 646, frontend 208**.
+  - **Follow-up: cost-cut bundle — LinkedIn web-search off by default,
+    pre-run estimate, batched qualification, mid-run cost cap.**  After
+    racking up ~$20 in testing the user asked for cost reductions.
+    Three coordinated changes:
+    1. **`linkedin_web_search_enabled` (BOOL, default FALSE)** on
+       `social_listening_searches` (migration 0019).  LinkedIn web
+       search runs on Sonnet with max_uses=5 — most expensive part
+       of a run, and it rarely produces results because LinkedIn
+       blocks indexing.  Worker now skips the (linkedin, query)
+       pairs entirely when this is False; the watchlist remains the
+       reliable LinkedIn channel.  ~75% per-run cost cut for the
+       typical case.
+    2. **`GET /social-radar/searches/{id}/estimate`** returns
+       `{discovery_pairs, discovery_cost_usd, qualify_cost_usd,
+       total_cost_usd, max_run_cost_usd, notes}` using a per-source
+       price table in new `app/services/_anthropic_cost.py`.  Detail
+       page "Run now" button now reads `Run now (~$0.32)` so the user
+       sees spend BEFORE clicking.
+    3. **`qualify_social_posts_batch`** task batches 10 posts per
+       Anthropic call (was 1 per call).  New
+       `qualify_posts(list_of_inputs)` in the qualifier service uses
+       a structured JSON-array I/O.  Worker dispatches the batch
+       task instead of per-post.  Cuts qualify cost ~70% (from
+       ~$0.005/post to ~$0.0012/post on Haiku).  The single-post
+       `qualify_social_post` task is kept around for backward compat
+       with anything already in the queue.
+    4. **`max_run_cost_usd` (NUMERIC, default $1.00)** per-search cap.
+       Worker tracks actual Anthropic spend via `message.usage`
+       tokens × price table, fans out discovery in chunks of 5, and
+       aborts BEFORE the next chunk if running cost crosses the cap.
+       Status flips to `cost_capped` (distinct from `done`) and
+       `last_run_error` reads "Cost cap reached: spent $X of $Y after
+       N of M calls — raise the cap or narrow the search."
+    Frontend: cost-controls section in editor modal (toggle + cap input),
+    Run-now button shows estimated cost.  6 new backend tests + the
+    20 existing-fixture flag updates.  Tests: **backend 642, frontend
+    208**.  Typical per-run cost dropped from ~$3-4 to ~$0.30-0.50.
+  - **Follow-up: LinkedIn boost + Unipile watchlist.**  Two changes
+    to make LinkedIn actually productive:
+    1. **Per-source web_search budget + model.**  Discovery used to
+       use the same Haiku + max_uses=2 for every source.  LinkedIn
+       gets so little back from web_search (the platform blocks
+       indexing) that those defaults found ~0 posts.  New settings
+       `LINKEDIN_DISCOVERY_MODEL=claude-sonnet-4-6` and
+       `LINKEDIN_DISCOVERY_WEB_SEARCH_MAX_USES=5` mean LinkedIn
+       queries run on Sonnet with a 2.5x bigger search budget.
+       Reddit + Twitter stay on the cheap default (Haiku, 2 uses)
+       since they're well-indexed.  `_source_model()` /
+       `_source_max_uses()` in the discovery service do the dispatch.
+       Also: `linkedin.com/pulse/` URLs now count as valid LinkedIn
+       results (Pulse is the indexed long-form path; carries real
+       buying-intent).  LinkedIn prompt rewritten to instruct
+       multiple search strategies (`site:linkedin.com/posts`,
+       `site:linkedin.com/pulse`, broader queries, archive.org).
+    2. **`linkedin_profile_watchlist` JSONB column** (migration
+       0018) — per-search list of LinkedIn profile URLs to monitor
+       directly via Unipile, bypassing indexing entirely.  Worker
+       picks the first OK LinkedIn account in the workspace, calls
+       new `UnipileLinkedInProvider.recent_posts(account, profile,
+       limit=10)` per profile, upserts the returned posts with
+       `provider=linkedin` and `discovered_via=watchlist:<url>`.
+       Per-profile stats land under `last_run_stats.watchlist`.
+       Soft-fails (every profile gets `no_account=True`) when no
+       LinkedIn account is connected.  Frontend: textarea in
+       editor modal, count in detail header.  4 new backend tests
+       (2 per-source dispatch + 2 watchlist) + 2 frontend.  Tests:
+       **backend 636, frontend 207**.
+  - **Follow-up: multi-source discovery (LinkedIn + Reddit + Twitter/X).**
+    After the expansion + diagnostics work, user's runs were still
+    returning 0 posts.  Root cause: **Anthropic web_search has poor
+    recall on LinkedIn** — LinkedIn aggressively blocks indexing so
+    even well-formed queries surface SEO listicles, not personal
+    posts.  Reddit (r/sysadmin, r/msp, r/networking, r/nonprofit,
+    r/ITManagers, r/k12sysadmin, etc.) and public X/Twitter ARE
+    heavily indexed and constantly have buying-intent signal.
+    Migration 0017 adds:
+    1. `reddit` and `twitter` values to the `social_post_provider`
+       enum (PG `ALTER TYPE ADD VALUE` inside Alembic txn, safe on
+       PG 12+ since we don't USE them in the same txn).
+    2. `sources` JSONB array on `social_listening_searches`,
+       default `["linkedin"]` for existing rows (backfilled from the
+       legacy single `source` column), default
+       `["linkedin", "reddit", "twitter"]` for new searches via the
+       Create schema.  Old single-`source` column is kept as a
+       deprecated shim.
+    Discovery service split into per-source prompts + URL validators:
+    - LinkedIn: `linkedin.com/posts/` + `linkedin.com/feed/update/`
+    - Reddit: `reddit.com/r/<sub>/comments/<id>/` + `redd.it/<id>`,
+      Reddit-specific prompt naming popular IT subreddits.
+    - Twitter/X: `twitter.com|x.com/<user>/status/<id>` (bare profile
+      URLs dropped — must include `/status/`).
+    Worker now fans out across every (source, query) pair concurrently
+    (semaphore=4) and tags each `social_listening_posts` row with the
+    correct provider.  Per-query stats now key on `(source, query)`
+    too — the detail Activity stats table gained a Source column.
+    Frontend: 3-button source picker in the editor modal (default all
+    3 on); detail header shows the configured sources list.  6 new
+    backend tests + 2 frontend.  Tests: **backend 632, frontend 205**.
+  - **Follow-up: better expansion + editable queries + per-query
+    diagnostics.**  User's first runs returned ~0 posts because topic
+    expansion was generating single-word junk like `"internet"`,
+    `"phone"`, `"voip"`, `"crash"` — Anthropic web_search returns SEO
+    listicles for those, not LinkedIn posts.  Three changes:
+    1. **Stronger expansion prompt** in
+       `services/social_listening_topic_expander.py`: explicit GOOD
+       vs BAD examples, 4-word minimum, "phrases a human would TYPE
+       in a LinkedIn post" framing.  Server-side `_MIN_WORDS_AI_GENERATED
+       = 4` drops short AI output (user-supplied `include_keywords`
+       bypass — explicit override).
+    2. **Editable expanded queries** via PATCH.  `expanded_queries:
+       list[str] | None` on the Update schema.  Frontend modal gains a
+       multi-line textarea (edit-mode only) so the user can hand-tune
+       the list.  Editing does NOT trigger re-expansion — only a
+       topic change does.
+    3. **Per-query diagnostics.**  `discover_posts` now returns
+       `DiscoveryResult(posts, raw, dropped_invalid_url,
+       dropped_excluded, dropped_duplicate, dropped_undated,
+       dropped_stale, kept)`.  Worker aggregates per-query +
+       `summary` and persists on `social_listening_searches.last_run_stats`
+       (JSONB, migration 0016).  Detail Activity card now has a
+       collapsible per-query stats table showing
+       Phrase / Raw / Kept / New / Stale / Undated / Seen / Dup / Bad URL.
+       Lets the user see which phrases produced posts and which were
+       duds so they can iterate the list.
+    Tests: 2 expander + 1 worker (stats persistence) + 1 router
+    (editable queries) + 2 frontend (stats panel + editable textarea)
+    + 5 existing fixture updates (short-phrase fixtures became invalid).
+    Tests: **backend 626, frontend 203**.
+  - **Follow-up: strict freshness filter + cleanup endpoint.**  The
+    first cut of the lookback window kept posts with no parsable
+    `post_date` ("kept undated").  In practice Anthropic web_search
+    returned a lot of undated SEO/listicle results that turned out to
+    be ancient — the user's csuite search had 133 posts where 101 had
+    dates (all old, oldest 2018) and 32 were undated.  Two fixes:
+    1. **Strict filter** in `discover_posts`: when `max_post_age_days`
+       is set, drop posts with no `post_date` AND posts whose date is
+       past the cutoff.  Prompt was strengthened — Anthropic is now
+       told to OMIT THE WHOLE POST if it can't determine a date with
+       confidence, and to return `{posts: []}` rather than padding
+       with stale matches.
+    2. **Cleanup endpoint** `POST /social-radar/searches/{id}/cleanup-stale`
+       deletes posts (and cascading opportunities) where
+       `post_date IS NULL OR post_date < now - max_post_age_days`.
+       Returns `{deleted: N}`.  Surfaced as a "Clean up stale"
+       button in the detail view header (amber styling — destructive
+       but not as destructive as Delete).  Confirm dialog warns the
+       user that saved/commented opportunities on stale posts will
+       be lost.
+    Tests: 1 strict-filter (replaces the old "undated passes through"
+    test, plus 4 fixture updates) + 3 cleanup endpoint + 1 frontend.
+    Tests: **backend 622, frontend 201**.
+  - **Follow-up: per-search lookback window (default 30 days).**  New
+    `social_listening_searches.max_post_age_days` column (migration
+    0015, NOT NULL DEFAULT 30, range 1-3650).  Editable on create AND
+    PATCH.  Enforced two ways in `discover_posts`:
+    1. The prompt embeds the cutoff date — "only consider posts on or
+       after YYYY-MM-DD (within the last N days). Today's date is …"
+    2. Defensive post-filter: if a returned post's parsed `post_date`
+       is older than the cutoff, drop it.  Posts with no parsable
+       date pass through (the LLM occasionally omits the date field;
+       we'd rather keep a borderline match than drop a real signal).
+    Frontend: new "Look back (days)" number input in the editor
+    modal (default 30) AND a "lookback: N days" line in the detail
+    view header.  Use cases: trend research → widen to 90; real-time
+    intent → tighten to 7.  5 new backend tests + 2 frontend tests.
+    Tests: **backend 619, frontend 200**.
+  - **Follow-up: discovery cost reduction (Sonnet → Haiku).**  A
+    single full run was costing $5+ because `social_listening_discovery`
+    used `settings.ANTHROPIC_MODEL` (Sonnet) and each of the
+    `max_queries_per_run` calls ingested ~90K tokens of web-search-
+    result pages on Sonnet input pricing.  Same lesson the bulk
+    research pipeline learned in 2026-05-19.  Added two new settings:
+    - `ANTHROPIC_SOCIAL_DISCOVERY_MODEL` (default
+      `claude-haiku-4-5-20251001`) — discovery is extraction-from-
+      search-results, exact same task profile as `research_person_web`.
+    - `SOCIAL_DISCOVERY_WEB_SEARCH_MAX_USES` (default `2`, down from
+      the shared `RESEARCH_WEB_SEARCH_MAX_USES=3`) — each web search
+      ingests pages as input tokens AND has a per-search tool fee, so
+      this is a direct cost lever.  2 is enough to find recent posts;
+      3 rarely surfaced anything the second pass didn't.
+    Expected per-run cost: ~$5+ → ~$1.50 (≈4x cheaper).  Both vars are
+    wired in the backend + worker compose env blocks (the gotcha:
+    `.env` alone isn't enough; the compose `environment:` allowlist
+    has to mention them or pydantic-settings falls back to the code
+    default).  1 new test asserting model = Haiku and max_uses = 2.
+    Tests: **backend 614**.
+  - **Follow-up: skip already-pulled posts on rerun.**  Each call to
+    `discover_posts` now accepts `exclude_urls: list[str] | None`.
+    `_run_social_search_async` snapshots the search's existing
+    `post_url`s (200 most-recent, ordered by `discovered_at desc`) and
+    passes them through.  Inside the discovery service, exclude URLs
+    are (a) baked into the prompt as a "DO NOT include these — we
+    already have them" list capped at 200 entries (keeps the prompt
+    sane on long-running searches), and (b) post-filtered defensively
+    in case the model returns one anyway.  Effect: a rerun on a
+    saturated search may still spend the discovery call, but the LLM
+    is nudged toward new posts AND any stale ones it returns are
+    silently dropped — zero qualify calls fire for already-scored
+    posts, which is where the real Anthropic spend was.  3 new tests
+    (2 discovery, 1 worker).  Tests: **backend 613**.
+  - **Follow-up: per-search detail view.**  Clicking a search row's
+    name now opens a dedicated detail page (`SearchDetailView`) instead
+    of the edit modal.  The detail shows an Activity card (last_run_at,
+    last_run_status, last_run_error, post / opp counts, expanded-
+    queries chips, next_run_at if scheduled), the Run now / Edit /
+    Delete actions, and the same `OpportunityCard` feed filtered to
+    just this search (with a per-detail status filter).  The detail
+    auto-refreshes the search + opps every 5s while `last_run_status
+    == 'running'` so the user watches results land in real time.  Per-
+    row table actions are now: name → View, plus separate Edit / Run
+    now / Delete buttons.  8 new frontend tests.  Tests: **frontend
+    198**.
+
+- **Previously:** **Schedule & throughput editable on a running /
   paused campaign.**  `update_campaign` previously rejected any edit
   outside DRAFT/PREVIEWING with 409.  Added `_SCHEDULE_FIELDS`
   (`schedule_days`, `schedule_time_start`, `schedule_time_end`,
@@ -1190,16 +1562,82 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-05-30 — Schedule + throughput fields are now
-edit-on-any-status (running, paused, complete) in `update_campaign`.
-A schedule change on a live campaign automatically re-queues every
-composed PENDING + SCHEDULED lead via staggered `send_lead.apply_async`,
-so the new window takes effect immediately for waiting orphans.  New
-`ScheduleEditor` card on the campaign detail page (Overview tab, right
-column) with day chips, time pickers, timezone dropdown, and the 3
-pacing knobs._
+_Last updated: 2026-06-01 (later) — Watchlist scalability bundle.
+Three coordinated changes to take the LinkedIn profile watchlist from
+a comfortable ~50 profiles to a comfortable ~500:
 
-_Backend tests: **563 passing**.  Frontend tests: **181 passing**._
+1. **Parallel fan-out** in ``_run_watchlist`` (``asyncio.gather`` +
+   ``Semaphore(10)``).  Unipile's read surface is generous (it doesn't
+   go through the LinkedIn write-rate-limiter), so 10 in-flight fetches
+   is comfortable.  200 profiles: ~13min → ~1-2min.
+2. **Persistent slug→URN cache** (``linkedin_profile_cache`` table,
+   migration 0021).  Unipile's ``GET /users/{slug}`` is the only way to
+   map a public slug to the canonical ``ACoAA...`` URN, but the mapping
+   is permanent — once resolved, never changes.  The worker now reads
+   the cache before constructing ``ProfileRef``; on a hit it pre-sets
+   ``profile_ref.urn`` so ``recent_posts``'s internal
+   ``_resolve_provider_id`` short-circuits without the network call.
+   On a miss, Unipile stamps ``profile_ref.urn`` during ``recent_posts``
+   (existing behaviour) and the worker mirrors that into the cache for
+   next time.  Cuts per-profile cost ~50% on every subsequent run.
+3. **Bulk-paste-friendly watchlist editor**.  New
+   ``parseWatchlistEntries`` / ``classifyWatchlistEntries`` helpers in
+   ``SocialRadar.jsx`` split on any whitespace OR comma (so a pasted
+   CSV column / spreadsheet cell / chat dump all work), then
+   classify + dedupe by slug.  A live "X valid LinkedIn profiles, Y
+   invalid" pill renders below the textarea.  Save sends ONLY the
+   deduped valid list.
+
+Tests: 4 new backend (cache hit pre-fills URN, cache miss persists,
+20-profile parallel fan-out, no-account soft-fail still produces one
+row per profile) + 9 new frontend (8 validator unit + 2 render tests
+for the live count pill and dedup on save).  Live: csuite still
+runs (688 backend / 219 frontend).
+
+Tradeoffs documented: the watchlist concurrency knob is a fixed
+constant (``_WATCHLIST_CONCURRENCY = 10``).  Unipile workspace plans
+may have global concurrency limits — if a future plan tightens those,
+this becomes a config setting.  The provider-id cache is permanent
+(no TTL): we trust Unipile's guarantee that slug→URN mappings are
+stable.  If a slug ever IS recycled to a different member, the
+``recent_posts`` call would surface posts from the wrong account —
+treat that as a manual cache-bust operation if it ever happens
+(``DELETE FROM linkedin_profile_cache WHERE slug = '...'``)._
+
+_Previously: LinkedIn buyer-intent at minimal cost:
+Reddit → LinkedIn cross-link extraction + tighter LinkedIn web_search.
+New pure-fn service `social_listening_linkedin_crosslink.py` mines every
+Reddit post body the worker discovers for `linkedin.com/posts/...` and
+`linkedin.com/feed/update/...` URLs; each unique URL becomes a
+`provider=linkedin` opportunity row with a SYNTHESISED qualification
+(score=5, action=research_further, empty suggested copy) — **zero
+Anthropic cost**.  We can't fetch the LinkedIn post body (Unipile only
+exposes `recent_posts(slug)`, ≤25 deep), so the user opens the URL
+directly to assess; scoring the surrounding Reddit excerpt would
+mis-score the wrong document.  New `linkedin_crosslink_enabled` boolean
+on `social_listening_searches` (migration 0020, default `true`).  The
+worker's `_run_social_search_async` inserts a new phase between
+discovery upsert and watchlist that reuses the existing `_upsert_post`
+(URL UNIQUE constraint dedupes — same LinkedIn URL across two Reddit
+threads = one row) + `_upsert_opportunity` and records
+`crosslink_stats = {reddit_posts_scanned, linkedin_urls_found,
+linkedin_posts_new, linkedin_posts_existing}` on `last_run_stats`.
+Crosslink posts are NOT enqueued to the qualify-batch (they already
+have an opportunity).  Separately, the LinkedIn web_search path was
+tightened: `_source_max_uses` now hard-caps LinkedIn at 1
+(`min(1, settings.LINKEDIN_DISCOVERY_WEB_SEARCH_MAX_USES)`) regardless
+of the config value, and the LinkedIn prompt was rewritten from a
+5-strategy fan-out to ONE focused
+`site:linkedin.com/pulse OR site:linkedin.com/posts "{query}"` call —
+cuts the toggle-on cost from ~$1.50/run to ~$0.30 worst case.  New
+frontend checkbox in the search editor's Advanced section ("Pull
+LinkedIn URLs found in Reddit discussions — free, no extra cost").
+Live smoke on csuite (231 Reddit posts scanned, 0 LinkedIn URLs found —
+honest result; the regex + worker plumbing is verified by unit tests):
+$0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
+2 new frontend tests._
+
+_Backend tests: **721 passing**.  Frontend tests: **247 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

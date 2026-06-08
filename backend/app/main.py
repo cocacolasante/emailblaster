@@ -15,6 +15,7 @@ from app.routers import (
     preview,
     research_client,
     sequences,
+    social_radar,
     settings as settings_router,
     webhooks,
 )
@@ -113,3 +114,4 @@ app.include_router(linkedin_accounts.router)
 app.include_router(settings_router.router)
 app.include_router(sequences.router)
 app.include_router(research_client.router)
+app.include_router(social_radar.router)

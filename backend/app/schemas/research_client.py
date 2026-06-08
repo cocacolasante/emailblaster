@@ -1,8 +1,25 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# Loose RFC-5322-ish email validator.  Avoids the ``email-validator``
+# dependency (not in requirements yet); same shape the frontend uses for
+# its disable-Send check.  Brevo does the strict validation at delivery
+# time, so this is just a fast-fail guard on bogus typos before we burn
+# a Brevo API call.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_email_like(v: str) -> str:
+    s = (v or "").strip()
+    if not _EMAIL_RE.match(s):
+        raise ValueError("invalid email address")
+    return s
 
 
 class ResearchClientRequest(BaseModel):
@@ -38,3 +55,38 @@ class ResearchClientResponse(BaseModel):
     body: str
     char_count: int
     duration_ms: int
+
+
+# ---- Send-now (one-off) ---------------------------------------------------
+
+class SendClientEmailRequest(BaseModel):
+    """One-off transactional send from the 'Research a client' tool.
+
+    No campaign / lead row exists for this flow — the send goes out via
+    Brevo with synthetic header IDs.  The user may edit the
+    AI-composed subject + body before sending; both come back here as
+    plain strings (frontend owns the merge of any edits)."""
+
+    to_email: str
+    to_name: str | None = Field(default=None, max_length=200)
+    subject: str = Field(min_length=1, max_length=998)  # RFC 5322 line cap
+    body: str = Field(min_length=1, max_length=50_000)
+    sender_name: str = Field(min_length=1, max_length=120)
+    # Optional override; defaults to settings.BREVO_SENDER_EMAIL on the
+    # server.  The frontend leaves this blank in v1.
+    sender_email: str | None = None
+
+    _v_to = field_validator("to_email")(_validate_email_like)
+
+    @field_validator("sender_email")
+    @classmethod
+    def _v_sender(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        return _validate_email_like(v)
+
+
+class SendClientEmailResponse(BaseModel):
+    message_id: str
+    sent_at: datetime
+    to_email: str

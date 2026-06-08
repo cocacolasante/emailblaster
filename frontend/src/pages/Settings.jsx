@@ -4,6 +4,7 @@ import {
   listAccounts,
   deleteAccount,
   testAccount,
+  updateAccount,
 } from '../api/connectedAccounts.js';
 import {
   listLinkedInAccounts,
@@ -63,6 +64,14 @@ function ConnectedInboxesTab() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['connected-accounts'] }),
   });
 
+  // Promote a connected inbox to the workspace default sender.  The
+  // backend's PATCH handler clears the flag on every other row in the
+  // same transaction so there's only ever one default.
+  const setDefaultMutation = useMutation({
+    mutationFn: (id) => updateAccount(id, { is_default_sender: true }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['connected-accounts'] }),
+  });
+
   function openCreate() {
     setModalAccount(null);
   }
@@ -81,7 +90,7 @@ function ConnectedInboxesTab() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
+      <div className="flex justify-between items-center mb-2">
         <h2 className="text-lg font-semibold text-slate-900 m-0">Connected inboxes</h2>
         <button
           onClick={openCreate}
@@ -90,6 +99,14 @@ function ConnectedInboxesTab() {
           + Connect inbox
         </button>
       </div>
+      {accounts.length > 1 && (
+        <p className="text-xs text-slate-500 mb-4" data-testid="default-sender-explainer">
+          The inbox marked <span className="font-semibold text-emerald-700">Default sender</span>
+          {' '}is the from-address for one-off sends from the Research-a-client tool when no
+          per-send override is set.  Make sure the address is a verified sender on your Brevo
+          account.
+        </p>
+      )}
 
       {accounts.length === 0 ? (
         <div data-testid="empty-state" className="text-center py-16 text-slate-500">
@@ -111,6 +128,15 @@ function ConnectedInboxesTab() {
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-semibold text-slate-900 text-sm">{acc.label}</span>
                   <StatusBadge status={acc.last_test_status} />
+                  {acc.is_default_sender && (
+                    <span
+                      data-testid={`default-sender-badge-${acc.id}`}
+                      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800"
+                      title="One-off sends go from this address by default."
+                    >
+                      ✓ Default sender
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-slate-500">
                   {acc.email_address} · {acc.imap_host}:{acc.imap_port}
@@ -125,6 +151,17 @@ function ConnectedInboxesTab() {
                 )}
               </div>
               <div className="flex gap-2">
+                {!acc.is_default_sender && (
+                  <button
+                    onClick={() => setDefaultMutation.mutate(acc.id)}
+                    disabled={setDefaultMutation.isPending}
+                    data-testid={`set-default-sender-${acc.id}`}
+                    className="px-3 py-1.5 bg-white hover:bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-200 rounded-md transition-colors disabled:opacity-50"
+                    title="Use this inbox as the from-address for one-off sends"
+                  >
+                    Set as default sender
+                  </button>
+                )}
                 <button
                   onClick={() => testMutation.mutate(acc.id)}
                   disabled={testMutation.isPending}

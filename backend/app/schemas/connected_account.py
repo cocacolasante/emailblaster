@@ -16,6 +16,9 @@ class ConnectedAccountCreate(BaseModel):
     imap_use_ssl: bool = True
     username: str = Field(min_length=1)
     password: str = Field(min_length=1)
+    # Optional signature block appended to one-off sends from this inbox.
+    # See ConnectedAccount.signature for the apply-time semantics.
+    signature: str | None = Field(default=None, max_length=5000)
 
 
 class ConnectedAccountUpdate(BaseModel):
@@ -26,6 +29,14 @@ class ConnectedAccountUpdate(BaseModel):
     imap_use_ssl: bool | None = None
     username: str | None = Field(default=None, min_length=1)
     password: str | None = Field(default=None, min_length=1)
+    # Setting True flips this account to the workspace default sender —
+    # the router clears the flag on every other row in the same
+    # transaction.  Setting False just clears it on this one (the
+    # workspace falls back to settings.BREVO_SENDER_EMAIL).
+    is_default_sender: bool | None = None
+    # Signature edits are allowed at any time; empty string or null
+    # clears the signature so no append happens on subsequent sends.
+    signature: str | None = Field(default=None, max_length=5000)
 
 
 class ConnectedAccountResponse(BaseModel):
@@ -42,6 +53,8 @@ class ConnectedAccountResponse(BaseModel):
     last_test_status: ConnectedAccountTestStatus
     last_test_error: str | None
     last_polled_at: datetime | None
+    is_default_sender: bool = False
+    signature: str | None = None
     created_at: datetime
 
 

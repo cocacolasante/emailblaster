@@ -4,7 +4,20 @@ from app.models.connected_account import ConnectedAccount, ConnectedAccountTestS
 from app.models.email_event import EmailEvent, EmailEventType
 from app.models.lead import ComposeStatus, Lead, LinkedInConnectionStatus, ResearchStatus, SendStatus
 from app.models.linkedin_account import LinkedInAccount, LinkedInAccountStatus
+from app.models.linkedin_profile_cache import LinkedInProfileCache
 from app.models.research_cache import ResearchCache
+from app.models.social_listening import (
+    SocialListeningOpportunity,
+    SocialListeningPost,
+    SocialListeningSearch,
+    SocialOpportunityAction,
+    SocialOpportunityCategory,
+    SocialOpportunityStatus,
+    SocialPostProvider,
+    SocialSearchFrequency,
+    SocialSearchSource,
+    SocialSearchStatus,
+)
 from app.models.sequence import (
     LeadSequenceState,
     LeadSequenceStatus,
@@ -30,6 +43,7 @@ __all__ = [
     "Lead",
     "LinkedInAccount",
     "LinkedInAccountStatus",
+    "LinkedInProfileCache",
     "LinkedInConnectionStatus",
     "ResearchStatus",
     "ComposeStatus",
@@ -43,6 +57,16 @@ __all__ = [
     "LeadStepExecution",
     "LeadStepResult",
     "ResearchCache",
+    "SocialListeningSearch",
+    "SocialListeningPost",
+    "SocialListeningOpportunity",
+    "SocialSearchSource",
+    "SocialSearchFrequency",
+    "SocialSearchStatus",
+    "SocialPostProvider",
+    "SocialOpportunityCategory",
+    "SocialOpportunityAction",
+    "SocialOpportunityStatus",
     "StyleCorrection",
     "Suppression",
     "SuppressionReason",

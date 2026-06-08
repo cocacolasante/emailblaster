@@ -516,6 +516,36 @@ class UnipileLinkedInProvider(LinkedInProvider):
         first = items[0] if isinstance(items[0], dict) else {}
         return first.get("urn") or first.get("provider_id") or first.get("id")
 
+    async def recent_posts(
+        self, account: Any, profile: ProfileRef, limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return up to ``limit`` of this profile's most-recent posts as
+        raw dicts (caller maps into ``DiscoveredPost``).  Used by the
+        Social Listening Radar watchlist — fetches LinkedIn posts
+        DIRECTLY via the platform without any indexing dependency.
+
+        Empty list on any failure (auth, unknown profile, network) —
+        callers treat soft-fail as "no posts for this profile this run".
+        """
+        try:
+            aid = self._account_id(account)
+            provider_id = await self._resolve_provider_id(aid, profile)
+            if not provider_id:
+                return []
+            data = await self._request(
+                "GET", f"/api/v1/users/{provider_id}/posts",
+                params={"account_id": aid, "limit": max(1, min(limit, 25))},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Unipile recent_posts failed: %s", exc)
+            return []
+        items: list[Any] = []
+        if isinstance(data, dict):
+            items = data.get("items") or data.get("posts") or []
+        elif isinstance(data, list):
+            items = data
+        return [it for it in items if isinstance(it, dict)]
+
     async def send_connect_request(
         self, account: Any, profile: ProfileRef, note: str | None = None
     ) -> ActionResult:

@@ -143,4 +143,55 @@ describe('Connected inboxes list', () => {
     expect(accountsApi.testAccount).toHaveBeenCalled();
     expect(accountsApi.testAccount.mock.calls[0][0]).toBe('acc-1');
   });
+
+  it('shows the Default sender badge on a default account + hides the Set button there', async () => {
+    accountsApi.listAccounts.mockResolvedValue([
+      { ...sampleAccount, id: 'a1', label: 'Default inbox', is_default_sender: true },
+      { ...sampleAccount, id: 'a2', label: 'Other inbox', email_address: 'other@x.com', is_default_sender: false },
+    ]);
+    renderSettings();
+    await screen.findAllByTestId('account-card');
+
+    // Badge present on the default row, absent on the other.
+    expect(screen.getByTestId('default-sender-badge-a1')).toBeInTheDocument();
+    expect(screen.queryByTestId('default-sender-badge-a2')).toBeNull();
+    // The "Set as default sender" button only appears on the non-default
+    // row — the default one doesn't show the button (you can't re-promote
+    // the already-default).
+    expect(screen.queryByTestId('set-default-sender-a1')).toBeNull();
+    expect(screen.getByTestId('set-default-sender-a2')).toBeInTheDocument();
+    // Explainer paragraph also shows because there are 2+ accounts.
+    expect(screen.getByTestId('default-sender-explainer')).toBeInTheDocument();
+  });
+
+  it('clicking Set as default sender calls updateAccount with is_default_sender=true', async () => {
+    accountsApi.listAccounts.mockResolvedValue([
+      { ...sampleAccount, id: 'a1', label: 'A', is_default_sender: true },
+      { ...sampleAccount, id: 'a2', label: 'B', email_address: 'b@x.com', is_default_sender: false },
+    ]);
+    accountsApi.updateAccount.mockResolvedValue({
+      ...sampleAccount, id: 'a2', is_default_sender: true,
+    });
+    renderSettings();
+    await screen.findAllByTestId('account-card');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('set-default-sender-a2'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(accountsApi.updateAccount).toHaveBeenCalledTimes(1);
+    expect(accountsApi.updateAccount.mock.calls[0][0]).toBe('a2');
+    expect(accountsApi.updateAccount.mock.calls[0][1]).toEqual({ is_default_sender: true });
+  });
+
+  it('explainer paragraph is hidden when only one inbox exists', async () => {
+    accountsApi.listAccounts.mockResolvedValue([
+      { ...sampleAccount, id: 'a1', is_default_sender: false },
+    ]);
+    renderSettings();
+    await screen.findByTestId('account-card');
+    expect(screen.queryByTestId('default-sender-explainer')).toBeNull();
+  });
 });

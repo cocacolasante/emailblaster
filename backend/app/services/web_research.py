@@ -91,6 +91,17 @@ async def research_person_web(
         "4. The company's industry / sector.\n"
         '5. A size hint — one of: "startup", "growth", "mid-market", '
         '"enterprise", or "" if unsure.\n\n'
+        "REPOST RULE (important — applies to person_news only):\n"
+        "- A naked LinkedIn repost / reshare — where the person clicked "
+        "'repost' but added NO words of their own — is NOT their content.  "
+        "Do not include it in person_news.  The cold-outreach message will "
+        "later reference it as if they wrote it, which is wrong and "
+        "embarrassing.\n"
+        "- A repost WITH the person's own added commentary IS their "
+        "content (their thoughts on the reshared item).  Include it, but "
+        "describe it as their COMMENT — e.g. \"commented on a repost about "
+        "X, saying Y (Apr 2026)\" — not as if they authored the original.\n"
+        "- Original posts they wrote themselves: include as normal.\n\n"
         "Respond ONLY with one JSON object, no preamble, no markdown:\n"
         '{"person_news": ["item 1"], "company_news": ["item 1"], '
         '"company_description": "short description", '

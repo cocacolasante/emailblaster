@@ -15,6 +15,7 @@ const EMPTY = {
   imap_use_ssl: true,
   username: '',
   password: '',
+  signature: '',
 };
 
 export default function ConnectInboxModal({ account, onClose, onSaved }) {
@@ -36,6 +37,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
         imap_use_ssl: account.imap_use_ssl ?? true,
         username: account.username || '',
         password: '',
+        signature: account.signature || '',
       });
     } else {
       setForm(EMPTY);
@@ -242,6 +244,27 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
               (not your account password). Requires 2-Step Verification.
               For Outlook, use your regular password or an app password if MFA is enabled.
             </span>
+          </div>
+
+          <div>
+            <label htmlFor="inbox-signature" className="block text-sm font-medium text-slate-700 mb-1">
+              Email signature
+              <span className="text-xs text-slate-400 font-normal"> (optional)</span>
+            </label>
+            <textarea
+              id="inbox-signature"
+              rows={5}
+              value={form.signature}
+              onChange={(e) => update('signature', e.target.value)}
+              data-testid="inbox-signature"
+              placeholder={'Best,\nAnthony Colasante\ncsuitecode.com · book a call → calendly.com/anthony'}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            />
+            <p className="text-xs text-slate-500 mt-1">
+              Appended to one-off sends from the Research-a-client tool when this inbox is the
+              from-address.  Replaces the AI's sign-off line if one was generated, otherwise
+              appended after a blank line.  Leave blank for no signature.
+            </p>
           </div>
 
           {testResult && (

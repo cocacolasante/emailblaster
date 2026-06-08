@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -50,6 +50,7 @@ async def create_account(
         imap_use_ssl=payload.imap_use_ssl,
         username=payload.username,
         password_encrypted=encryption.encrypt(payload.password),
+        signature=(payload.signature or None) if payload.signature else None,
     )
     db.add(acc)
     await db.commit()
@@ -82,8 +83,24 @@ async def update_account(
     if "password" in updates:
         plaintext = updates.pop("password")
         acc.password_encrypted = encryption.encrypt(plaintext)
+    # Default-sender swap is atomic: clear EVERY other row's flag in the
+    # same transaction before flipping this one True.  Without this, two
+    # concurrent set-default requests could leave two rows marked
+    # default (the partial unique index would block one of them, but
+    # the failed request would still 500 instead of degrading cleanly).
+    promote_to_default = updates.pop("is_default_sender", None)
     for key, value in updates.items():
         setattr(acc, key, value)
+    if promote_to_default is True:
+        await db.execute(
+            update(ConnectedAccount)
+            .where(ConnectedAccount.id != acc.id)
+            .where(ConnectedAccount.is_default_sender.is_(True))
+            .values(is_default_sender=False)
+        )
+        acc.is_default_sender = True
+    elif promote_to_default is False:
+        acc.is_default_sender = False
     await db.commit()
     await db.refresh(acc)
     return acc

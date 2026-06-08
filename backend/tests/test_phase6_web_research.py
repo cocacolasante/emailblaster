@@ -149,3 +149,34 @@ async def test_merged_call_returns_company_fields(monkeypatch):
     assert result["recent_updates"] == ["launched v2"]
     assert result["industry"] == "SaaS"
     assert result["size_hint"] == "growth"
+
+
+async def test_research_prompt_contains_repost_rule(monkeypatch):
+    """The bulk pipeline prompt must tell Anthropic to EXCLUDE naked
+    reposts (no added commentary) from person_news and to KEEP reposts
+    where the prospect added their own thoughts — described as their
+    COMMENT, not as if they wrote the original.
+
+    Without this rule the compose stage references reshared content as
+    if the prospect authored it (\"loved your post on X\") and the
+    outreach reads as wrong / embarrassing."""
+    monkeypatch.setattr(web_research.settings, "ANTHROPIC_API_KEY", "test-key")
+    captured = {}
+
+    async def _spy(**kwargs):
+        captured["kwargs"] = kwargs
+        return _anthropic_text_response('{}')
+
+    with patch.object(
+        web_research, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=_spy)),
+    ):
+        await web_research.research_person_web("J", "D", "Acme", "CEO")
+
+    prompt = captured["kwargs"]["messages"][0]["content"].lower()
+    # Names the failure mode (either "repost" or "reshare" is fine).
+    assert "repost" in prompt or "reshare" in prompt
+    # Names the commentary carve-out.
+    assert "commentary" in prompt or "commented" in prompt or "their thoughts" in prompt
+    # Explicitly excludes the naked case.
+    assert "naked" in prompt or "exclude" in prompt or "not their content" in prompt

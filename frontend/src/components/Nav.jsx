@@ -31,6 +31,19 @@ const ITEMS = [
     ),
   },
   {
+    to: '/social-radar',
+    label: 'Social Radar',
+    icon: (
+      // Concentric circles + center dot — "radar / signal"
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2 12c0-5.523 4.477-10 10-10v0" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 12a6 6 0 016-6" />
+        <circle cx="12" cy="12" r="2" strokeWidth={2} />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 12l8 8" />
+      </svg>
+    ),
+  },
+  {
     to: '/settings',
     label: 'Settings',
     icon: (

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, Text, func, text
+from sqlalchemy import Boolean, DateTime, Enum, Index, Integer, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,18 @@ class ConnectedAccountTestStatus(str, enum.Enum):
 
 class ConnectedAccount(Base):
     __tablename__ = "connected_accounts"
+    __table_args__ = (
+        # Partial unique index — only enforces uniqueness on TRUE rows so
+        # any number of False rows is fine.  Mirrors the migration 0022
+        # index; declared here too so the test DB (built from
+        # Base.metadata, not migrations) also gets it.
+        Index(
+            "ix_connected_accounts_single_default_sender",
+            "is_default_sender",
+            unique=True,
+            postgresql_where=text("is_default_sender IS TRUE"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     label: Mapped[str] = mapped_column(Text, nullable=False)
@@ -41,6 +53,22 @@ class ConnectedAccount(Base):
     )
     last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Workspace default sender for one-off sends (Research-a-client) and a
+    # fallback for any future flow that doesn't carry an explicit from-
+    # address.  A partial unique index on this column enforces "at most
+    # one default at a time" at the DB layer; the PATCH handler also
+    # clears the flag on every other row in the same transaction.  None /
+    # all-False means "fall back to settings.BREVO_SENDER_EMAIL".
+    is_default_sender: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    # Per-inbox signature block appended to one-off sends (the
+    # Research-a-client tool).  The send endpoint resolves the chosen
+    # ConnectedAccount by sender_email, then applies this via
+    # ``app.services.signature.apply_signature`` — same idempotent helper
+    # used by the per-Campaign signature feature.  Null/empty = no
+    # append, body goes out as the AI composed it.
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     # IMAP poller dedup: last ~500 Message-IDs we've already turned into
     # REPLIED events.  Switching from "UNSEEN SINCE + mark as Seen" to
     # "SINCE + dedup-by-Message-ID" means the poller no longer touches

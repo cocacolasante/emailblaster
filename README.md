@@ -22,6 +22,7 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 - **Reply tracking** — IMAP polling against your own inbox (Gmail / Outlook / Yahoo / custom). Credentials encrypted at rest with Fernet. Read-only (never marks messages seen in your mailbox).
 - **Lite-CRM Leads tab** — global cross-campaign lead view with per-lead notes (editable even after the email has sent). Searchable / filterable by campaign / send status / has-notes.
 - **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap.
+- **Social Listening Radar** — type a plain-English topic ("frustrated with our IT provider"), Claude expands it to ~20 LinkedIn search phrases, Anthropic web search finds matching public posts, each post is scored 1-10 for buying intent + categorized, and a suggested comment + connection request + follow-up DM is drafted for each. All LinkedIn writes stay manual — the system never auto-posts. Per-search frequency (manual / 6h / 12h / daily / weekly) and soft cost caps per run.
 - **Analytics** — open / click / reply / bounce / spam / unsub rates, sender reputation score (0–100), research-quality breakdown (rich/partial/generic open rates), best subject lines, per-step funnel, timeline chart, per-lead activity drilldown.
 
 ## Stack
@@ -66,6 +67,7 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 | `linkedin_poller.poll_all` | `LINKEDIN_POLL_INTERVAL_MINUTES` (default 30) | Polling fallback for Unipile webhook misses (inbound DMs, accepted invites) |
 | `brevo_events_poller.poll` | `BREVO_EVENTS_POLL_INTERVAL_MINUTES` (default 10) | Pulls `delivered`/`opened`/`clicked`/`bounced`/`spam`/`unsubscribed` from Brevo's events API |
 | `lead_sweeper.sweep_stale` | every 5min | Resets `compose_status`/`research_status` rows stuck in RUNNING > 15min back to PENDING + re-enqueues |
+| `social_listening.scheduled_runner` | every 60s | Dispatcher — selects active+non-manual Social Radar searches whose `next_run_at <= now`, enqueues `run_social_search` for each (sequencer-pattern, per-search frequency) |
 
 ### Per-lead pipeline (legacy first-email path)
 
@@ -180,6 +182,11 @@ BREVO_EVENTS_POLL_INTERVAL_MINUTES=10
 ANTHROPIC_MODEL=claude-sonnet-4-6
 ANTHROPIC_RESEARCH_MODEL=claude-haiku-4-5-20251001
 RESEARCH_WEB_SEARCH_MAX_USES=3
+# Social Listening Radar discovery (each query is one Anthropic call
+# that ingests web-search results — keep these on Haiku unless you
+# really need the quality lift, Sonnet here costs ~4x more)
+ANTHROPIC_SOCIAL_DISCOVERY_MODEL=claude-haiku-4-5-20251001
+SOCIAL_DISCOVERY_WEB_SEARCH_MAX_USES=2
 RESEARCH_CACHE_TTL_DAYS=90
 
 # Public URL for the unsubscribe link + Unipile webhooks (set when you tunnel)
@@ -210,7 +217,7 @@ docker compose up --build -d
 docker compose exec backend alembic upgrade head
 ```
 
-This brings up postgres + redis + backend + worker + beat + frontend, and applies all 13 migrations.
+This brings up postgres + redis + backend + worker + beat + frontend, and applies all 14 migrations.
 
 When it's done:
 
@@ -449,6 +456,41 @@ Pick output kind (email subject+body, or LinkedIn DM body-only) and a char limit
 
 **No LinkedIn views fire from this tool** — it's pure Anthropic + web search, so it doesn't surface in the prospect's "who viewed your profile" feed.
 
+### Social Listening Radar
+
+Sidebar → **Social Radar**.  An "intent feed" — discover LinkedIn posts where someone is venting about a vendor, asking for tech recommendations, or otherwise signaling buying intent, then surface them with AI-drafted suggested responses you manually approve before posting.
+
+**Two tabs:**
+
+- **Feed** — scored opportunity cards. Each card shows the post author + headline, the post text (truncatable), a 1-10 score (color-coded: red 1-3, amber 4-6, green 7-10), category pill (UCaaS / cybersecurity / MSP / nonprofit tech / …), buying-signal flag, AI pain-summary + qualification-reason, and **Copy comment** / **Copy connect msg** / **Copy follow-up** buttons. A per-row status dropdown lets you mark each lead as `new` / `saved` / `commented` / `connected` / `replied` / `not_relevant` / `archived`.
+- **Searches** — table of every configured search with last-run time, post count, opportunity count. Per-row **Run now** + **Delete**. Click a row name to edit. **+ New search** opens the editor modal.
+
+**Editor modal** (create OR edit) fields:
+
+- Name, topic (plain English: *"frustrated with our IT provider"*)
+- Niche / audience, geography
+- Include / exclude keywords (comma-separated)
+- Frequency: `manual` / `every_6h` / `every_12h` / `daily` / `weekly`
+- Status, tone, sender name (used in the suggested copy)
+- "Preview queries" button — runs the AI expansion synchronously and renders the resulting chips so you can see what Claude generated BEFORE saving. Useful for tuning the topic + include/exclude.
+- "Advanced" disclosure exposes the soft cost caps: `max_queries_per_run` (default 20), `max_posts_per_query` (30), `max_qualified_per_run` (100).
+
+**How it works under the hood:**
+
+1. User creates a search.  Backend immediately enqueues `expand_social_topic` (1 Anthropic call, Haiku) which writes ~15-30 expanded LinkedIn search phrases to the search row's `expanded_queries` JSONB.
+2. On a manual **Run now** or a beat-driven scheduled tick (`scheduled_runner` selects rows where `status=active AND frequency!=manual AND next_run_at<=now AND last_run_status!=running`), `run_social_search` orchestrates:
+   - For each expanded query (concurrency-capped to 4), 1 Anthropic call with `web_search_20250305` tool (Sonnet — discovery quality matters) finds public LinkedIn posts → `DiscoveredPost` dataclass.
+   - Each post is upserted into `social_listening_posts` via `ON CONFLICT (provider, post_url) DO NOTHING` — same post discovered in a later run is a no-op.
+   - **Only NEW posts** enqueue `qualify_social_post` (capped at `max_qualified_per_run`).
+3. `qualify_social_post` makes 1 Anthropic call per post (Haiku — cheap, runs N times) returning strict JSON: score, category, buying_signal, pain_summary, qualification_reason, suggested_comment (≤500 chars, truncated at sentence boundary), suggested_connection_request (≤280 chars), suggested_follow_up (≤600 chars), recommended_action. Upserted into `social_listening_opportunities` keyed on `post_id` — **re-qualification overwrites AI fields but preserves user-set `status` and `notes`**.
+4. `next_run_at` is set to `now + frequency_interval` (or `NULL` for manual). The beat picks it up on the next tick when due.
+
+**Cost (per-run, default caps):** 1 expansion + ~20 discovery + ~100 qualification ≈ $0.50-$1 of Anthropic spend.
+
+**Discovery via Anthropic, NOT Unipile.**  Unipile's API has no LinkedIn post search and their raw Voyager passthrough is on a narrow allowlist (`feed/dash/followingStates` allowed for follow; post search isn't). Anthropic web search finds publicly indexable posts.  Trade-off: results limited to what's been crawled by search engines (some recent posts may not appear); upside: works today without a Unipile support ticket.
+
+**LinkedIn writes stay manual.**  This entire feature only **drafts** copy.  Nothing in `app/workers/social_listening.py` ever calls a Unipile write endpoint.  The Copy buttons go to your clipboard so you paste manually on LinkedIn.
+
 ---
 
 ## Project layout
@@ -460,13 +502,14 @@ emailblaster/
 │   │   ├── main.py                  FastAPI app + CORS middleware + 500-handler with CORS
 │   │   ├── config.py                pydantic-settings (all env vars)
 │   │   ├── database.py              Async SQLAlchemy engine + get_db + AsyncSessionLocal
-│   │   ├── models/                  10 ORM models
+│   │   ├── models/                  13 ORM models
 │   │   │   ├── campaign.py          Campaign + CampaignStatus + ResearchMode enums
 │   │   │   ├── connected_account.py Inbox credential record (Fernet-encrypted password)
 │   │   │   ├── email_event.py       sent / delivered / opened / clicked / replied / bounced / spam / unsub
 │   │   │   ├── lead.py              Lead + ResearchStatus / ComposeStatus / SendStatus / LinkedInConnectionStatus enums
 │   │   │   ├── linkedin_account.py  Unipile-bound LinkedIn account row
 │   │   │   ├── research_cache.py    Email-keyed JSONB research cache (90d TTL)
+│   │   │   ├── social_listening.py  3 models: SocialListeningSearch + Post + Opportunity
 │   │   │   ├── sequence.py          Sequence + SequenceNode + SequenceEdge + LeadSequenceState + LeadStepExecution
 │   │   │   ├── style_correction.py  User edits to sample emails (fed back into compose prompt)
 │   │   │   ├── suppression.py       Per-email suppression list (auto-populated by bounces / spam / unsub)
@@ -481,6 +524,7 @@ emailblaster/
 │   │   │   ├── preview.py           Sample preview + approve-all + reject
 │   │   │   ├── research_client.py   POST /research-client (one-off research tool)
 │   │   │   ├── sequences.py         GET / replace / publish sequence graphs
+│   │   │   ├── social_radar.py      Searches CRUD + opportunities feed + expand-preview
 │   │   │   ├── settings.py          App-level settings exposure
 │   │   │   └── webhooks.py          /webhooks/unipile (Brevo events are polled, no inbound webhook)
 │   │   ├── services/
@@ -493,6 +537,10 @@ emailblaster/
 │   │   │   ├── hunter.py            Hunter.io email verification client
 │   │   │   ├── research_cache.py    lookup / upsert helpers
 │   │   │   ├── research_client.py   One-off research generator (Anthropic-only, no Unipile)
+│   │   │   ├── social_listening_topic_expander.py  Haiku expansion (1 call → 15-30 phrases)
+│   │   │   ├── social_listening_discovery.py       Sonnet+web_search → list of DiscoveredPost
+│   │   │   ├── social_listening_qualifier.py       Haiku per-post strict-JSON scorer + drafter
+│   │   │   ├── _anthropic.py        Shared get_client/extract_text/parse_json helpers
 │   │   │   ├── compose_client.py    One-off compose with char-limit enforcement
 │   │   │   ├── csv_parser.py        CSV column detection + auto-mapping
 │   │   │   ├── email_template.py    HTML+text rendering, unsubscribe link injection
@@ -513,10 +561,11 @@ emailblaster/
 │   │       ├── reply_poller.py      IMAP poll + match via Message-ID / In-Reply-To / References / subject+from
 │   │       ├── linkedin_poller.py   Unipile webhook fallback (inbox events, accepted invites)
 │   │       ├── brevo_events_poller.py Polls Brevo events API every 10min
+│   │       ├── social_listening.py  4 tasks: expand_topic, run_search, qualify_post, scheduled_runner
 │   │       └── lead_sweeper.py      Resets stale RUNNING rows to PENDING and re-enqueues
-│   ├── alembic/versions/            13 migrations (0001 initial → 0013 research_cache + lead notes)
+│   ├── alembic/versions/            14 migrations (0001 initial → 0014 social listening)
 │   ├── scripts/                     One-off remediation scripts (see below)
-│   └── tests/                       563 backend tests
+│   └── tests/                       610 backend tests
 ├── frontend/
 │   └── src/
 │       ├── pages/
@@ -528,6 +577,7 @@ emailblaster/
 │       │   ├── Analytics.jsx        Full-page analytics view
 │       │   ├── Leads.jsx            Global cross-campaign leads + notes modal
 │       │   ├── ResearchClient.jsx   One-off research tool
+│       │   ├── SocialRadar.jsx      Feed + Searches tabs + editor modal (Social Listening Radar)
 │       │   └── Settings.jsx         Inboxes + LinkedIn accounts
 │       ├── components/              Nav, Toast, ErrorBoundary, EmailPreviewCard, LeadTable, LeadUpload,
 │       │                            ScheduleConfig, MetricsGrid, ConnectInboxModal, ConnectLinkedInModal,
@@ -557,10 +607,10 @@ emailblaster/
 ## Running tests
 
 ```bash
-# Backend (563 tests; spins up postgres if not already running)
+# Backend (721 tests; spins up postgres if not already running)
 docker compose run --rm backend pytest
 
-# Frontend (181 tests; pure jsdom, no services needed)
+# Frontend (247 tests; pure jsdom, no services needed)
 docker compose exec frontend npm test --run
 
 # Quick: one specific file

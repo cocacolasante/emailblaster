@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
-import { researchClient } from '../api/researchClient.js';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { researchClient, sendClientEmail } from '../api/researchClient.js';
+import { listAccounts as listConnectedAccounts } from '../api/connectedAccounts.js';
 
 const SENDER_NAME_KEY = 'researchClient.senderName';
 
@@ -49,7 +50,273 @@ function CopyButton({ text, label = 'Copy' }) {
 }
 
 
-function ResultPanel({ result, outputKind, charLimit }) {
+// Very loose email check — enough to disable the Send button while the
+// user is typing.  Real validation happens server-side via Pydantic's
+// EmailStr, which catches the cases this regex misses.
+const _EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+
+function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) {
+  // 4 states: ``idle`` (Add email button), ``editing`` (form open),
+  // ``sending`` (in-flight), ``sent`` (confirmation shown).  We
+  // intentionally don't persist this state — the panel resets when the
+  // user re-runs research / changes inputs.
+  const [stage, setStage] = useState('idle');
+  const [toEmail, setToEmail] = useState('');
+  const [subject, setSubject] = useState(initialSubject || '');
+  const [body, setBody] = useState(initialBody || '');
+  // Empty string = "use the configured default" — backend falls back to
+  // settings.BREVO_SENDER_EMAIL and the payload omits sender_email.
+  // Any other value = the connected-account email_address chosen below.
+  const [fromEmail, setFromEmail] = useState('');
+  const [sentTo, setSentTo] = useState(null);
+  const [sentAt, setSentAt] = useState(null);
+
+  // Connected accounts power the From-address picker.  Fetched once at
+  // render — these change rarely.  Empty array on error or no accounts;
+  // in that case the picker hides itself and the send uses the configured
+  // default automatically.
+  const { data: connectedAccounts } = useQuery({
+    queryKey: ['connected-accounts'],
+    queryFn: listConnectedAccounts,
+    staleTime: 60_000,
+  });
+  const accounts = Array.isArray(connectedAccounts) ? connectedAccounts : [];
+
+  // Resolve which account's signature will be applied server-side so we
+  // can show it as a non-editable preview.  Mirrors the backend's
+  // priority chain: explicit picker selection > workspace default
+  // sender > nothing.  ``fromEmail`` is the picker state ('' = default
+  // option).
+  const resolvedAccount = useMemo(() => {
+    if (fromEmail) {
+      return accounts.find((a) => a.email_address === fromEmail) || null;
+    }
+    return accounts.find((a) => a.is_default_sender) || null;
+  }, [fromEmail, accounts]);
+  const signaturePreview = (resolvedAccount?.signature || '').trim();
+
+  const recipientName = useMemo(() => {
+    const parts = [profile?.first_name, profile?.last_name]
+      .map((s) => (s || '').trim())
+      .filter(Boolean);
+    return parts.join(' ') || null;
+  }, [profile]);
+
+  // Keep the editable copies in sync when the parent regenerates the
+  // research (which produces a new subject/body).  Skipped while editing
+  // so we don't clobber the user's typing.
+  useEffect(() => {
+    if (stage === 'idle') {
+      setSubject(initialSubject || '');
+      setBody(initialBody || '');
+    }
+  }, [initialSubject, initialBody, stage]);
+
+  const mut = useMutation({
+    mutationFn: () => sendClientEmail({
+      to_email: toEmail.trim(),
+      to_name: recipientName,
+      subject: subject,
+      body: body,
+      sender_name: senderName || 'Sender',
+      // Omit sender_email when "configured default" is selected so the
+      // server uses settings.BREVO_SENDER_EMAIL.  Picking a connected
+      // account passes its email_address through as an override.
+      ...(fromEmail ? { sender_email: fromEmail } : {}),
+    }),
+    onSuccess: (data) => {
+      setSentTo(data.to_email);
+      setSentAt(new Date(data.sent_at));
+      setStage('sent');
+    },
+  });
+
+  const canSend =
+    _EMAIL_RE.test(toEmail.trim()) &&
+    subject.trim().length > 0 &&
+    body.trim().length > 0 &&
+    !mut.isPending;
+
+  const errDetail = mut.error?.response?.data?.detail || (mut.error && String(mut.error.message));
+
+  if (stage === 'sent') {
+    return (
+      <div
+        data-testid="email-send-success"
+        className="rounded-md bg-emerald-50 border border-emerald-200 p-3 text-sm"
+      >
+        <span className="font-medium text-emerald-800">
+          ✓ Sent to {sentTo}
+        </span>
+        <span className="text-emerald-700 ml-2">
+          at {sentAt?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            // Reset to idle but preserve the (possibly-edited) subject/body
+            // so the user can fire another send to a different recipient
+            // without redoing their edits.
+            setStage('idle');
+            setToEmail('');
+            mut.reset();
+          }}
+          className="ml-3 text-xs text-emerald-700 hover:text-emerald-900 underline"
+        >
+          Send to someone else
+        </button>
+      </div>
+    );
+  }
+
+  if (stage === 'idle') {
+    return (
+      <button
+        type="button"
+        onClick={() => setStage('editing')}
+        data-testid="add-email-btn"
+        className="px-3 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md"
+      >
+        + Add email
+      </button>
+    );
+  }
+
+  // stage === 'editing'
+  return (
+    <div
+      data-testid="email-action-form"
+      className="bg-slate-50 border border-slate-200 rounded-md p-4 space-y-3"
+    >
+      {accounts.length > 0 && (
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">
+            Send from
+          </label>
+          <select
+            value={fromEmail}
+            onChange={(e) => setFromEmail(e.target.value)}
+            data-testid="send-from-picker"
+            className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm bg-white"
+          >
+            <option value="">Use configured default sender</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.email_address}>
+                {a.label ? `${a.label} — ${a.email_address}` : a.email_address}
+              </option>
+            ))}
+          </select>
+          {fromEmail && (
+            <p className="text-xs text-amber-700 mt-1">
+              Note: this address must be a verified sender on your Brevo
+              account, otherwise the send will be rejected.
+            </p>
+          )}
+        </div>
+      )}
+      <div>
+        <label className="block text-xs font-semibold text-slate-600 mb-1">
+          Send to (email address)
+        </label>
+        <input
+          type="email"
+          value={toEmail}
+          onChange={(e) => setToEmail(e.target.value)}
+          placeholder="jane@example.com"
+          data-testid="send-to-email"
+          autoFocus
+          className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm bg-white"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-600 mb-1">
+          Subject (edit if needed)
+        </label>
+        <input
+          type="text"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          data-testid="send-subject"
+          className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm bg-white"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-600 mb-1">
+          Body (edit if needed)
+        </label>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={10}
+          data-testid="send-body"
+          className="w-full px-3 py-2 border border-slate-300 rounded-md text-sm bg-white font-mono leading-relaxed"
+        />
+        {signaturePreview && (
+          <div
+            data-testid="signature-preview"
+            className="mt-2 rounded-md border border-dashed border-slate-300 bg-slate-50 p-3"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold text-slate-600">
+                Signature appended on send
+              </span>
+              <span className="text-xs text-slate-400">
+                from {resolvedAccount?.label || resolvedAccount?.email_address}
+              </span>
+            </div>
+            <pre
+              data-testid="signature-preview-text"
+              className="text-xs font-mono text-slate-700 whitespace-pre-wrap m-0"
+            >
+              {signaturePreview}
+            </pre>
+            <p className="text-xs text-slate-500 mt-2">
+              Edit the signature in Settings → Connected inboxes if you want to change it.
+            </p>
+          </div>
+        )}
+      </div>
+      {errDetail && (
+        <div
+          data-testid="send-error"
+          className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2"
+        >
+          {errDetail}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => mut.mutate()}
+          disabled={!canSend}
+          data-testid="send-email-btn"
+          className="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-md"
+        >
+          {mut.isPending ? 'Sending…' : 'Send email'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            // Snap back to idle; keep subject/body edits in case the user
+            // re-opens the form.
+            setStage('idle');
+            mut.reset();
+          }}
+          className="px-4 py-2 text-sm font-medium bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md"
+        >
+          Cancel
+        </button>
+        <span className="text-xs text-slate-500 ml-auto">
+          Sends via Brevo from your configured sender address.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+
+function ResultPanel({ result, outputKind, charLimit, senderName }) {
   if (!result) return null;
   const { profile, research, subject, body, char_count, duration_ms } = result;
   const fullText = subject ? `Subject: ${subject}\n\n${body}` : body;
@@ -127,6 +394,18 @@ function ResultPanel({ result, outputKind, charLimit }) {
             generated in {(duration_ms / 1000).toFixed(1)}s
           </span>
         </div>
+        {/* Send-now flow is email-only — LinkedIn DMs go out via Unipile
+            (manual paste for now) and don't have a Brevo path. */}
+        {outputKind === 'email' && (
+          <div className="mt-3">
+            <EmailActionPanel
+              initialSubject={subject}
+              initialBody={body}
+              senderName={senderName}
+              profile={profile}
+            />
+          </div>
+        )}
       </div>
 
       <details className="text-sm text-slate-600">
@@ -433,6 +712,7 @@ export default function ResearchClient() {
             result={mutation.data}
             outputKind={outputKind}
             charLimit={Number(charLimit) || DEFAULT_LIMIT[outputKind]}
+            senderName={senderName}
           />
         </div>
       )}

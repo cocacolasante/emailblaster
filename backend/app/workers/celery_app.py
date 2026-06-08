@@ -16,6 +16,7 @@ celery_app = Celery(
         "app.workers.linkedin_poller",
         "app.workers.brevo_events_poller",
         "app.workers.lead_sweeper",
+        "app.workers.social_listening",
     ],
 )
 
@@ -60,5 +61,12 @@ celery_app.conf.beat_schedule = {
     "lead-sweeper": {
         "task": "lead_sweeper.sweep_stale",
         "schedule": 300.0,  # every 5 min
+    },
+    "social-radar-runner": {
+        # Dispatcher that selects social listening searches whose
+        # ``next_run_at <= now`` and enqueues ``run_social_search`` for
+        # each.  Per-search frequency lives on the search row.
+        "task": "social_listening.scheduled_runner",
+        "schedule": 60.0,
     },
 }

@@ -1374,14 +1374,40 @@ async def _record_execution_and_advance(
                             )
                             if campaign is not None and campaign.status == CampaignStatus.RUNNING:
                                 campaign.status = CampaignStatus.PAUSED
-                                campaign.auto_paused_until = _now() + timedelta(
+                                # Cap-reset is typically local midnight (when
+                                # the LinkedIn daily counter expires) + a
+                                # 60s cushion to avoid resume-then-recap.
+                                cap_reset = _now() + timedelta(
                                     seconds=int(retry_in) + _CAP_RESUME_BUFFER_SECONDS
+                                )
+                                # Hold the pause until BOTH conditions hold:
+                                # the cap window has reset AND the campaign's
+                                # schedule window is open.  Without this, the
+                                # campaign auto-resumes at midnight but the
+                                # schedule window is closed — every lead in
+                                # the beat tick defers individually back to
+                                # window-open, churning the queue and dirtying
+                                # last_run_at metrics.  Evaluating
+                                # compute_next_send_window AT cap_reset gives
+                                # the right answer regardless of whether the
+                                # cap resets inside or outside the window.
+                                from app.workers.send import compute_next_send_window
+                                next_window = compute_next_send_window(
+                                    campaign, now=cap_reset,
+                                )
+                                campaign.auto_paused_until = (
+                                    max(cap_reset, next_window)
+                                    if next_window is not None
+                                    else cap_reset
                                 )
                                 logger.info(
                                     "Auto-paused campaign %s at LinkedIn %s cap; "
-                                    "auto-resumes ~%s",
+                                    "auto-resumes ~%s (cap_reset=%s, "
+                                    "next_window=%s)",
                                     campaign.id, reason,
                                     campaign.auto_paused_until.isoformat(),
+                                    cap_reset.isoformat(),
+                                    next_window.isoformat() if next_window else "now",
                                 )
                     elif status in TRANSIENT_SKIP_STATUSES:
                         # Count prior skips for THIS visit only (since we

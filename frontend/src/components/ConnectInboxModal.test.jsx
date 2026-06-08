@@ -158,4 +158,37 @@ describe('ConnectInboxModal', () => {
     await user.click(screen.getByTestId('modal-overlay'));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('signature textarea pre-fills from the editing account and saves edits', async () => {
+    accountsApi.testAccount.mockResolvedValue({ ok: true, message_count: 1 });
+    accountsApi.updateAccount.mockResolvedValue({
+      id: 'a1', label: 'L', email_address: 'a@x.com',
+      imap_host: 'h', imap_port: 993, imap_use_ssl: true, username: 'a@x.com',
+      signature: 'Best,\nAnthony\ncsuitecode.com',
+    });
+    const user = userEvent.setup();
+    renderModal({
+      account: {
+        id: 'a1', label: 'L', email_address: 'a@x.com',
+        imap_host: 'h', imap_port: 993, imap_use_ssl: true,
+        username: 'a@x.com',
+        signature: 'Old sig — legacy',
+      },
+    });
+
+    // Pre-fills the existing signature.
+    const sig = screen.getByTestId('inbox-signature');
+    expect(sig).toHaveValue('Old sig — legacy');
+
+    // Edit it and save.
+    await user.clear(sig);
+    await user.type(sig, 'Best, Anthony');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(accountsApi.updateAccount).toHaveBeenCalled();
+      const payload = accountsApi.updateAccount.mock.calls[0][1];
+      expect(payload.signature).toBe('Best, Anthony');
+    });
+  });
 });

@@ -35,6 +35,32 @@ class Settings(BaseSettings):
     # if it was refreshed within this many days, skipping the API call.
     RESEARCH_CACHE_TTL_DAYS: int = 90
 
+    # Social Listening Radar — discovery is "find LinkedIn posts matching
+    # this query, extract structured fields from web-search results."  Same
+    # extraction-shape task as research_person_web, so default to Haiku.
+    # A single bad-luck run on Sonnet was costing $5+ because each of
+    # max_queries_per_run (20) Anthropic calls was ingesting ~90K tokens
+    # of web-search-result pages on Sonnet input pricing.  Haiku is ~3.75x
+    # cheaper on the same input + output, bringing a full run to ~$1.50.
+    ANTHROPIC_SOCIAL_DISCOVERY_MODEL: str = "claude-haiku-4-5-20251001"
+    # Web searches allowed per discovery call.  Each search ingests result
+    # pages as input tokens AND has a per-search tool fee, so this is a
+    # direct cost lever.  2 is enough to find recent posts for a single
+    # query; 3 was the original default and rarely surfaced anything new
+    # the second pass didn't.
+    # Per non-LinkedIn discovery call.  Set to 3 (up from 2) so the
+    # discovery prompt can actually try 2-3 keyword variations of each
+    # query before bailing — the failure mode was Anthropic running
+    # exactly one literal search per query and returning 0 results.
+    SOCIAL_DISCOVERY_WEB_SEARCH_MAX_USES: int = 3
+    # LinkedIn-specific overrides.  LinkedIn aggressively blocks crawlers
+    # (Google indexes very little of it), so the default budget gets
+    # almost nothing back.  More uses + Sonnet (better at finding the
+    # buried indexed-but-rare content) help recall a lot.  Per-run cost
+    # impact when LinkedIn is enabled: ~+$0.50.
+    LINKEDIN_DISCOVERY_MODEL: str = "claude-sonnet-4-6"
+    LINKEDIN_DISCOVERY_WEB_SEARCH_MAX_USES: int = 5
+
     # Email sending
     BREVO_API_KEY: str = ""
     BREVO_SENDER_EMAIL: str = "noreply@example.com"

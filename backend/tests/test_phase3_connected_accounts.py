@@ -310,3 +310,78 @@ async def test_delete_frees_email_for_reuse(client):
 
     r2 = await client.post("/connected-accounts/", json=payload)
     assert r2.status_code == 201
+
+
+# ---------- Default sender (atomic single-default invariant) -------------
+
+async def test_create_defaults_is_default_sender_to_false(client):
+    """A freshly created inbox is NOT the default sender — the user has
+    to opt in explicitly."""
+    resp = await client.post("/connected-accounts/", json=_account_payload(email_address="x@a.com"))
+    assert resp.status_code == 201
+    assert resp.json()["is_default_sender"] is False
+
+
+async def test_set_is_default_sender_true_via_patch(client):
+    a = await client.post("/connected-accounts/", json=_account_payload(email_address="a@x.com"))
+    aid = a.json()["id"]
+    resp = await client.patch(
+        f"/connected-accounts/{aid}", json={"is_default_sender": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_default_sender"] is True
+
+
+async def test_setting_default_sender_clears_other_defaults(client):
+    """Promoting a second account to default MUST clear the flag on the
+    first one in the same transaction.  Without that, the partial unique
+    index would reject the write — we want a graceful swap instead."""
+    a = await client.post("/connected-accounts/", json=_account_payload(email_address="a@x.com"))
+    b = await client.post("/connected-accounts/", json=_account_payload(email_address="b@x.com"))
+    aid = a.json()["id"]
+    bid = b.json()["id"]
+
+    # Promote A first.
+    await client.patch(f"/connected-accounts/{aid}", json={"is_default_sender": True})
+    # Then promote B — A must be demoted.
+    resp = await client.patch(f"/connected-accounts/{bid}", json={"is_default_sender": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["is_default_sender"] is True
+
+    # Refetch A; should now be False.
+    refreshed_a = await client.get(f"/connected-accounts/{aid}")
+    assert refreshed_a.json()["is_default_sender"] is False
+
+
+async def test_clearing_is_default_sender_works(client):
+    """Setting is_default_sender to False explicitly unsets the flag,
+    leaving zero defaults in the workspace (fall back to env var)."""
+    a = await client.post("/connected-accounts/", json=_account_payload(email_address="a@x.com"))
+    aid = a.json()["id"]
+    await client.patch(f"/connected-accounts/{aid}", json={"is_default_sender": True})
+
+    resp = await client.patch(f"/connected-accounts/{aid}", json={"is_default_sender": False})
+    assert resp.json()["is_default_sender"] is False
+
+
+async def test_partial_unique_index_enforces_single_default(client, db_session):
+    """Belt-and-suspenders: even if the router logic were bypassed, the
+    DB-level partial unique index would reject a second default-sender
+    row.  Verified by directly INSERTing two rows with the flag True."""
+    from app.models import ConnectedAccount as Acc
+
+    a = Acc(
+        label="A", email_address="a@y.com",
+        imap_host="i.x", imap_port=993, imap_use_ssl=True,
+        username="a@y.com", password_encrypted="x",
+        is_default_sender=True,
+    )
+    b = Acc(
+        label="B", email_address="b@y.com",
+        imap_host="i.x", imap_port=993, imap_use_ssl=True,
+        username="b@y.com", password_encrypted="x",
+        is_default_sender=True,
+    )
+    db_session.add_all([a, b])
+    with pytest.raises(Exception):
+        await db_session.commit()

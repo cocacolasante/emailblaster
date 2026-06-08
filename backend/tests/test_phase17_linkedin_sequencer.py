@@ -1090,6 +1090,85 @@ async def test_linkedin_cap_does_not_pause_when_email_downstream(db_session):
     assert refreshed.auto_paused_until is None
 
 
+async def test_auto_pause_resume_time_holds_until_window_opens(db_session):
+    """When the cap resets OUTSIDE the campaign's schedule window, the
+    auto_paused_until stamp must reflect when the WINDOW opens — not the
+    cap-reset moment.  Otherwise the campaign auto-resumes at midnight,
+    every lead in the next beat tick defers individually to window-open,
+    and the queue churns for hours while the user sees ``last_run_at``
+    flapping.
+
+    Setup: schedule allows only ONE weekday (two days from now) starting at
+    9am.  Cap retry_in is 60s.  cap_reset lands ~2min from now; the next
+    window open is ~2 days from now.  Expected auto_paused_until is the
+    window open, not cap_reset.
+    """
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # Narrow the schedule to a day-of-week we definitely aren't in now.
+    # Using ``_now().weekday() + 2`` puts the next allowed day 2-3 days
+    # out regardless of when the test runs.
+    target_dow = (_now().weekday() + 2) % 7
+    campaign.schedule_days = [target_dow]
+    campaign.schedule_time_start = time(9, 0)
+    campaign.schedule_time_end = time(17, 0)
+    campaign.schedule_timezone = "UTC"
+    await db_session.commit()
+
+    # entry(email) -> connect ; no email downstream of the capped connect.
+    _, _entry, connect_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT
+    )
+    lead = await _make_lead(db_session, campaign)
+    await _enroll_on_node(db_session, lead, connect_node)
+
+    result = {"status": "deferred", "reason": "connect_cap", "retry_in": 60}
+    before = _now()
+    await sequencer._record_execution_and_advance(lead.id, connect_node.id, result)
+
+    refreshed = await db_session.get(Campaign, campaign.id)
+    await db_session.refresh(refreshed)
+    assert refreshed.status == CampaignStatus.PAUSED
+    assert refreshed.auto_paused_until is not None
+
+    # cap_reset would land ~2min from now (60s retry + 60s buffer).  The
+    # window-aware fix should push auto_paused_until WELL past that — at
+    # least ~24h, since the next allowed day is 2-3 days out.
+    cap_reset_upper_bound = before + timedelta(minutes=5)
+    assert refreshed.auto_paused_until > cap_reset_upper_bound + timedelta(hours=23), (
+        f"auto_paused_until={refreshed.auto_paused_until} is at/near the "
+        f"cap_reset_time ({cap_reset_upper_bound}) — the schedule window "
+        "should have pushed it to the next 9am, ~2 days out"
+    )
+    # And the resume time should be at 9:00 local UTC on an allowed weekday.
+    resume_utc = refreshed.auto_paused_until.astimezone(timezone.utc)
+    assert resume_utc.hour == 9 and resume_utc.minute == 0
+    assert resume_utc.weekday() == target_dow
+
+
+async def test_auto_pause_inside_window_uses_cap_reset(db_session):
+    """When the cap resets INSIDE the campaign's schedule window, the
+    auto_paused_until stays at cap_reset (no window-open delay needed)."""
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    # Default _make_campaign window is 00:00–23:59 every day, so cap_reset
+    # is always inside it — the window-aware logic should be a no-op.
+    _, _entry, connect_node = await _build_li_node_sequence(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT
+    )
+    lead = await _make_lead(db_session, campaign)
+    await _enroll_on_node(db_session, lead, connect_node)
+
+    result = {"status": "deferred", "reason": "connect_cap", "retry_in": 600}
+    before = _now()
+    await sequencer._record_execution_and_advance(lead.id, connect_node.id, result)
+
+    refreshed = await db_session.get(Campaign, campaign.id)
+    await db_session.refresh(refreshed)
+    # ~10min + buffer; well under an hour.  No window-open shift.
+    assert refreshed.auto_paused_until < before + timedelta(minutes=15)
+
+
 async def test_auto_paused_campaign_resumes_when_window_passes(db_session, monkeypatch):
     """The beat auto-resumes a cap-paused campaign once auto_paused_until
     passes, and leaves manual pauses (auto_paused_until NULL) alone."""
