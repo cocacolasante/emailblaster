@@ -265,12 +265,18 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
                 from {resolvedAccount?.label || resolvedAccount?.email_address}
               </span>
             </div>
-            <pre
+            {/* Render the signature HTML inline so the user sees what the
+                recipient will actually see — links, images, formatting all
+                live.  Trusted source (the user typed it in their own
+                Settings).  ``signature-preview-text`` is kept as a
+                test-id alias so existing tests keep matching. */}
+            <div
               data-testid="signature-preview-text"
-              className="text-xs font-mono text-slate-700 whitespace-pre-wrap m-0"
-            >
-              {signaturePreview}
-            </pre>
+              className="text-sm text-slate-700"
+              dangerouslySetInnerHTML={{
+                __html: signaturePreview.replace(/\n/g, '<br>'),
+              }}
+            />
             <p className="text-xs text-slate-500 mt-2">
               Edit the signature in Settings → Connected inboxes if you want to change it.
             </p>

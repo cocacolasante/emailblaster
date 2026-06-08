@@ -159,6 +159,101 @@ describe('ConnectInboxModal', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('Insert link button inserts an <a> tag into the signature at the cursor', async () => {
+    const user = userEvent.setup();
+    renderModal({
+      account: {
+        id: 'a1', label: 'L', email_address: 'a@x.com',
+        imap_host: 'h', imap_port: 993, imap_use_ssl: true,
+        username: 'a@x.com',
+        signature: 'Best,\n',
+      },
+    });
+
+    const sig = screen.getByTestId('inbox-signature');
+    // Cursor at end.
+    sig.focus();
+    sig.setSelectionRange(sig.value.length, sig.value.length);
+    // Stub window.prompt to return URL + link text.
+    vi.spyOn(window, 'prompt')
+      .mockReturnValueOnce('https://csuitecode.com')
+      .mockReturnValueOnce('csuitecode.com');
+
+    await user.click(screen.getByTestId('signature-insert-link'));
+
+    expect(sig.value).toContain('<a href="https://csuitecode.com">csuitecode.com</a>');
+  });
+
+  it('Insert image button inserts an <img> tag with alt + size cap', async () => {
+    const user = userEvent.setup();
+    renderModal({
+      account: {
+        id: 'a1', label: 'L', email_address: 'a@x.com',
+        imap_host: 'h', imap_port: 993, imap_use_ssl: true,
+        username: 'a@x.com',
+        signature: '',
+      },
+    });
+
+    vi.spyOn(window, 'prompt')
+      .mockReturnValueOnce('https://example.com/logo.png')
+      .mockReturnValueOnce('CSuite Code logo');
+
+    await user.click(screen.getByTestId('signature-insert-image'));
+
+    const sig = screen.getByTestId('inbox-signature');
+    expect(sig.value).toContain('<img src="https://example.com/logo.png"');
+    expect(sig.value).toContain('alt="CSuite Code logo"');
+    // Sane size cap auto-inserted so the user doesn't have to.
+    expect(sig.value).toContain('max-width:200px');
+  });
+
+  it('Insert link with empty URL is a no-op', async () => {
+    const user = userEvent.setup();
+    renderModal({
+      account: {
+        id: 'a1', label: 'L', email_address: 'a@x.com',
+        imap_host: 'h', imap_port: 993, imap_use_ssl: true,
+        username: 'a@x.com',
+        signature: 'existing',
+      },
+    });
+    vi.spyOn(window, 'prompt').mockReturnValueOnce('');
+    await user.click(screen.getByTestId('signature-insert-link'));
+    // Nothing changed.
+    expect(screen.getByTestId('inbox-signature').value).toBe('existing');
+  });
+
+  it('Preview toggle swaps the textarea for a rendered HTML pane', async () => {
+    const user = userEvent.setup();
+    renderModal({
+      account: {
+        id: 'a1', label: 'L', email_address: 'a@x.com',
+        imap_host: 'h', imap_port: 993, imap_use_ssl: true,
+        username: 'a@x.com',
+        signature: '<a href="https://csuitecode.com">csuitecode.com</a>',
+      },
+    });
+
+    // Edit mode by default.
+    expect(screen.getByTestId('inbox-signature')).toBeInTheDocument();
+    expect(screen.queryByTestId('signature-preview-pane')).toBeNull();
+
+    // Toggle to preview.
+    await user.click(screen.getByTestId('signature-preview-toggle'));
+    expect(screen.queryByTestId('inbox-signature')).toBeNull();
+    const pane = screen.getByTestId('signature-preview-pane');
+    // The rendered HTML contains the real <a> tag, not escaped text.
+    expect(pane.innerHTML).toContain('<a href="https://csuitecode.com"');
+    // Insert buttons disabled in preview mode (can't insert into rendered HTML).
+    expect(screen.getByTestId('signature-insert-link')).toBeDisabled();
+    expect(screen.getByTestId('signature-insert-image')).toBeDisabled();
+
+    // Toggle back.
+    await user.click(screen.getByTestId('signature-preview-toggle'));
+    expect(screen.getByTestId('inbox-signature')).toBeInTheDocument();
+  });
+
   it('signature textarea pre-fills from the editing account and saves edits', async () => {
     accountsApi.testAccount.mockResolvedValue({ ok: true, message_count: 1 });
     accountsApi.updateAccount.mockResolvedValue({

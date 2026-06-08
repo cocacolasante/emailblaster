@@ -1,5 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createAccount, updateAccount, testAccount } from '../api/connectedAccounts.js';
+
+
+/** Insert ``snippet`` at the current cursor position of ``el`` and call
+ *  ``onChange`` with the new full value.  Mutates the textarea's
+ *  selection so the cursor lands AFTER the inserted snippet — important
+ *  so the user can keep typing without re-clicking. */
+function insertAtCursor(el, snippet, onChange) {
+  if (!el) {
+    onChange((prev) => `${prev || ''}${snippet}`);
+    return;
+  }
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  const before = el.value.slice(0, start);
+  const after = el.value.slice(end);
+  const next = `${before}${snippet}${after}`;
+  onChange(next);
+  // Restore focus + place cursor after the inserted snippet on next tick.
+  // (React's re-render will reset the selection so we have to defer.)
+  requestAnimationFrame(() => {
+    if (document.activeElement !== el) el.focus();
+    const pos = start + snippet.length;
+    try { el.setSelectionRange(pos, pos); } catch { /* noop */ }
+  });
+}
 
 const PRESETS = {
   Gmail: { imap_host: 'imap.gmail.com', imap_port: 993, imap_use_ssl: true },
@@ -26,6 +51,42 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState(null);
+  // Signature editor state.  ``signaturePreview`` toggles between the
+  // raw HTML textarea and a rendered HTML preview.  The ref is used by
+  // the toolbar buttons to insert tags at the textarea's cursor
+  // position rather than appending to the end.
+  const [signaturePreview, setSignaturePreview] = useState(false);
+  const signatureRef = useRef(null);
+
+  function insertSignatureSnippet(snippet) {
+    insertAtCursor(
+      signatureRef.current, snippet,
+      (next) => setForm((f) => ({
+        ...f,
+        signature: typeof next === 'function' ? next(f.signature) : next,
+      })),
+    );
+  }
+
+  function handleInsertImage() {
+    const url = (window.prompt('Image URL (https://…)') || '').trim();
+    if (!url) return;
+    // Sane size cap so a giant image doesn't blow out the recipient's
+    // inbox layout.  Users can tweak the style manually if they want
+    // a different size.
+    const alt = (window.prompt('Alt text (describe the image for accessibility)', '') || '').trim();
+    const altAttr = alt ? ` alt="${alt.replace(/"/g, '&quot;')}"` : '';
+    insertSignatureSnippet(
+      `<img src="${url}"${altAttr} style="max-width:200px;height:auto;">`,
+    );
+  }
+
+  function handleInsertLink() {
+    const url = (window.prompt('Link URL (https://…)') || '').trim();
+    if (!url) return;
+    const text = (window.prompt('Link text', url) || url).trim();
+    insertSignatureSnippet(`<a href="${url}">${text}</a>`);
+  }
 
   useEffect(() => {
     if (account) {
@@ -247,23 +308,82 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
           </div>
 
           <div>
-            <label htmlFor="inbox-signature" className="block text-sm font-medium text-slate-700 mb-1">
-              Email signature
-              <span className="text-xs text-slate-400 font-normal"> (optional)</span>
-            </label>
-            <textarea
-              id="inbox-signature"
-              rows={5}
-              value={form.signature}
-              onChange={(e) => update('signature', e.target.value)}
-              data-testid="inbox-signature"
-              placeholder={'Best,\nAnthony Colasante\ncsuitecode.com · book a call → calendly.com/anthony'}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-            />
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="inbox-signature" className="block text-sm font-medium text-slate-700">
+                Email signature
+                <span className="text-xs text-slate-400 font-normal"> (optional · supports HTML)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setSignaturePreview((v) => !v)}
+                data-testid="signature-preview-toggle"
+                className="text-xs text-blue-600 hover:text-blue-700"
+              >
+                {signaturePreview ? 'Edit' : 'Preview'}
+              </button>
+            </div>
+            {/* Toolbar — disabled in preview mode since you can't edit the
+                rendered HTML.  Buttons insert at the textarea cursor. */}
+            <div
+              data-testid="signature-toolbar"
+              className="flex items-center gap-2 mb-1 p-1 bg-slate-50 border border-slate-300 rounded-t-lg border-b-0"
+            >
+              <button
+                type="button"
+                onClick={handleInsertImage}
+                disabled={signaturePreview}
+                data-testid="signature-insert-image"
+                className="px-2 py-1 text-xs font-medium bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-700 border border-slate-300 rounded"
+                title="Insert image"
+              >
+                🖼️ Insert image
+              </button>
+              <button
+                type="button"
+                onClick={handleInsertLink}
+                disabled={signaturePreview}
+                data-testid="signature-insert-link"
+                className="px-2 py-1 text-xs font-medium bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-700 border border-slate-300 rounded"
+                title="Insert link"
+              >
+                🔗 Insert link
+              </button>
+              <span className="text-xs text-slate-400 ml-auto">
+                {signaturePreview ? 'Preview (read-only)' : 'HTML allowed'}
+              </span>
+            </div>
+            {signaturePreview ? (
+              <div
+                data-testid="signature-preview-pane"
+                className="w-full px-3 py-2 border border-slate-300 rounded-b-lg text-sm bg-white min-h-[120px]"
+                // Trusted input — the workspace admin types this directly.
+                // Same trust model as the per-Campaign signature.
+                dangerouslySetInnerHTML={{
+                  __html: (form.signature || '<span class="text-slate-400">(signature is empty)</span>')
+                    .replace(/\n/g, '<br>'),
+                }}
+              />
+            ) : (
+              <textarea
+                ref={signatureRef}
+                id="inbox-signature"
+                rows={5}
+                value={form.signature}
+                onChange={(e) => update('signature', e.target.value)}
+                data-testid="inbox-signature"
+                placeholder={
+                  'Best,\nAnthony Colasante\n\n' +
+                  '<a href="https://csuitecode.com">csuitecode.com</a> · ' +
+                  '<a href="https://calendly.com/anthony">book a call</a>\n' +
+                  '<img src="https://example.com/logo.png" style="max-width:120px;">'
+                }
+                className="w-full px-3 py-2 border border-slate-300 rounded-b-lg text-sm text-slate-900 font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+            )}
             <p className="text-xs text-slate-500 mt-1">
               Appended to one-off sends from the Research-a-client tool when this inbox is the
-              from-address.  Replaces the AI's sign-off line if one was generated, otherwise
-              appended after a blank line.  Leave blank for no signature.
+              from-address.  HTML tags (links, images, formatting) render in the recipient's
+              inbox; newlines become line breaks.  Leave blank for no signature.
             </p>
           </div>
 

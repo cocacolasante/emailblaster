@@ -655,6 +655,107 @@ async def test_send_endpoint_appends_signature_from_picked_connected_account(cli
     assert "quick thought after your raise" in kwargs["text_body"]
 
 
+async def test_send_endpoint_html_signature_renders_as_real_html(client, monkeypatch, db_session):
+    """A signature containing <a>/<img> tags must reach the recipient as
+    real clickable links and rendered images.  Anti-regression: before
+    this change, the signature went through ``render_html`` which would
+    HTML-escape the tags into ``&lt;a&gt;`` etc."""
+    from app.models import ConnectedAccount
+
+    monkeypatch.setattr(
+        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
+    )
+    sig_html = (
+        'Best,\n<strong>Anthony</strong>\n'
+        '<a href="https://csuitecode.com">csuitecode.com</a>\n'
+        '<img src="https://example.com/logo.png" alt="CSuite Code" '
+        'style="max-width:120px;">'
+    )
+    db_session.add(ConnectedAccount(
+        label="Brand", email_address="brand@me.com",
+        imap_host="imap.x", imap_port=993, imap_use_ssl=True,
+        username="brand@me.com", password_encrypted="x",
+        signature=sig_html,
+    ))
+    await db_session.commit()
+
+    send_mock = AsyncMock(return_value="msg-html-sig")
+    with patch("app.routers.research_client.brevo.send_email", new=send_mock):
+        await client.post("/research-client/send", json={
+            "to_email": "j@example.com",
+            "subject": "Hi",
+            # Body has its own AI sign-off ("Best,\nAnthony") that must
+            # be stripped so the signature replaces it cleanly.
+            "body": "Hi Jane.\n\nQuick thought.\n\nBest,\nAnthony",
+            "sender_name": "Anthony",
+            "sender_email": "brand@me.com",
+        })
+
+    kwargs = send_mock.await_args.kwargs
+
+    # ── HTML body assertions ──────────────────────────────────────────
+    html = kwargs["html_body"]
+    # Body content preserved.
+    assert "Quick thought." in html
+    # The AI sign-off was stripped before render (not duplicated).
+    assert html.count("Anthony") == 1
+    # Signature tags came through as REAL HTML, not escaped.
+    assert '<a href="https://csuitecode.com">' in html
+    assert '<img src="https://example.com/logo.png"' in html
+    assert "<strong>" in html
+    # And the signature lives inside the <body> wrapper, not after.
+    body_idx = html.index("<body")
+    body_close_idx = html.index("</body>")
+    assert body_idx < html.index("csuitecode.com") < body_close_idx
+
+    # ── Plain-text body assertions ────────────────────────────────────
+    text = kwargs["text_body"]
+    assert "Quick thought." in text
+    # Anchor collapsed to "text (URL)".
+    assert "csuitecode.com (https://csuitecode.com)" in text
+    # Image rendered as bracketed placeholder.
+    assert "[image: CSuite Code — https://example.com/logo.png]" in text
+    # No raw HTML left in the text version.
+    assert "<a " not in text
+    assert "<img" not in text
+    assert "<strong>" not in text
+
+
+async def test_send_endpoint_plain_text_signature_still_works(client, monkeypatch, db_session):
+    """Backward compat: a plain-text signature (no HTML tags) must keep
+    working — newlines become <br> in the HTML body, identical newlines
+    survive in the text body."""
+    from app.models import ConnectedAccount
+
+    monkeypatch.setattr(
+        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
+    )
+    db_session.add(ConnectedAccount(
+        label="Brand", email_address="brand@me.com",
+        imap_host="imap.x", imap_port=993, imap_use_ssl=True,
+        username="brand@me.com", password_encrypted="x",
+        signature="Best,\nAnthony\ncsuitecode.com",
+    ))
+    await db_session.commit()
+
+    send_mock = AsyncMock(return_value="msg-plain-sig")
+    with patch("app.routers.research_client.brevo.send_email", new=send_mock):
+        await client.post("/research-client/send", json={
+            "to_email": "j@example.com",
+            "subject": "Hi",
+            "body": "Hi Jane.\n\nWorth a chat?",
+            "sender_name": "Anthony",
+            "sender_email": "brand@me.com",
+        })
+
+    kwargs = send_mock.await_args.kwargs
+    # HTML body: newlines in signature → <br>.
+    assert "Best,<br>" in kwargs["html_body"]
+    assert "csuitecode.com" in kwargs["html_body"]
+    # Text body: identical newlines.
+    assert "Best,\nAnthony\ncsuitecode.com" in kwargs["text_body"]
+
+
 async def test_send_endpoint_signature_replaces_ai_signoff(client, monkeypatch, db_session):
     """When the composed body ends with the AI's own sign-off ("Best,\\nName"),
     apply_signature swaps from there to the end — no duplicated sign-off."""
