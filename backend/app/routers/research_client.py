@@ -18,6 +18,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from anthropic import APIError, APIStatusError, AuthenticationError
@@ -35,7 +36,7 @@ from app.schemas.research_client import (
     SendClientEmailRequest,
     SendClientEmailResponse,
 )
-from app.services import brevo, compose_client, research_client
+from app.services import brevo, compose_client, research_cache, research_client
 from app.services.email_template import render_html, render_text
 from app.services.signature import (
     apply_signature,
@@ -50,17 +51,57 @@ router = APIRouter(prefix="/research-client", tags=["research-client"])
 
 
 @router.post("", response_model=ResearchClientResponse)
-async def research_client_endpoint(req: ResearchClientRequest) -> ResearchClientResponse:
+async def research_client_endpoint(
+    req: ResearchClientRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ResearchClientResponse:
     started = time.perf_counter()
 
-    research = await research_client.research_from_linkedin_url(
-        req.linkedin_url, req.research_mode,
-    )
-    if research.get("error") == "url_not_recognised_as_linkedin_profile":
+    # Cache key: ``linkedin:<slug>`` reuses the existing research_cache
+    # table (the bulk pipeline uses bare emails; this is namespaced so
+    # there's no collision risk).  Deep mode bypasses the cache — the
+    # user explicitly asked for fresh, deep research.  Cache TTL is
+    # ``RESEARCH_CACHE_TTL_DAYS`` (90 days by default).
+    slug, _name_guess = research_client.parse_linkedin_url(req.linkedin_url)
+    if not slug:
         raise HTTPException(
             status_code=400,
             detail="URL must be a LinkedIn profile URL like https://www.linkedin.com/in/<slug>/",
         )
+    cache_key = f"linkedin:{slug}"
+    is_deep = (req.research_mode or "").lower() == "deep"
+
+    research: dict[str, Any] | None = None
+    cache_hit = False
+    if not is_deep:
+        cached = await research_cache.lookup(db, cache_key)
+        if cached:
+            # ``from_cache`` is informational — surfaces in the UI as a
+            # tiny hint so the user knows why the call returned instantly.
+            cached["from_cache"] = True
+            research = cached
+            cache_hit = True
+
+    if research is None:
+        research = await research_client.research_from_linkedin_url(
+            req.linkedin_url, req.research_mode,
+        )
+        if research.get("error") == "url_not_recognised_as_linkedin_profile":
+            raise HTTPException(
+                status_code=400,
+                detail="URL must be a LinkedIn profile URL like https://www.linkedin.com/in/<slug>/",
+            )
+        # Only cache successful research — a ``found=False`` row would
+        # poison subsequent calls (they'd hit the cache and miss out on
+        # a retry that might find the prospect once they appear online).
+        if research.get("found"):
+            try:
+                await research_cache.upsert(db, cache_key, research)
+                await db.commit()
+            except Exception:  # noqa: BLE001
+                # Cache is a perf optimisation; don't fail the user
+                # call if the write hiccups.
+                pass
 
     try:
         composed = await compose_client.compose_for_client(

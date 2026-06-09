@@ -28,12 +28,30 @@ class Settings(BaseSettings):
     ANTHROPIC_RESEARCH_MODEL: str = "claude-haiku-4-5-20251001"
     # Web searches allowed per lead's research call.  Each search costs a tool
     # fee AND ingests result pages as input tokens, so this is a direct cost
-    # lever.  2-3 covers person + company; 5 was wasteful.
-    RESEARCH_WEB_SEARCH_MAX_USES: int = 3
-    # Freshness window for the cross-campaign research cache (keyed by email).
-    # A second campaign adding the same email reuses the cached research_data
-    # if it was refreshed within this many days, skipping the API call.
+    # lever.  Default 2: one search for the person, one for the company.
+    # Bumping to 3 surfaces marginal extra signal at +50% cost; we found
+    # that 2 covers the typical lead profile well enough.
+    RESEARCH_WEB_SEARCH_MAX_USES: int = 2
+    # Freshness window for the cross-campaign research cache (keyed by email
+    # or by ``linkedin:<slug>`` for the one-off research-a-client tool).
+    # A second campaign adding the same email — or a second click on the
+    # same LinkedIn URL — reuses the cached research_data if it was
+    # refreshed within this many days, skipping the API call.
     RESEARCH_CACHE_TTL_DAYS: int = 90
+
+    # Research-a-client (one-off LinkedIn URL → outreach) — same extraction
+    # task as the bulk pipeline, so we run it on Haiku too.  Was previously
+    # ``settings.ANTHROPIC_MODEL`` (Sonnet) which made every "Research a
+    # client" click ~4x more expensive than necessary.  Deep mode still
+    # gets a larger search budget than fast mode but uses the same Haiku
+    # model — the depth is about WHERE we search, not which model writes.
+    ANTHROPIC_RESEARCH_CLIENT_MODEL: str = "claude-haiku-4-5-20251001"
+    # Per-call web_search budget for the one-off tool.  Fast mode 2 covers
+    # identity + a recent news item; deep mode 5 gives Claude room to find
+    # podcast / GitHub / Substack signal that fast skips.  Down from 3/8
+    # (cost-driven; 8 was rarely surfacing anything the 5th call didn't).
+    RESEARCH_CLIENT_FAST_WEB_SEARCH_MAX_USES: int = 2
+    RESEARCH_CLIENT_DEEP_WEB_SEARCH_MAX_USES: int = 5
 
     # Social Listening Radar — discovery is "find LinkedIn posts matching
     # this query, extract structured fields from web-search results."  Same

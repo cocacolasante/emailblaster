@@ -344,6 +344,257 @@ async def test_happy_path_linkedin_dm(client):
     assert body["char_count"] <= 300
 
 
+async def test_research_uses_haiku_research_client_model_not_sonnet(client):
+    """Cost optimisation: research-a-client switched from
+    settings.ANTHROPIC_MODEL (Sonnet) to
+    settings.ANTHROPIC_RESEARCH_CLIENT_MODEL (Haiku) — same
+    extraction task as the bulk pipeline, ~4x cheaper."""
+    from app.config import settings as app_settings
+    captured = {}
+
+    async def _spy(**kwargs):
+        captured["kwargs"] = kwargs
+        return _anthropic_text('{"found": false, "person_news": [], "company_news": []}')
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=_spy)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(
+            create=AsyncMock(return_value=_anthropic_text('{"subject": "s", "body": "b"}')),
+        )),
+    ):
+        await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/jane-test/",
+            "goal": "x" * 10,
+            "research_mode": "fast",
+            "output_kind": "email",
+            "char_limit": 400,
+        })
+
+    assert captured["kwargs"]["model"] == app_settings.ANTHROPIC_RESEARCH_CLIENT_MODEL
+    # And the model is in fact Haiku by default — locks the default.
+    assert "haiku" in captured["kwargs"]["model"].lower()
+    # Fast mode uses the FAST budget; deep would use the deeper one.
+    assert captured["kwargs"]["tools"][0]["max_uses"] == app_settings.RESEARCH_CLIENT_FAST_WEB_SEARCH_MAX_USES
+    assert app_settings.RESEARCH_CLIENT_FAST_WEB_SEARCH_MAX_USES == 2  # default
+    assert app_settings.RESEARCH_CLIENT_DEEP_WEB_SEARCH_MAX_USES == 5  # default
+
+
+async def test_research_deep_mode_uses_deep_max_uses(client):
+    """Deep mode gets the larger search budget so Claude can hunt
+    podcast / GitHub / substack signal that fast mode skips."""
+    from app.config import settings as app_settings
+    captured = {}
+
+    async def _spy(**kwargs):
+        captured["kwargs"] = kwargs
+        return _anthropic_text('{"found": false, "person_news": [], "company_news": []}')
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=_spy)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(
+            create=AsyncMock(return_value=_anthropic_text('{"subject": "s", "body": "b"}')),
+        )),
+    ):
+        await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/deep-test/",
+            "goal": "x" * 10,
+            "research_mode": "deep",
+            "output_kind": "linkedin_dm",
+            "char_limit": 300,
+        })
+
+    assert captured["kwargs"]["tools"][0]["max_uses"] == app_settings.RESEARCH_CLIENT_DEEP_WEB_SEARCH_MAX_USES
+
+
+async def test_research_cache_hit_skips_anthropic_research(client, db_session):
+    """Second click on the same LinkedIn URL within the cache TTL must
+    skip the Anthropic research call entirely — that's the dominant
+    cost lever on repeat lookups."""
+    from app.models import ResearchCache
+    from datetime import datetime, timezone
+
+    # Pre-seed the cache for this slug.
+    db_session.add(ResearchCache(
+        email="linkedin:jane-cached",
+        research_data={
+            "first_name": "Jane", "last_name": "Cached",
+            "headline": "From cache", "company": "Acme",
+            "company_website": "acme.io", "job_title": "CEO",
+            "industry": "SaaS", "found": True, "quality": "rich",
+            "person_news": ["cached news (Apr 2026)"],
+            "company_news": [], "recent_updates": [],
+            "company_description": "cached",
+        },
+        refreshed_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    research_mock = AsyncMock(
+        return_value=_anthropic_text('{"found": false}')
+    )
+    compose_mock = AsyncMock(
+        return_value=_anthropic_text('{"subject": "s", "body": "b"}')
+    )
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=research_mock)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=compose_mock)),
+    ):
+        resp = await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/jane-cached/",
+            "goal": "Book a call",
+            "research_mode": "fast",
+            "output_kind": "email",
+            "char_limit": 600,
+        })
+
+    assert resp.status_code == 200, resp.text
+    # The cache hit means the research Anthropic call NEVER happened.
+    research_mock.assert_not_called()
+    # Compose still runs (we need the actual outreach copy).
+    compose_mock.assert_called_once()
+    # And the response surfaces from_cache=True so the UI can hint.
+    assert resp.json()["research"]["from_cache"] is True
+    assert resp.json()["profile"]["first_name"] == "Jane"
+
+
+async def test_research_cache_miss_writes_after_successful_research(client, db_session):
+    """First call on an unseen URL hits Anthropic, then writes to the
+    cache so subsequent calls within the TTL are free."""
+    from app.models import ResearchCache
+    from sqlalchemy import select as _select
+
+    research_response = (
+        '{"first_name": "Bob", "last_name": "Fresh", '
+        '"headline": "VP", "company": "Beta", '
+        '"company_website": "beta.com", "job_title": "VP Eng", '
+        '"industry": "FinTech", "person_news": ["talk (Apr 2026)"], '
+        '"company_news": [], "company_description": "infra", '
+        '"recent_updates": [], "found": true}'
+    )
+    research_mock = AsyncMock(return_value=_anthropic_text(research_response))
+    compose_mock = AsyncMock(
+        return_value=_anthropic_text('{"subject": "s", "body": "b"}')
+    )
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=research_mock)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=compose_mock)),
+    ):
+        resp = await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/bob-fresh/",
+            "goal": "Book a call",
+            "research_mode": "fast",
+            "output_kind": "email",
+            "char_limit": 600,
+        })
+
+    assert resp.status_code == 200
+    research_mock.assert_called_once()
+
+    # Cache row was written for the slug-namespaced key.
+    cached = await db_session.scalar(
+        _select(ResearchCache).where(ResearchCache.email == "linkedin:bob-fresh")
+    )
+    assert cached is not None
+    assert cached.research_data["first_name"] == "Bob"
+
+
+async def test_research_deep_mode_bypasses_cache(client, db_session):
+    """Deep mode explicitly asks for fresh research — must NOT serve
+    from the cache even when a hit exists.  Otherwise the user's
+    "give me more depth" click would silently no-op."""
+    from app.models import ResearchCache
+    from datetime import datetime, timezone
+
+    db_session.add(ResearchCache(
+        email="linkedin:carol-deep",
+        research_data={"first_name": "Carol", "found": True, "quality": "low",
+                       "person_news": [], "company_news": [], "recent_updates": []},
+        refreshed_at=datetime.now(timezone.utc),
+    ))
+    await db_session.commit()
+
+    research_response = (
+        '{"first_name": "Carol", "last_name": "Deep", '
+        '"headline": "Founder", "company": "Gamma", '
+        '"company_website": "gamma.com", "job_title": "CEO", '
+        '"industry": "Health", "person_news": ["DEEP news (May 2026)"], '
+        '"company_news": [], "company_description": "deep", '
+        '"recent_updates": [], "found": true}'
+    )
+    research_mock = AsyncMock(return_value=_anthropic_text(research_response))
+    compose_mock = AsyncMock(
+        return_value=_anthropic_text('{"subject": "s", "body": "b"}')
+    )
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=research_mock)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=compose_mock)),
+    ):
+        resp = await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/carol-deep/",
+            "goal": "Book a call",
+            "research_mode": "deep",
+            "output_kind": "email",
+            "char_limit": 600,
+        })
+
+    # Anthropic WAS called despite the cache being primed.
+    research_mock.assert_called_once()
+    assert "DEEP news" in resp.json()["research"]["person_news"][0]
+
+
+async def test_research_cache_no_write_when_found_false(client, db_session):
+    """If Anthropic comes back with ``found=false`` (no real identity),
+    don't poison the cache — a future call might succeed."""
+    from app.models import ResearchCache
+    from sqlalchemy import select as _select
+
+    research_mock = AsyncMock(
+        return_value=_anthropic_text('{"found": false, "first_name": "", "last_name": "",'
+                                     ' "person_news": [], "company_news": [], "recent_updates": []}')
+    )
+    compose_mock = AsyncMock(
+        return_value=_anthropic_text('{"subject": "s", "body": "b"}')
+    )
+
+    with patch.object(
+        research_client, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=research_mock)),
+    ), patch(
+        "app.workers.compose._get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=compose_mock)),
+    ):
+        await client.post("/research-client", json={
+            "linkedin_url": "https://www.linkedin.com/in/unknown-person/",
+            "goal": "Book a call",
+            "research_mode": "fast",
+            "output_kind": "email",
+            "char_limit": 600,
+        })
+
+    cached = await db_session.scalar(
+        _select(ResearchCache).where(ResearchCache.email == "linkedin:unknown-person")
+    )
+    assert cached is None
+
+
 async def test_anthropic_auth_failure_returns_502_with_actionable_detail(client):
     """A bad/expired ANTHROPIC_API_KEY surfaces as a 502 with a clear
     remediation hint, not a generic 500.  Regression: prior to the fix

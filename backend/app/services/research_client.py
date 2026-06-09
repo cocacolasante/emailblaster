@@ -127,7 +127,10 @@ async def research_from_linkedin_url(
         return {**_DEFAULT_RESEARCH, "first_name": name_guess.split(" ")[0]}
 
     is_deep = (mode or "").lower() == "deep"
-    max_uses = 8 if is_deep else 3
+    max_uses = (
+        settings.RESEARCH_CLIENT_DEEP_WEB_SEARCH_MAX_USES if is_deep
+        else settings.RESEARCH_CLIENT_FAST_WEB_SEARCH_MAX_USES
+    )
     today = datetime.now(timezone.utc).date()
     # "Within 6 months" is the freshness floor.  Anything outside this
     # window must be excluded — stale references in a cold outreach
@@ -218,7 +221,14 @@ async def research_from_linkedin_url(
 
     try:
         message = await _get_client().messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            # Was settings.ANTHROPIC_MODEL (Sonnet).  This research call
+            # is extraction-from-web-search-results — exact same task
+            # profile as the bulk pipeline's research_person_web, which
+            # already runs on Haiku.  Switching here makes "Research a
+            # client" clicks ~4x cheaper on the dominant ingested-token
+            # cost without measurable quality loss for the
+            # identity-extraction + recent-news extraction job.
+            model=settings.ANTHROPIC_RESEARCH_CLIENT_MODEL,
             max_tokens=3000,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": max_uses}],
             messages=[{"role": "user", "content": prompt}],
