@@ -22,6 +22,7 @@ from app.models import (
     EmailEventType,
     Lead,
     Suppression,
+    canonical_email,
     SuppressionReason,
 )
 
@@ -139,9 +140,9 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
     suppression_reason = SUPPRESSION_MAP.get(event_type)
     if suppression_reason is not None:
         existing_sup = await db.scalar(
-            select(Suppression).where(Suppression.email == lead.email)
+            select(Suppression).where(Suppression.email == canonical_email(lead.email))
         )
         if existing_sup is None:
-            db.add(Suppression(email=lead.email, reason=suppression_reason))
+            db.add(Suppression(email=canonical_email(lead.email), reason=suppression_reason))
 
     return True

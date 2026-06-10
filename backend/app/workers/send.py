@@ -29,9 +29,11 @@ from app.models import (
     Lead,
     SendStatus,
     Suppression,
+    canonical_email,
 )
 from app.services import brevo
-from app.services.email_template import render_html, render_text
+from app.services.email_template import render_html, render_text  # noqa: F401 — render_* kept for callers/tests that patch here
+from app.services.signature import render_email_with_signature
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -230,7 +232,7 @@ async def check_send_gates(
           per Brevo / per-campaign rate-limit policy.
     """
     sup = await session.scalar(
-        select(Suppression).where(Suppression.email == lead.email)
+        select(Suppression).where(Suppression.email == canonical_email(lead.email))
     )
     if sup is not None:
         return {"ok": False, "reason": "suppressed"}
@@ -283,7 +285,12 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             if not gates.get("ok"):
                 reason = gates["reason"]
                 if reason == "suppressed":
-                    lead.send_status = SendStatus.FAILED
+                    # Deliberate ignore / unsubscribe / bounce — a
+                    # TERMINAL state distinct from FAILED so the lead
+                    # doesn't surface in the campaign error list or get
+                    # re-enqueued by retry-failed in a deterministic
+                    # fail loop.
+                    lead.send_status = SendStatus.SUPPRESSED
                     await session.commit()
                     return {"status": "suppressed"}
                 if reason == "paused":
@@ -320,8 +327,17 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             # the row lock; when it unblocks (after our commit below) it
             # reads SendStatus.SENT and short-circuits, preventing the
             # double-send the audit flagged.
-            html_body = render_html(ctx["body"])
-            text_body = render_text(ctx["body"])
+            #
+            # render_email_with_signature is the SAME renderer the
+            # research-client one-off send uses: an HTML signature
+            # (toolbar-inserted <a>/<img>) renders as real HTML here too,
+            # instead of being escaped into visible angle brackets.  The
+            # composed_body already carries the signature text (merged by
+            # apply_signature at compose time) — the helper strips that
+            # tail idempotently before re-rendering, so nothing doubles.
+            html_body, text_body = render_email_with_signature(
+                ctx["body"], campaign.signature,
+            )
             message_id = await brevo.send_email(
                 to_email=ctx["to_email"],
                 to_name=ctx["to_name"],

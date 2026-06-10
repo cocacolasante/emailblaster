@@ -7,22 +7,20 @@ plain append when no recognizable sign-off is found.  It is idempotent — a
 body that already ends with the signature is returned unchanged — so the
 bulk-apply endpoint and a re-compose can run safely more than once.
 
-The HTML-signature path (used by the research-client one-off send so the
-user can embed ``<img>`` and ``<a>`` tags in their per-inbox signature)
-operates differently: rather than concatenating signature text into the
-body, the send endpoint:
+HTML signatures (links, images, basic formatting typed via the Settings
+toolbar) are rendered by ``render_email_with_signature`` — the ONE shared
+entry point both the research-client one-off send and the bulk campaign
+send path use.  It:
 
-  1. Strips the AI sign-off from the plain-text body via
-     ``strip_signoff``.
+  1. Strips the signature (raw or text form) off the body tail when it's
+     already there (idempotency), else strips the AI sign-off line.
   2. Renders the stripped body through the standard
      ``render_html`` / ``render_text``.
-  3. Appends the signature via ``signature_to_html`` (preserves any
-     HTML tags the user typed, converts naked newlines to ``<br>``) for
-     the HTML body, and via ``signature_to_text`` (collapses tags into
-     plain-text equivalents) for the text body.
-
-This keeps the existing campaign-pipeline ``apply_signature`` behaviour
-unchanged while letting the research-client signature carry real HTML.
+  3. Appends the signature via ``signature_to_html`` (allowlisted tags
+     pass through verbatim, plain text is HTML-escaped, naked newlines
+     outside tags become ``<br>``) for the HTML body, and via
+     ``signature_to_text`` (collapses tags into plain-text equivalents)
+     for the text body.
 """
 from __future__ import annotations
 
@@ -50,49 +48,10 @@ def _normalize_closing(line: str) -> str:
     return line.strip().rstrip(",.!:;").strip().lower()
 
 
-def apply_signature(body: str | None, signature: str | None) -> str:
-    """Return ``body`` with its sign-off replaced by ``signature``.
-
-    - Empty signature → body unchanged.
-    - Body already ending with the signature → unchanged (idempotent).
-    - A recognizable closing line near the end → everything from it to the
-      end is replaced with the signature.
-    - Otherwise the signature is appended after a blank line.
-    """
-    body = (body or "").rstrip()
-    sig = (signature or "").strip()
-    if not sig:
-        return body
-    if not body:
-        return sig
-    if body.rstrip().endswith(sig):
-        return body  # idempotent — already applied
-
-    lines = body.split("\n")
-    cut: int | None = None
-    for i in range(len(lines) - 1, -1, -1):
-        if len(lines) - 1 - i > _MAX_SIGNOFF_LOOKBACK:
-            break
-        if _normalize_closing(lines[i]) in _CLOSINGS:
-            cut = i
-            break
-
-    if cut is not None:
-        kept = "\n".join(lines[:cut]).rstrip()
-        return f"{kept}\n\n{sig}" if kept else sig
-    # No sign-off detected — append.
-    return f"{body}\n\n{sig}"
-
-
 def strip_signoff(body: str | None) -> str:
     """Return ``body`` with the AI's sign-off block stripped if one is
-    detected near the end.  Mirrors ``apply_signature``'s closing-line
-    detection but does not append anything in its place — the caller
-    (the research-client send endpoint) emits the signature separately
-    so that an HTML-tagged signature can render as real HTML instead of
-    being escaped through ``render_html``.
-
-    Empty/None body → empty string."""
+    detected near the end (a ``_CLOSINGS`` line within the last
+    ``_MAX_SIGNOFF_LOOKBACK`` lines).  Empty/None body → empty string."""
     body = (body or "").rstrip()
     if not body:
         return ""
@@ -109,24 +68,67 @@ def strip_signoff(body: str | None) -> str:
     return "\n".join(lines[:cut]).rstrip()
 
 
+def apply_signature(body: str | None, signature: str | None) -> str:
+    """Return ``body`` with its sign-off replaced by ``signature``.
+
+    - Empty signature → body unchanged.
+    - Body already ending with the signature → unchanged (idempotent).
+    - A recognizable closing line near the end → everything from it to the
+      end is replaced with the signature.
+    - Otherwise the signature is appended after a blank line.
+    """
+    body = (body or "").rstrip()
+    sig = (signature or "").strip()
+    if not sig:
+        return body
+    if not body:
+        return sig
+    if body.endswith(sig):
+        return body  # idempotent — already applied
+
+    kept = strip_signoff(body)
+    return f"{kept}\n\n{sig}" if kept else sig
+
+
 # ---- HTML-signature renderers -----------------------------------------
 
-# Matches an opening tag of the form `<tagname ...>` so we can tell which
-# parts of the signature are markup the user typed (preserved as-is) and
-# which are naked text (escaped + newlines → <br>).  Used by
-# ``signature_to_html``.
-_HTML_TAG_RE = re.compile(r"<[a-zA-Z!/][^>]*>")
+# Allowlist of tag names a signature may legitimately contain.  Anything
+# OUTSIDE this list (including plain-text angle-bracket content like
+# "<Acme & Co>") is treated as text and HTML-escaped so mail clients
+# render it instead of silently dropping a fake tag.
+_ALLOWED_SIG_TAGS = (
+    "a|img|br|p|div|span|strong|em|b|i|u|hr|small|sub|sup|"
+    "table|tbody|thead|tr|td|th|font|center"
+)
+_HTML_TAG_RE = re.compile(
+    rf"</?(?:{_ALLOWED_SIG_TAGS})\b[^>]*/?>",
+    re.IGNORECASE,
+)
 
 # Default inline style applied to bare ``<a>`` tags in a signature.  Gmail
 # and a handful of mobile clients strip the user-agent default <a>
 # styling, so we pin blue + underlined explicitly to keep links readable.
-# Only injected when the anchor doesn't carry its own ``style=`` already —
+# Only injected when the anchor doesn't carry its own ``style=`` attribute —
 # a user who wants a different colour can set ``style="color:#000;…"``
 # and we won't override it.
+# NOTE: the frontend Insert-link snippet bakes the same value
+# (frontend/src/utils/signaturePreview.js DEFAULT_LINK_STYLE) — keep the
+# two in sync when changing.
 _DEFAULT_LINK_STYLE = "color:#1d4ed8;text-decoration:underline;"
 
-_ANCHOR_OPEN_RE = re.compile(r"<a\s+([^>]*)>", re.IGNORECASE)
+# ``(\s[^>]*)?`` instead of ``\s+[^>]*`` so a bare ``<a>`` (no attributes)
+# also matches and gets the default style.
+_ANCHOR_OPEN_RE = re.compile(r"<a(\s[^>]*)?>", re.IGNORECASE)
 _HAS_STYLE_ATTR_RE = re.compile(r"\bstyle\s*=", re.IGNORECASE)
+# Strips quoted attribute VALUES before testing for a style attribute, so
+# ``href="...?style=compact"`` doesn't false-positive as "already styled".
+_QUOTED_VALUE_RE = re.compile(r'"[^"]*"|\'[^\']*\'')
+
+
+def _has_style_attribute(attrs: str) -> bool:
+    """True when the attribute string carries a real ``style=`` attribute
+    (not a ``style=`` substring inside a quoted value like an href URL)."""
+    return bool(_HAS_STYLE_ATTR_RE.search(_QUOTED_VALUE_RE.sub("", attrs)))
 
 
 def _inject_default_link_style(html: str) -> str:
@@ -134,16 +136,16 @@ def _inject_default_link_style(html: str) -> str:
     already carry an inline ``style`` attribute.  Idempotent — anchors
     already styled are returned unchanged."""
     def _repl(m: re.Match[str]) -> str:
-        attrs = m.group(1)
-        if _HAS_STYLE_ATTR_RE.search(attrs):
+        attrs = m.group(1) or ""
+        if attrs and _has_style_attribute(attrs):
             return m.group(0)  # leave user styling alone
-        # Insert style attribute, preserving the existing attribute string.
-        return f'<a {attrs.rstrip()} style="{_DEFAULT_LINK_STYLE}">'
+        attrs = attrs.strip()
+        if attrs:
+            return f'<a {attrs} style="{_DEFAULT_LINK_STYLE}">'
+        return f'<a style="{_DEFAULT_LINK_STYLE}">'
     return _ANCHOR_OPEN_RE.sub(_repl, html)
 
-# Tags we know how to translate to plain text.  Anything not in this map
-# is stripped (its inner text content is kept).  Used by
-# ``signature_to_text``.
+
 _VOID_TAG_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _PARA_OPEN_RE = re.compile(r"<p\b[^>]*>", re.IGNORECASE)
 _PARA_CLOSE_RE = re.compile(r"</p\s*>", re.IGNORECASE)
@@ -156,41 +158,40 @@ _IMG_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_TAG_RE = re.compile(r"<[^>]+>")
-_ENTITIES = {
-    "&amp;": "&", "&lt;": "<", "&gt;": ">",
-    "&quot;": '"', "&#39;": "'", "&apos;": "'",
-    "&nbsp;": " ",
-}
 
 
 def signature_to_html(signature: str | None) -> str:
     """Render the signature for the HTML email body.
 
-    Preserves any HTML tags the user typed (``<a>`` for links, ``<img>``
-    for inline images, basic formatting) so they reach the recipient's
-    inbox as real HTML.  Naked newlines OUTSIDE of tags become ``<br>``
-    so a multi-line plain-text signature still renders with line breaks.
-    Text outside of tags is NOT escaped — the user controls this field
-    in Settings and is trusted to type valid HTML (this is the same
-    trust model as the per-Campaign signature).
+    Allowlisted HTML tags (``<a>``, ``<img>``, basic formatting — see
+    ``_ALLOWED_SIG_TAGS``) pass through verbatim so they reach the
+    recipient's inbox as real HTML.  Everything else — including
+    plain-text angle-bracket content like ``<Acme & Co>`` — is treated
+    as text: HTML-escaped so mail clients display it instead of dropping
+    a fake tag.  Naked newlines outside tags become ``<br>`` so a
+    multi-line plain-text signature still renders with line breaks.
 
     Empty/None signature → empty string."""
     sig = (signature or "").strip()
     if not sig:
         return ""
-    # Walk the string: tags pass through verbatim; text between tags has
-    # naked newlines converted to <br>.  No HTML-escape — see docstring.
+
+    def _text_chunk(chunk: str) -> str:
+        # quote=False keeps " and ' raw — they're fine in text content
+        # and escaping them would garble apostrophes in names.
+        return _html.escape(chunk, quote=False).replace("\n", "<br>\n")
+
     out: list[str] = []
     last_end = 0
     for match in _HTML_TAG_RE.finditer(sig):
         chunk = sig[last_end:match.start()]
         if chunk:
-            out.append(chunk.replace("\n", "<br>\n"))
+            out.append(_text_chunk(chunk))
         out.append(match.group(0))
         last_end = match.end()
     tail = sig[last_end:]
     if tail:
-        out.append(tail.replace("\n", "<br>\n"))
+        out.append(_text_chunk(tail))
     rendered = "".join(out)
     # Pin the default link styling so emails look the same in clients
     # that strip the user-agent default <a> styling (Gmail, some mobile).
@@ -206,7 +207,9 @@ def signature_to_text(signature: str | None) -> str:
     - ``<br>`` → newline.
     - ``<p>`` and ``</p>`` → newline (paragraph break).
     - Any other tag is stripped, its inner text content preserved.
-    - Common HTML entities (``&amp;`` etc.) are decoded.
+    - HTML entities are decoded via stdlib ``html.unescape`` (handles
+      every named + numeric entity, and decodes ``&amp;`` last so nested
+      escapes like ``&amp;lt;`` aren't double-decoded).
 
     The result is what a plain-text email client (or someone who's
     disabled HTML rendering) will actually see for the signature block.
@@ -235,9 +238,7 @@ def signature_to_text(signature: str | None) -> str:
     out = _PARA_CLOSE_RE.sub("\n", out)
     # Strip remaining tags, keep their inner text.
     out = _GENERIC_TAG_RE.sub("", out)
-    # Decode common entities.
-    for ent, repl in _ENTITIES.items():
-        out = out.replace(ent, repl)
+    out = _html.unescape(out)
     # Collapse runs of 3+ newlines down to 2 — a paragraph break is fine.
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
@@ -247,3 +248,52 @@ def _strip_inner_tags(text: str) -> str:
     """Helper for the anchor substitution above — link text might
     contain nested ``<strong>``/``<em>`` etc.; reduce to plain words."""
     return _GENERIC_TAG_RE.sub("", text)
+
+
+# ---- Shared body + signature renderer ----------------------------------
+
+def render_email_with_signature(
+    body: str | None, signature: str | None,
+) -> tuple[str, str]:
+    """Render ``(html_body, text_body)`` for an outgoing email whose
+    signature may contain HTML.
+
+    This is the single entry point BOTH send paths use — the
+    research-client one-off send and the bulk campaign send — so an HTML
+    signature renders identically everywhere instead of being
+    HTML-escaped into visible angle brackets on one path.
+
+    Idempotency: the body may already carry the signature — the bulk
+    pipeline merges it at compose time via ``apply_signature``, and a
+    user can paste a previously-signed draft into the one-off send form.
+    The raw form AND the plain-text form (``signature_to_text``) are both
+    checked and stripped off the tail before re-rendering, so the
+    signature never appears twice.  When neither form is present, the
+    AI's sign-off line is stripped instead (the signature replaces it).
+    """
+    from app.services.email_template import render_html, render_text
+
+    body = (body or "").rstrip()
+    sig = (signature or "").strip()
+    if not sig:
+        return render_html(body), render_text(body)
+
+    sig_text = signature_to_text(sig)
+    if body.endswith(sig):
+        stripped = body[: -len(sig)].rstrip()
+    elif sig_text and body.endswith(sig_text):
+        stripped = body[: -len(sig_text)].rstrip()
+    else:
+        stripped = strip_signoff(body)
+
+    html_body = render_html(stripped)
+    sig_html = signature_to_html(sig)
+    html_body = html_body.replace(
+        "</body>",
+        '<div class="signature" style="margin-top: 1.5em; '
+        'padding-top: 1em; border-top: 1px solid #eee;">'
+        f"{sig_html}</div>\n</body>",
+        1,
+    )
+    text_body = render_text(stripped).rstrip() + "\n\n" + sig_text
+    return html_body, text_body

@@ -253,3 +253,90 @@ def test_signature_to_text_empty_signature_returns_empty():
     from app.services.signature import signature_to_text
     assert signature_to_text(None) == ""
     assert signature_to_text("") == ""
+
+
+# ---- Review-fix regressions -------------------------------------------------
+
+def test_signature_to_html_escapes_plain_text_angle_brackets():
+    """Plain-text angle-bracket content (NOT an allowlisted tag) must be
+    HTML-escaped so mail clients display it instead of silently dropping
+    a fake tag.  Regression: '<Acme & Co>' used to pass through verbatim
+    and vanish in the recipient's client."""
+    from app.services.signature import signature_to_html
+    out = signature_to_html("CEO <Acme & Co>\na < b")
+    assert "&lt;Acme &amp; Co&gt;" in out
+    assert "a &lt; b" in out
+    # And no un-escaped fake tag survived.
+    assert "<Acme" not in out
+
+
+def test_signature_to_html_default_style_not_fooled_by_style_in_href():
+    """'style=' inside a quoted href value must NOT suppress the default
+    link styling — only a real style attribute does."""
+    from app.services.signature import signature_to_html
+    out = signature_to_html(
+        '<a href="https://x.com/book?style=compact">book</a>'
+    )
+    assert "color:#1d4ed8" in out  # default injected despite ?style= in URL
+
+
+def test_signature_to_html_styles_bare_anchor_without_attributes():
+    from app.services.signature import signature_to_html
+    out = signature_to_html("<a>click</a>")
+    assert 'style="color:#1d4ed8;text-decoration:underline;"' in out
+
+
+def test_signature_to_text_does_not_double_decode_nested_entities():
+    """'&amp;lt;' means the user wants the literal text '&lt;' displayed.
+    The old hand-rolled decode loop replaced '&amp;' FIRST, producing
+    '&lt;' then '<' — html.unescape decodes correctly in one pass."""
+    from app.services.signature import signature_to_text
+    out = signature_to_text("tips &amp;lt;3 from us")
+    assert "&lt;3" in out
+    assert "<3" not in out
+
+
+def test_render_email_with_signature_idempotent_on_raw_signature_tail():
+    """A body that already ends with the raw signature (apply_signature
+    merged it at compose time) must not get it appended twice."""
+    from app.services.signature import render_email_with_signature
+    sig = "Best,\nAnthony\ncsuitecode.com"
+    body = "Hi Jane.\n\nQuick thought.\n\n" + sig
+    html_body, text_body = render_email_with_signature(body, sig)
+    # The signature contact line appears exactly once in the text body.
+    assert text_body.count("csuitecode.com") == 1
+    assert html_body.count("csuitecode.com") == 1
+
+
+def test_render_email_with_signature_idempotent_on_text_form_tail():
+    """A body ending with the signature's PLAIN-TEXT form (e.g. the user
+    pasted a previously-sent email whose text body carried the rendered
+    signature) is also recognised and not doubled."""
+    from app.services.signature import render_email_with_signature, signature_to_text
+    sig = '<a href="https://csuitecode.com">csuitecode.com</a>\nAnthony'
+    sig_text = signature_to_text(sig)
+    body = "Hi Jane.\n\nQuick thought.\n\n" + sig_text
+    html_body, text_body = render_email_with_signature(body, sig)
+    assert text_body.count("csuitecode.com (https://csuitecode.com)") == 1
+    # HTML body carries the real anchor exactly once.
+    assert html_body.count('href="https://csuitecode.com"') == 1
+
+
+def test_render_email_with_signature_no_signature_plain_render():
+    from app.services.signature import render_email_with_signature
+    html_body, text_body = render_email_with_signature("Hi.\n\nBye.", None)
+    assert "Hi." in html_body and "Bye." in html_body
+    assert text_body == "Hi.\n\nBye."
+    assert "signature" not in html_body  # no signature div injected
+
+
+def test_render_email_with_signature_strips_ai_signoff():
+    """No signature in the body yet + an AI sign-off at the tail → the
+    sign-off is replaced by the signature (not stacked above it)."""
+    from app.services.signature import render_email_with_signature
+    sig = "—\nAnthony · csuitecode.com"
+    body = "Hi Jane.\n\nWorth a chat?\n\nBest,\nAnthony"
+    html_body, text_body = render_email_with_signature(body, sig)
+    # Sign-off line gone; signature present once.
+    assert "Best," not in text_body
+    assert text_body.count("csuitecode.com") == 1

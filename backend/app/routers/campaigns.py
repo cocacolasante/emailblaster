@@ -26,6 +26,7 @@ from app.models import (
     SendStatus,
     Sequence,
     SequenceNode,
+    Suppression,
 )
 from app.workers.send import compute_next_send_window
 from app.schemas.campaign import (
@@ -764,12 +765,19 @@ async def re_enroll_halted_leads(
     from datetime import timezone
     await _get_or_404(db, campaign_id)
 
+    # Exclude leads whose email is on the workspace suppression list —
+    # re-enrolling them would resume LinkedIn outreach to deliberately
+    # ignored / unsubscribed prospects (the email step would still gate,
+    # but LinkedIn steps fire from the sequencer).  func.lower keeps the
+    # comparison robust against any legacy mixed-case lead rows.
+    suppressed_emails = select(Suppression.email)
     halted_states = (await db.execute(
         select(LeadSequenceState)
         .join(Lead, Lead.id == LeadSequenceState.lead_id)
         .where(
             Lead.campaign_id == campaign_id,
             LeadSequenceState.status == LeadSequenceStatus.HALTED,
+            func.lower(Lead.email).notin_(suppressed_emails),
         )
     )).scalars().all()
 

@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   getLeadById,
-  getLeadDetail,
   ignoreLead,
   listAllLeads,
   listCampaigns,
@@ -17,6 +16,10 @@ const STATUS_CLASSES = {
   scheduled: 'bg-amber-100 text-amber-700',
   sent: 'bg-emerald-100 text-emerald-700',
   failed: 'bg-red-100 text-red-700',
+  // Terminal state for ignored / unsubscribed / bounced emails —
+  // distinct from failed so the user can tell a deliberate ignore from
+  // a delivery problem at a glance.
+  suppressed: 'bg-red-50 text-red-600',
 };
 
 function StatusPill({ value }) {
@@ -194,20 +197,16 @@ function fmtTime(iso) {
 function LeadCrmModal({ lead, onClose }) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  // New cross-campaign endpoint carries the full timeline.  Keep the
-  // legacy per-campaign call as a fallback so a delete-while-open or
-  // routing change doesn't leave the modal blank.
-  const { data: detail } = useQuery({
+  // Single source of truth: the cross-campaign detail endpoint with the
+  // embedded timeline + suppression state.  (A legacy per-campaign
+  // fallback used to live here, but it double-fetched on every open and
+  // its response lacked is_suppressed/history — wrong button states
+  // whenever it won the race.  Frontend and backend deploy atomically,
+  // so the fallback bought nothing.)
+  const { data: view } = useQuery({
     queryKey: ['lead-detail-v2', lead.id],
     queryFn: () => getLeadById(lead.id),
   });
-  const { data: legacyDetail } = useQuery({
-    queryKey: ['lead-detail', lead.campaign_id, lead.id],
-    queryFn: () => getLeadDetail(lead.campaign_id, lead.id),
-    // Avoids a wasted call when the new endpoint succeeds first.
-    enabled: !detail,
-  });
-  const view = detail || legacyDetail;
 
   const [notes, setNotes] = useState('');
   const [hydrated, setHydrated] = useState(false);
@@ -223,7 +222,6 @@ function LeadCrmModal({ lead, onClose }) {
     mutationFn: () => updateLeadEmail(lead.campaign_id, lead.id, { notes }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
-      queryClient.invalidateQueries({ queryKey: ['lead-detail', lead.campaign_id, lead.id] });
       queryClient.invalidateQueries({ queryKey: ['all-leads'] });
       toast.success('Notes saved');
     },

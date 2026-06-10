@@ -906,6 +906,61 @@ async def test_unignore_lead_removes_suppression(client, db_session):
     assert state.status == LeadSequenceStatus.HALTED
 
 
+async def test_re_enroll_halted_skips_suppressed_leads(client, db_session):
+    """Re-enroll-halted must NOT resurrect leads whose email is on the
+    suppression list — re-activating them would resume LinkedIn
+    outreach (the sequencer fires LinkedIn steps; only email steps
+    re-check the gate).  Regression for the ignored-lead-resurrection
+    finding."""
+    from app.models import (
+        LeadSequenceState, LeadSequenceStatus, Sequence,
+        SequenceNode, SequenceNodeKind, Suppression, SuppressionReason,
+    )
+    from sqlalchemy import select as _select
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="RE"))).json()
+    cid = uuid.UUID(c["id"])
+
+    ignored = Lead(campaign_id=cid, email="ignored@x.com")
+    normal = Lead(campaign_id=cid, email="normal@x.com")
+    db_session.add_all([ignored, normal])
+    db_session.add(Suppression(email="ignored@x.com", reason=SuppressionReason.MANUAL))
+    await db_session.flush()
+
+    seq = (await db_session.execute(
+        _select(Sequence).where(Sequence.campaign_id == cid)
+    )).scalar_one()
+    # The auto-created default sequence already has an entry node — use
+    # it (adding a second is_entry node makes the endpoint's
+    # scalar_one_or_none blow up with MultipleResultsFound).
+    node = (await db_session.execute(
+        _select(SequenceNode).where(
+            SequenceNode.sequence_id == seq.id,
+            SequenceNode.is_entry.is_(True),
+        )
+    )).scalar_one()
+    for lead in (ignored, normal):
+        db_session.add(LeadSequenceState(
+            sequence_id=seq.id, lead_id=lead.id, current_node_id=node.id,
+            status=LeadSequenceStatus.HALTED, halt_reason="whatever",
+        ))
+    await db_session.commit()
+
+    resp = await client.post(f"/campaigns/{cid}/re-enroll-halted")
+    assert resp.status_code == 200
+    # Only the non-suppressed lead is re-enrolled.
+    assert resp.json()["re_enrolled"] == 1
+
+    states = {
+        s.lead_id: s for s in (await db_session.execute(
+            _select(LeadSequenceState)
+            .where(LeadSequenceState.lead_id.in_([ignored.id, normal.id]))
+        )).scalars().all()
+    }
+    assert states[normal.id].status == LeadSequenceStatus.ACTIVE
+    assert states[ignored.id].status == LeadSequenceStatus.HALTED
+
+
 async def test_apply_signature_400_when_campaign_has_no_signature(client):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     resp = await client.post(f"/campaigns/{created['id']}/apply-signature")

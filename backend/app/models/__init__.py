@@ -29,7 +29,7 @@ from app.models.sequence import (
     SequenceNodeKind,
 )
 from app.models.style_correction import StyleCorrection
-from app.models.suppression import Suppression, SuppressionReason
+from app.models.suppression import Suppression, SuppressionReason, canonical_email
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
@@ -70,5 +70,6 @@ __all__ = [
     "StyleCorrection",
     "Suppression",
     "SuppressionReason",
+    "canonical_email",
     "WebhookEvent",
 ]

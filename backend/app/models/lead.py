@@ -36,6 +36,10 @@ class SendStatus(str, enum.Enum):
     SCHEDULED = "scheduled"
     SENT = "sent"
     FAILED = "failed"
+    # Terminal state for leads whose email is on the suppression list —
+    # distinct from FAILED so deliberate ignores don't pollute the
+    # campaign error list or get re-enqueued by retry-failed.
+    SUPPRESSED = "suppressed"
 
 
 class LinkedInConnectionStatus(str, enum.Enum):

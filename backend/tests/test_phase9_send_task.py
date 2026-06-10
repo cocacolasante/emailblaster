@@ -220,7 +220,12 @@ async def test_full_send_flow_marks_sent_and_records_message_id(db_session, fake
     assert await fake_redis.get(f"rate:{campaign.id}:day") == "1"
 
 
-async def test_suppressed_email_fails_without_send(db_session, fake_redis):
+async def test_suppressed_email_marked_suppressed_without_send(db_session, fake_redis):
+    """A suppressed email never reaches Brevo AND lands in the dedicated
+    SUPPRESSED terminal state — NOT FAILED.  The distinction matters:
+    FAILED leads surface in the campaign error list and get re-enqueued
+    by retry-failed (which would deterministically re-fail at the same
+    gate); SUPPRESSED leads are deliberately out of the campaign."""
     campaign = await _make_campaign(db_session)
     lead = await _make_lead(db_session, campaign, email="block@example.com")
     db_session.add(Suppression(email="block@example.com", reason=SuppressionReason.UNSUBSCRIBED))
@@ -235,7 +240,7 @@ async def test_suppressed_email_fails_without_send(db_session, fake_redis):
 
     refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
     await db_session.refresh(refreshed)
-    assert refreshed.send_status == SendStatus.FAILED
+    assert refreshed.send_status == SendStatus.SUPPRESSED
 
 
 async def test_paused_campaign_returns_paused_no_send(db_session, fake_redis):

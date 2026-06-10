@@ -18,6 +18,15 @@ class SuppressionReason(str, enum.Enum):
     MANUAL = "manual"
 
 
+def canonical_email(email: str | None) -> str:
+    """The ONE canonicalisation every Suppression writer and reader must
+    use.  Lead emails are lowercased at CSV ingest, so in practice rows
+    match either way — but suppression is a safety list, and a single
+    mixed-case write (a future non-CSV lead path, a manual script) must
+    not silently bypass it."""
+    return (email or "").strip().lower()
+
+
 class Suppression(Base):
     __tablename__ = "suppression_list"
 

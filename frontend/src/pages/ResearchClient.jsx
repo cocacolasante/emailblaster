@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { researchClient, sendClientEmail } from '../api/researchClient.js';
 import { listAccounts as listConnectedAccounts } from '../api/connectedAccounts.js';
+import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 
 const SENDER_NAME_KEY = 'researchClient.senderName';
 
@@ -273,8 +274,12 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
             <div
               data-testid="signature-preview-text"
               className="text-sm text-slate-700"
+              // signatureToPreviewHtml mirrors the backend renderer:
+              // newlines only become <br> OUTSIDE tags, plain text is
+              // escaped, bare links get the default style — so the
+              // preview matches the actually-sent email.
               dangerouslySetInnerHTML={{
-                __html: signaturePreview.replace(/\n/g, '<br>'),
+                __html: signatureToPreviewHtml(signaturePreview),
               }}
             />
             <p className="text-xs text-slate-500 mt-2">

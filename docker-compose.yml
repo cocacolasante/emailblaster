@@ -36,6 +36,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
       REDIS_URL: redis://redis:6379/0
@@ -95,6 +96,11 @@ services:
     # whole worker.  Combined with --max-tasks-per-child this is
     # belt-and-suspenders against the OOM kill failure mode.
     mem_limit: 1536m
+    # Auto-recover from any container death (incl. a cgroup OOM kill of
+    # the celery parent).  Without this, the mem_limit above makes the
+    # 2026-06-08 dead-worker outage MORE likely, not less — the limit
+    # invites the kill and nothing restarts the container afterward.
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
       REDIS_URL: redis://redis:6379/0
@@ -143,6 +149,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     command: celery -A app.workers.celery_app beat --loglevel=info
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
       REDIS_URL: redis://redis:6379/0

@@ -354,9 +354,10 @@ async def test_followup_step_defers_outside_schedule_window(db_session, monkeypa
     assert state.next_run_at is not None and state.next_run_at > _now()
 
 
-async def test_followup_step_advances_on_suppression(db_session, monkeypatch):
-    """Suppression is permanent — the cursor advances past the followup
-    rather than getting stuck on a lead the user has unsubscribed."""
+async def test_followup_step_halts_on_suppression(db_session, monkeypatch):
+    """Suppression is permanent — the lead's WHOLE sequence is moot, so
+    the state HALTS outright with a clear reason (it used to advance
+    node-by-node, writing one skip row per remaining step)."""
     from app.models import Suppression, SuppressionReason
     campaign = await _make_campaign(db_session)
     _, entry, wait_node, followup = await _build_three_node_sequence(db_session, campaign)
@@ -382,6 +383,7 @@ async def test_followup_step_advances_on_suppression(db_session, monkeypatch):
 
     await sequencer._record_execution_and_advance(lead.id, followup.id, result)
     await db_session.refresh(state)
-    # Suppression advances past the node (sequence terminates here since
-    # followup's outgoing edge is to None).
-    assert state.status == LeadSequenceStatus.COMPLETED
+    # Suppression halts the sequence outright with a clear reason.
+    assert state.status == LeadSequenceStatus.HALTED
+    assert "suppression" in (state.halt_reason or "").lower()
+    assert state.next_run_at is None

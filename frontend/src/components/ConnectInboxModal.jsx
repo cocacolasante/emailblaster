@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { createAccount, updateAccount, testAccount } from '../api/connectedAccounts.js';
+import { DEFAULT_LINK_STYLE, signatureToPreviewHtml } from '../utils/signaturePreview.js';
 
 
 /** Insert ``snippet`` at the current cursor position of ``el`` and call
@@ -93,7 +94,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
     // injecting it here too means the WYSIWYG preview in the modal
     // shows the final styling immediately.
     insertSignatureSnippet(
-      `<a href="${url}" style="color:#1d4ed8;text-decoration:underline;">${text}</a>`,
+      `<a href="${url}" style="${DEFAULT_LINK_STYLE}">${text}</a>`,
     );
   }
 
@@ -367,9 +368,13 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
                 className="w-full px-3 py-2 border border-slate-300 rounded-b-lg text-sm bg-white min-h-[120px]"
                 // Trusted input — the workspace admin types this directly.
                 // Same trust model as the per-Campaign signature.
+                // signatureToPreviewHtml mirrors the backend renderer
+                // (newlines only become <br> outside tags, text escaped,
+                // bare links auto-styled) so the preview matches the
+                // actually-sent email.
                 dangerouslySetInnerHTML={{
-                  __html: (form.signature || '<span class="text-slate-400">(signature is empty)</span>')
-                    .replace(/\n/g, '<br>'),
+                  __html: signatureToPreviewHtml(form.signature)
+                    || '<span class="text-slate-400">(signature is empty)</span>',
                 }}
               />
             ) : (

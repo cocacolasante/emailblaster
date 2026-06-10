@@ -25,6 +25,7 @@ from app.models import (
     SequenceNodeKind,
     Suppression,
     SuppressionReason,
+    canonical_email,
 )
 from app.schemas.lead import (
     ConfirmUploadResponse,
@@ -254,7 +255,7 @@ async def get_lead_detail(
     # suppressed email, so this drives the UI badge + the disabled state
     # on the Ignore button.
     suppression = await db.scalar(
-        select(Suppression).where(Suppression.email == lead.email.lower().strip())
+        select(Suppression).where(Suppression.email == canonical_email(lead.email))
     )
 
     detail = LeadDetail(
@@ -324,7 +325,7 @@ async def ignore_lead(
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    canonical = lead.email.lower().strip()
+    canonical = canonical_email(lead.email)
 
     # Step 1: upsert into the suppression list.  Unique index on email
     # means a duplicate INSERT would 23505 — handle the existence check
@@ -343,7 +344,9 @@ async def ignore_lead(
     state_rows = (await db.execute(
         select(LeadSequenceState, Lead.campaign_id)
         .join(Lead, Lead.id == LeadSequenceState.lead_id)
-        .where(Lead.email == lead.email)  # same case as the original lead
+        # func.lower so legacy/mixed-case rows sharing the address are
+        # caught too — the suppression list is canonical-lowercase.
+        .where(func.lower(Lead.email) == canonical)
         .where(LeadSequenceState.status == LeadSequenceStatus.ACTIVE)
     )).all()
 
@@ -383,7 +386,7 @@ async def unignore_lead(
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    canonical = lead.email.lower().strip()
+    canonical = canonical_email(lead.email)
     suppression = await db.scalar(
         select(Suppression).where(Suppression.email == canonical)
     )

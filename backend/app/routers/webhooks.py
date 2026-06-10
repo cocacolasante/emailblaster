@@ -24,6 +24,7 @@ from app.models import (
     LinkedInAccountStatus,
     LinkedInConnectionStatus,
     Suppression,
+    canonical_email,
     SuppressionReason,
     WebhookEvent,
 )
@@ -156,11 +157,11 @@ async def unsubscribe(
         return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
 
     existing = await db.scalar(
-        select(Suppression).where(Suppression.email == lead.email)
+        select(Suppression).where(Suppression.email == canonical_email(lead.email))
     )
     if existing is None:
         db.add(Suppression(
-            email=lead.email,
+            email=canonical_email(lead.email),
             reason=SuppressionReason.UNSUBSCRIBED,
         ))
 

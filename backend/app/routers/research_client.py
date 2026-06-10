@@ -37,13 +37,7 @@ from app.schemas.research_client import (
     SendClientEmailResponse,
 )
 from app.services import brevo, compose_client, research_cache, research_client
-from app.services.email_template import render_html, render_text
-from app.services.signature import (
-    apply_signature,
-    signature_to_html,
-    signature_to_text,
-    strip_signoff,
-)
+from app.services.signature import render_email_with_signature
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +94,10 @@ async def research_client_endpoint(
                 await db.commit()
             except Exception:  # noqa: BLE001
                 # Cache is a perf optimisation; don't fail the user
-                # call if the write hiccups.
-                pass
+                # call if the write hiccups.  Roll back so the session
+                # isn't left in PendingRollback for anything that
+                # touches ``db`` later in this request.
+                await db.rollback()
 
     try:
         composed = await compose_client.compose_for_client(
@@ -216,40 +212,15 @@ async def send_client_email(
             else settings.BREVO_SENDER_EMAIL
         )
 
-    # Apply the chosen inbox's signature.  The signature may contain HTML
-    # (``<a href=...>``, ``<img src=...>``, basic formatting) typed via
-    # the Settings editor's toolbar, so we don't merge it into the body
-    # plain text — that would HTML-escape every tag through
-    # ``render_html``.  Instead:
-    #   1. Strip the AI's sign-off line ("Best,\nName") from the body.
-    #   2. Render body normally through ``render_html`` / ``render_text``.
-    #   3. Append the signature via ``signature_to_html`` (preserves
-    #      tags, converts naked newlines to <br>) for the HTML body, and
-    #      via ``signature_to_text`` (collapses tags into plain-text
-    #      equivalents) for the text body.
-    # Empty / null signature → body goes out unchanged.
-    sig = (
-        (sender_account.signature or "").strip()
-        if sender_account else ""
+    # Apply the chosen inbox's signature via the shared renderer — same
+    # helper the bulk campaign send path uses, so HTML signatures
+    # (toolbar-inserted <a>/<img> tags) render identically on both.
+    # Idempotent: a body that already carries the signature (raw or
+    # plain-text form) doesn't get it appended a second time.
+    html_body, text_body = render_email_with_signature(
+        req.body,
+        sender_account.signature if sender_account else None,
     )
-    if sig:
-        body_for_render = strip_signoff(req.body)
-        html_body = render_html(body_for_render)
-        sig_html = signature_to_html(sig)
-        # Inject the signature inside the existing ``<body>`` wrapper so
-        # the doctype/head stay intact.  ``render_html`` always emits
-        # ``</body>`` so the replace is unambiguous.
-        html_body = html_body.replace(
-            "</body>",
-            f'<div class="signature" style="margin-top: 1.5em; '
-            f'padding-top: 1em; border-top: 1px solid #eee;">'
-            f"{sig_html}</div>\n</body>",
-            1,
-        )
-        text_body = render_text(body_for_render).rstrip() + "\n\n" + signature_to_text(sig)
-    else:
-        html_body = render_html(req.body)
-        text_body = render_text(req.body)
 
     # Synthetic identifiers so Brevo's event log can correlate replies +
     # opens to this one-off send if we ever wire that up.

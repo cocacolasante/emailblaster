@@ -778,3 +778,78 @@ async def test_publish_rejects_linkedin_inmail(client):
 # is currently gated out of PUBLISHABLE_KINDS, so the numeric-page_id check
 # is unreachable from the publish path.  Restore alongside re-enabling the
 # kind if Unipile allowlists voyagerRelationshipsDashInvitations.
+
+
+# --------------------------------------------------------------------------
+# Suppression gate on LinkedIn steps
+# --------------------------------------------------------------------------
+
+
+async def test_linkedin_step_blocked_for_suppressed_email(db_session, monkeypatch):
+    """A lead whose email is on the suppression list must NOT receive
+    LinkedIn outreach.  Without this gate, an ignored lead that gets
+    re-enrolled (or whose state drifts back to ACTIVE) resumes connect/
+    DM/view steps — only email steps used to re-check suppression."""
+    from unittest.mock import AsyncMock
+    from app.models import Suppression, SuppressionReason
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(db_session, campaign)
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
+        {"no_note": True},
+    )
+    db_session.add(Suppression(
+        email=lead.email.strip().lower(), reason=SuppressionReason.MANUAL,
+    ))
+    await db_session.commit()
+
+    connect_mock = AsyncMock()
+    _stub_provider(monkeypatch, send_connect_request=connect_mock)
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "suppressed", result
+    # Unipile never called.
+    connect_mock.assert_not_called()
+
+
+async def test_suppressed_status_halts_sequence_state(db_session, monkeypatch):
+    """When the step handler reports ``suppressed``, the recorder HALTS
+    the lead's sequence state outright (the whole sequence is moot)
+    instead of advancing node-by-node with a skip row per step."""
+    from unittest.mock import AsyncMock
+    from sqlalchemy import select as _select
+    from app.models import (
+        LeadSequenceStatus, Suppression, SuppressionReason,
+    )
+
+    acc = await _make_li_account(db_session)
+    campaign = await _make_campaign(db_session, linkedin_account_id=acc.id)
+    lead = await _make_lead(db_session, campaign)
+    node = await _build_seq_with_node(
+        db_session, campaign, SequenceNodeKind.LINKEDIN_CONNECT,
+        {"no_note": True},
+    )
+    db_session.add(Suppression(
+        email=lead.email.strip().lower(), reason=SuppressionReason.MANUAL,
+    ))
+    seq_id = node.sequence_id
+    db_session.add(LeadSequenceState(
+        sequence_id=seq_id, lead_id=lead.id, current_node_id=node.id,
+        status=LeadSequenceStatus.ACTIVE,
+    ))
+    await db_session.commit()
+
+    _stub_provider(monkeypatch, send_connect_request=AsyncMock())
+
+    result = await sequencer._send_linkedin_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "suppressed"
+    await sequencer._record_execution_and_advance(lead.id, node.id, result)
+
+    state = await db_session.scalar(
+        _select(LeadSequenceState).where(LeadSequenceState.lead_id == lead.id)
+        .execution_options(populate_existing=True)
+    )
+    assert state.status == LeadSequenceStatus.HALTED
+    assert "suppression" in (state.halt_reason or "").lower()

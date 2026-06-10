@@ -947,6 +947,24 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     "error": "action already sent for this node — skipping duplicate",
                 }
 
+            # Suppression gate — LinkedIn steps must respect the
+            # workspace suppression list the same way email steps do
+            # (via check_send_gates).  An ignored / unsubscribed lead
+            # gets a permanent skip; without this, re-enrolling a lead
+            # whose email is suppressed would resume LinkedIn outreach
+            # while email stays blocked — exactly the half-ignored state
+            # the Ignore button promises not to leave.
+            sup = await session.scalar(
+                select(Suppression).where(
+                    Suppression.email == (lead.email or "").strip().lower()
+                )
+            )
+            if sup is not None:
+                return {
+                    "status": "suppressed",
+                    "error": "lead email is on the suppression list",
+                }
+
             campaign = await session.get(Campaign, lead.campaign_id)
             if campaign is None or campaign.linkedin_account_id is None:
                 return {
@@ -1409,6 +1427,19 @@ async def _record_execution_and_advance(
                                     cap_reset.isoformat(),
                                     next_window.isoformat() if next_window else "now",
                                 )
+                    elif status == "suppressed":
+                        # The lead's email is on the suppression list —
+                        # the WHOLE sequence is moot for them, not just
+                        # this node.  Halt outright instead of advancing
+                        # node-by-node with a skip row per step (which
+                        # is what the generic skip branch would do).
+                        state.status = LeadSequenceStatus.HALTED
+                        state.halt_reason = "email is on the suppression list"
+                        state.next_run_at = None
+                        logger.info(
+                            "Halting lead=%s — suppressed email; sequence stopped",
+                            lead_id,
+                        )
                     elif status in TRANSIENT_SKIP_STATUSES:
                         # Count prior skips for THIS visit only (since we
                         # entered the node). Re-enrollment resets
