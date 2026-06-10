@@ -7,6 +7,7 @@ vi.mock('../api/campaigns.js', () => ({
   listAllLeads: vi.fn(),
   listCampaigns: vi.fn(),
   getLeadDetail: vi.fn(),
+  getLeadById: vi.fn(),
   updateLeadEmail: vi.fn(),
 }));
 
@@ -114,11 +115,15 @@ describe('Leads page', () => {
         send_status: 'sent', has_notes: false, notes: null,
       },
     ]));
-    api.getLeadDetail.mockResolvedValue({
+    // New rich-detail endpoint is the primary data source for the modal.
+    api.getLeadById.mockResolvedValue({
       id: 'l1', campaign_id: 'c1',
       composed_subject: 'Hello Ada',
       composed_body: 'Saw your work on the engine.',
       notes: '',
+      history: [],
+      history_counts: {},
+      research_summary: {},
     });
     api.updateLeadEmail.mockResolvedValue({ id: 'l1' });
 
@@ -141,6 +146,101 @@ describe('Leads page', () => {
         'c1', 'l1', { notes: 'Followed up via LinkedIn' },
       );
     });
+  });
+
+  it('renders LinkedIn link + contact-info section from the rich detail endpoint', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l2', campaign_id: 'c1', campaign_name: 'Q2', first_name: 'J',
+        last_name: 'Doe', email: 'j@x.com', company: 'Acme',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l2', campaign_id: 'c1',
+      first_name: 'J', last_name: 'Doe',
+      email: 'j@x.com',
+      phone: '+1-555-0100',
+      linkedin_url: 'https://www.linkedin.com/in/j-doe/',
+      linkedin_connection_status: 'connected',
+      company_website: 'acme.io',
+      job_title: 'CFO',
+      company: 'Acme',
+      notes: '', history: [], history_counts: {},
+      research_summary: { industry: 'SaaS', size_hint: 'growth' },
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l2'));
+
+    const modal = await screen.findByTestId('lead-crm-modal');
+    // LinkedIn link points at the profile URL.
+    const liLink = await within(modal).findByTestId('lead-linkedin-link');
+    expect(liLink).toHaveAttribute('href', 'https://www.linkedin.com/in/j-doe/');
+    expect(liLink).toHaveAttribute('target', '_blank');
+    // Connection state shows up next to the link.
+    expect(within(modal).getByText(/Connected/)).toBeInTheDocument();
+    // Contact info card lists phone + website + industry/size.
+    const contact = within(modal).getByTestId('lead-contact-section');
+    expect(within(contact).getByText('+1-555-0100')).toBeInTheDocument();
+    expect(within(contact).getByText(/acme\.io/)).toBeInTheDocument();
+    expect(within(contact).getByText('SaaS')).toBeInTheDocument();
+    expect(within(contact).getByText('growth')).toBeInTheDocument();
+  });
+
+  it('renders the activity history list with one row per event', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l3', campaign_id: 'c1', campaign_name: 'Q2', first_name: 'B',
+        last_name: 'X', email: 'b@x.com', company: 'X',
+        send_status: 'sent', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l3', campaign_id: 'c1',
+      email: 'b@x.com',
+      notes: '',
+      history: [
+        { at: '2026-06-09T14:00:00Z', kind: 'event', action: 'Email opened',
+          status: 'success', icon: '👀', detail: null, external_id: null },
+        { at: '2026-06-09T13:00:00Z', kind: 'execution', action: 'Sent email',
+          status: 'success', icon: '📧', detail: null, external_id: 'brevo-1' },
+        { at: '2026-06-08T10:00:00Z', kind: 'execution',
+          action: 'Sent LinkedIn connection request',
+          status: 'success', icon: '🤝', detail: null, external_id: 'inv-9' },
+      ],
+      history_counts: { email: 1, opened: 1, linkedin_connect: 1 },
+      research_summary: {},
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l3'));
+
+    const modal = await screen.findByTestId('lead-crm-modal');
+    const list = within(modal).getByTestId('lead-history-list');
+    // Each action label appears in the list.
+    expect(within(list).getByText('Email opened')).toBeInTheDocument();
+    expect(within(list).getByText('Sent email')).toBeInTheDocument();
+    expect(within(list).getByText('Sent LinkedIn connection request')).toBeInTheDocument();
+    // Header roll-up pill for opens.
+    const pills = within(modal).getByTestId('lead-stat-pills');
+    expect(within(pills).getByText(/1 open/)).toBeInTheDocument();
+  });
+
+  it('history section shows an empty hint when the timeline is empty', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l4', campaign_id: 'c1', campaign_name: 'Q2', first_name: 'E',
+        last_name: 'M', email: 'e@x.com', company: 'X',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l4', campaign_id: 'c1', email: 'e@x.com',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l4'));
+    const modal = await screen.findByTestId('lead-crm-modal');
+    expect(within(modal).getByText(/hasn't moved through any sequence/i)).toBeInTheDocument();
   });
 
   it('shows an empty-state row when no leads come back', async () => {

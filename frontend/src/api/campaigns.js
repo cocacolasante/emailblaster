@@ -115,6 +115,15 @@ export async function listAllLeads(params = {}) {
   return data;
 }
 
+/** Cross-campaign single-lead detail.  Returns LeadDetail with
+ *  embedded activity timeline (sends + email events merged in time order),
+ *  LinkedIn outreach state, and a research_summary block.  Used by the
+ *  global Leads page CRM modal. */
+export async function getLeadById(leadId) {
+  const { data } = await client.get(`/leads/${leadId}`);
+  return data;
+}
+
 export async function applySignature(campaignId) {
   const { data } = await client.post(`/campaigns/${campaignId}/apply-signature`);
   return data;

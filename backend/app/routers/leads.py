@@ -10,9 +10,23 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Campaign, CampaignStatus, Lead, SendStatus, Suppression
+from app.models import (
+    Campaign,
+    CampaignStatus,
+    EmailEvent,
+    EmailEventType,
+    Lead,
+    LeadStepExecution,
+    LeadStepResult,
+    SendStatus,
+    SequenceNode,
+    SequenceNodeKind,
+    Suppression,
+)
 from app.schemas.lead import (
     ConfirmUploadResponse,
+    LeadDetail,
+    LeadHistoryItem,
     LeadSummary,
     PaginatedLeads,
     UploadPreviewResponse,
@@ -86,6 +100,188 @@ async def list_all_leads(
         items=items, total=total, page=page, page_size=page_size,
         total_pages=math.ceil(total / page_size) if total > 0 else 0,
     )
+
+
+# ─── Lead detail (rich CRM-style view) ───────────────────────────────────
+
+_NODE_KIND_LABEL_VERB = {
+    SequenceNodeKind.EMAIL: ("Sent email", "📧"),
+    SequenceNodeKind.LINKEDIN_VIEW_PROFILE: ("Viewed LinkedIn profile", "👁️"),
+    SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE: ("Followed on LinkedIn", "➕"),
+    SequenceNodeKind.LINKEDIN_CONNECT: ("Sent LinkedIn connection request", "🤝"),
+    SequenceNodeKind.LINKEDIN_DM: ("Sent LinkedIn DM", "💬"),
+    SequenceNodeKind.LINKEDIN_INMAIL: ("Sent InMail", "📨"),
+    SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE: ("Invited to company page", "🏢"),
+    SequenceNodeKind.LINKEDIN_REACT_POST: ("Reacted to LinkedIn post", "👍"),
+    SequenceNodeKind.LINKEDIN_COMMENT_POST: ("Commented on LinkedIn post", "💭"),
+    SequenceNodeKind.WAIT: ("Waited", "⏳"),
+}
+
+_EVENT_LABEL_VERB = {
+    EmailEventType.DELIVERED: ("Email delivered", "✉️"),
+    EmailEventType.OPENED: ("Email opened", "👀"),
+    EmailEventType.CLICKED: ("Link clicked", "🖱️"),
+    EmailEventType.REPLIED: ("Replied", "💬"),
+    EmailEventType.SOFT_BOUNCE: ("Soft-bounced", "⚠️"),
+    EmailEventType.HARD_BOUNCE: ("Hard-bounced", "⚠️"),
+    EmailEventType.SPAM: ("Marked as spam", "🚫"),
+    EmailEventType.UNSUBSCRIBED: ("Unsubscribed", "🚷"),
+}
+
+# Result enum → status string used by the UI for colour cues.
+_RESULT_STATUS = {
+    LeadStepResult.SENT: "success",
+    LeadStepResult.SKIPPED: "warn",
+    LeadStepResult.FAILED: "fail",
+}
+
+# Event type → status string.  Engagement (delivered/opened/clicked/replied)
+# is success; bounces / spam / unsubscribe are warn/fail.
+_EVENT_STATUS = {
+    EmailEventType.DELIVERED: "success",
+    EmailEventType.OPENED: "success",
+    EmailEventType.CLICKED: "success",
+    EmailEventType.REPLIED: "success",
+    EmailEventType.SOFT_BOUNCE: "warn",
+    EmailEventType.HARD_BOUNCE: "fail",
+    EmailEventType.SPAM: "fail",
+    EmailEventType.UNSUBSCRIBED: "warn",
+}
+
+
+def _research_summary(blob: dict | None) -> dict:
+    """Pick the most useful fields out of the (potentially noisy)
+    ``research_data`` JSONB so the UI doesn't have to render the whole
+    raw blob.  Safe on missing / partial / None input."""
+    if not isinstance(blob, dict):
+        return {}
+    return {
+        "industry": str(blob.get("industry") or "") or None,
+        "size_hint": str(blob.get("size_hint") or "") or None,
+        "company_description": str(blob.get("company_description") or "") or None,
+        "person_news": [x for x in (blob.get("person_news") or []) if x][:6],
+        "company_news": [x for x in (blob.get("company_news") or []) if x][:6],
+        "recent_updates": [x for x in (blob.get("recent_updates") or []) if x][:6],
+        "quality": str(blob.get("quality") or "") or None,
+        "from_cache": bool(blob.get("from_cache")),
+    }
+
+
+@router.get("/leads/{lead_id}", response_model=LeadDetail)
+async def get_lead_detail(
+    lead_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> LeadDetail:
+    """Full per-lead view powering the lite-CRM detail modal.
+
+    Returns the lead, every sequence step we attempted + every email
+    event the recipient triggered, merged into a single chronologically-
+    sorted ``history`` array.  Done server-side so the UI doesn't have
+    to do two fetches and a JS sort on hundreds of rows.
+    """
+    lead = await db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    # Campaign name for the header context.
+    campaign = await db.get(Campaign, lead.campaign_id)
+    campaign_name = campaign.name if campaign is not None else None
+
+    # Sequence executions, joined to the node so we can label by kind.
+    exec_rows = (await db.execute(
+        select(LeadStepExecution, SequenceNode.kind)
+        .join(SequenceNode, SequenceNode.id == LeadStepExecution.node_id)
+        .where(LeadStepExecution.lead_id == lead_id)
+        .order_by(LeadStepExecution.attempted_at.desc())
+    )).all()
+
+    # Email events (passive engagement signal).
+    event_rows = (await db.execute(
+        select(EmailEvent)
+        .where(EmailEvent.lead_id == lead_id)
+        .order_by(EmailEvent.occurred_at.desc())
+    )).scalars().all()
+
+    history: list[LeadHistoryItem] = []
+    counts: dict[str, int] = {}
+
+    for execution, node_kind in exec_rows:
+        label, icon = _NODE_KIND_LABEL_VERB.get(node_kind, (node_kind.value.replace("_", " ").title(), "•"))
+        status = _RESULT_STATUS.get(execution.result, "warn")
+        # Prefix the verb with the action result so the UI line reads
+        # well even without the status pill: "Sent email" stays as-is on
+        # success, but "Sent email (failed)" surfaces the fail-state.
+        if execution.result == LeadStepResult.FAILED:
+            label = f"{label} (failed)"
+        elif execution.result == LeadStepResult.SKIPPED:
+            label = f"{label} (skipped)"
+        history.append(LeadHistoryItem(
+            at=execution.attempted_at,
+            kind="execution",
+            action=label,
+            status=status,
+            icon=icon,
+            detail=(execution.error or None),
+            external_id=execution.external_id,
+        ))
+        # Roll-up: count successful sends per node kind for the header pills.
+        if execution.result == LeadStepResult.SENT:
+            counts[node_kind.value] = counts.get(node_kind.value, 0) + 1
+
+    for event in event_rows:
+        label, icon = _EVENT_LABEL_VERB.get(event.event_type, (event.event_type.value, "•"))
+        history.append(LeadHistoryItem(
+            at=event.occurred_at,
+            kind="event",
+            action=label,
+            status=_EVENT_STATUS.get(event.event_type, "warn"),
+            icon=icon,
+            detail=None,
+            external_id=None,
+        ))
+        counts[event.event_type.value] = counts.get(event.event_type.value, 0) + 1
+
+    # Stable chronological order (newest first) regardless of which
+    # source row landed first in the list.
+    history.sort(key=lambda h: h.at, reverse=True)
+
+    detail = LeadDetail(
+        id=lead.id,
+        campaign_id=lead.campaign_id,
+        email=lead.email,
+        first_name=lead.first_name,
+        last_name=lead.last_name,
+        company=lead.company,
+        company_name=lead.company,
+        company_website=lead.company_website,
+        job_title=lead.job_title,
+        phone=lead.phone,
+        linkedin_url=lead.linkedin_url,
+        linkedin_connection_status=lead.linkedin_connection_status,
+        linkedin_last_reply_at=lead.linkedin_last_reply_at,
+        research_status=lead.research_status,
+        compose_status=lead.compose_status,
+        send_status=lead.send_status,
+        is_sample=lead.is_sample,
+        sample_approved=lead.sample_approved,
+        scheduled_send_at=lead.scheduled_send_at,
+        created_at=lead.created_at,
+        updated_at=lead.updated_at,
+        notes=lead.notes,
+        has_notes=bool(lead.notes),
+        campaign_name=campaign_name,
+        raw_csv_row=lead.raw_csv_row,
+        research_data=lead.research_data,
+        composed_subject=lead.composed_subject,
+        composed_body=lead.composed_body,
+        style_correction=lead.style_correction,
+        brevo_message_id=lead.brevo_message_id,
+        history=history,
+        history_counts=counts,
+        research_summary=_research_summary(lead.research_data),
+    )
+    return detail
+
 
 # Lead-model fields the user is allowed to populate from a CSV column.
 _ALLOWED_LEAD_FIELDS = {

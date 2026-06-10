@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models import ComposeStatus, ResearchStatus, SendStatus
+from app.models import ComposeStatus, LinkedInConnectionStatus, ResearchStatus, SendStatus
 
 
 class LeadSummary(BaseModel):
@@ -50,6 +50,47 @@ class LeadResponse(LeadSummary):
     style_correction: str | None
     brevo_message_id: str | None
     updated_at: datetime
+
+
+class LeadHistoryItem(BaseModel):
+    """One row on the lead's activity timeline.
+
+    Two source tables feed this:
+    - ``LeadStepExecution`` rows (every sequence step we attempted —
+      email sends, LinkedIn views/connects/DMs, etc.).  Carries the
+      result enum (``sent``, ``skipped``, ``failed``...) and any
+      ``external_id`` (Brevo message_id, LinkedIn invitation_id).
+    - ``EmailEvent`` rows (delivered / opened / clicked / replied /
+      bounced / spam / unsubscribed — what the recipient did).
+
+    The endpoint merges both into one chronologically-sorted list so
+    the UI can render a single timeline without doing the merge
+    client-side.
+    """
+    at: datetime
+    kind: str           # "execution" | "event" — discriminator for the UI
+    action: str         # human-readable label ("Sent email", "Opened email")
+    status: str         # success-y / warn-y / fail-y — UI colour cue
+    icon: str           # emoji hint so the UI has a default visual
+    detail: str | None = None  # error message, sequence node label, etc.
+    external_id: str | None = None  # Brevo message_id or LinkedIn invitation_id
+
+
+class LeadDetail(LeadResponse):
+    """Full per-lead view with all the fields the CRM modal renders.
+
+    Adds the LinkedIn outreach state, the activity timeline, and a
+    distilled ``research_summary`` so the UI doesn't have to dig
+    through the raw ``research_data`` JSONB."""
+    linkedin_connection_status: LinkedInConnectionStatus | None = None
+    linkedin_last_reply_at: datetime | None = None
+    company_website: str | None = None
+    company_name: str | None = None  # alias of ``company`` for symmetry with research blobs
+
+    history: list[LeadHistoryItem]
+    # Lightweight roll-ups for the UI header pills.
+    history_counts: dict[str, int]  # {"sent": 3, "opened": 1, "replied": 0, ...}
+    research_summary: dict[str, Any]  # {industry, person_news, company_news, ...}
 
 
 class PaginatedLeads(BaseModel):

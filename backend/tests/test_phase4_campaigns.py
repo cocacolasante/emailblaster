@@ -527,6 +527,177 @@ async def test_global_leads_endpoint_paginates_filters_and_includes_campaign(
     assert resp.json()["items"][0]["email"] == "a@x.com"
 
 
+async def test_get_lead_detail_returns_404_for_unknown(client):
+    import uuid as _uuid
+    resp = await client.get(f"/leads/{_uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+async def test_get_lead_detail_returns_rich_fields(client, db_session):
+    """``GET /leads/{id}`` surfaces LinkedIn URL + research summary +
+    contact fields the global list endpoint trims out."""
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="C"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(
+        campaign_id=cid, email="jane@acme.io",
+        first_name="Jane", last_name="Doe",
+        company="Acme", job_title="CFO", company_website="acme.io",
+        linkedin_url="https://www.linkedin.com/in/jane-doe/",
+        phone="+1-555-0100",
+        research_data={
+            "industry": "SaaS",
+            "size_hint": "growth",
+            "company_description": "B2B platform for ops teams.",
+            "person_news": ["raised Series B (Apr 2026)"],
+            "company_news": ["launched Acme Pro (Mar 2026)"],
+            "from_cache": False,
+            "quality": "rich",
+        },
+    )
+    db_session.add(lead)
+    await db_session.commit()
+
+    resp = await client.get(f"/leads/{lead.id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Identity + contact fields.
+    assert body["email"] == "jane@acme.io"
+    assert body["linkedin_url"] == "https://www.linkedin.com/in/jane-doe/"
+    assert body["phone"] == "+1-555-0100"
+    assert body["job_title"] == "CFO"
+    assert body["company_website"] == "acme.io"
+    assert body["campaign_name"] == "C"
+    # Research summary distilled out of the JSONB blob.
+    sig = body["research_summary"]
+    assert sig["industry"] == "SaaS"
+    assert sig["size_hint"] == "growth"
+    assert "raised Series B" in sig["person_news"][0]
+    assert "Acme Pro" in sig["company_news"][0]
+    # Empty history when no executions / events exist.
+    assert body["history"] == []
+    assert body["history_counts"] == {}
+
+
+async def test_get_lead_detail_merges_executions_and_events_in_time_order(client, db_session):
+    """Activity timeline must interleave LeadStepExecution rows
+    (active outreach actions we took) with EmailEvent rows (passive
+    engagement signals), sorted newest-first across both sources."""
+    from datetime import datetime, timedelta, timezone
+    from app.models import (
+        LeadStepExecution, LeadStepResult, Sequence, SequenceNode, SequenceNodeKind,
+    )
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="X"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(campaign_id=cid, email="ll@x.com", first_name="L")
+    db_session.add(lead)
+    await db_session.flush()
+
+    # Campaign creation auto-creates a default Sequence row (unique on
+    # campaign_id); reuse it rather than constructing a duplicate.
+    from sqlalchemy import select as _select
+    seq = (await db_session.execute(
+        _select(Sequence).where(Sequence.campaign_id == cid)
+    )).scalar_one()
+    email_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+        config={"subject_template": "s", "body_template": "b"},
+        is_entry=True,
+    )
+    connect_node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_CONNECT,
+        config={}, is_entry=False,
+    )
+    db_session.add_all([email_node, connect_node])
+    await db_session.flush()
+
+    now = datetime.now(timezone.utc)
+    # Three executions across two nodes, plus two engagement events.
+    db_session.add_all([
+        LeadStepExecution(
+            lead_id=lead.id, node_id=email_node.id,
+            attempted_at=now - timedelta(hours=6),
+            result=LeadStepResult.SENT, external_id="brevo-msg-1",
+        ),
+        LeadStepExecution(
+            lead_id=lead.id, node_id=connect_node.id,
+            attempted_at=now - timedelta(hours=2),
+            result=LeadStepResult.SENT, external_id="invitation-9",
+        ),
+        LeadStepExecution(
+            lead_id=lead.id, node_id=email_node.id,
+            attempted_at=now - timedelta(hours=1),
+            result=LeadStepResult.FAILED, error="Brevo 422",
+        ),
+        EmailEvent(
+            lead_id=lead.id, campaign_id=cid,
+            event_type=EmailEventType.DELIVERED,
+            occurred_at=now - timedelta(hours=5),
+        ),
+        EmailEvent(
+            lead_id=lead.id, campaign_id=cid,
+            event_type=EmailEventType.OPENED,
+            occurred_at=now - timedelta(hours=4),
+        ),
+    ])
+    await db_session.commit()
+
+    resp = await client.get(f"/leads/{lead.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    history = body["history"]
+    assert len(history) == 5
+
+    # Sorted newest-first, regardless of source table.
+    timestamps = [h["at"] for h in history]
+    assert timestamps == sorted(timestamps, reverse=True)
+
+    # Each entry carries the kind + action label + icon.
+    kinds = [h["kind"] for h in history]
+    assert kinds.count("execution") == 3
+    assert kinds.count("event") == 2
+
+    # Sample some specific entries.
+    actions = [h["action"] for h in history]
+    assert "Sent email" in actions
+    assert "Sent LinkedIn connection request" in actions
+    assert "Email delivered" in actions
+    assert "Email opened" in actions
+    # The failed send surfaces with the failed suffix + the error detail.
+    failed_email = next(h for h in history if h["action"].startswith("Sent email (failed)"))
+    assert failed_email["status"] == "fail"
+    assert failed_email["detail"] == "Brevo 422"
+    # And external_id passes through where present (Brevo msg id /
+    # LinkedIn invitation id).
+    sent_email = next(
+        h for h in history
+        if h["action"] == "Sent email" and h["external_id"] == "brevo-msg-1"
+    )
+    assert sent_email is not None
+
+    # history_counts roll-up matches what we recorded — and only counts
+    # SUCCESSFUL sends per node kind, plus every email-event type.
+    counts = body["history_counts"]
+    assert counts["email"] == 1                # 2 attempts, 1 SENT, 1 FAILED
+    assert counts["linkedin_connect"] == 1
+    assert counts["delivered"] == 1
+    assert counts["opened"] == 1
+
+
+async def test_get_lead_detail_skips_research_summary_when_blob_empty(client, db_session):
+    """No research_data → research_summary is empty dict, not 500."""
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="Y"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(campaign_id=cid, email="bare@x.com", research_data=None)
+    db_session.add(lead)
+    await db_session.commit()
+
+    resp = await client.get(f"/leads/{lead.id}")
+    assert resp.status_code == 200
+    assert resp.json()["research_summary"] == {}
+
+
 async def test_apply_signature_400_when_campaign_has_no_signature(client):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     resp = await client.post(f"/campaigns/{created['id']}/apply-signature")

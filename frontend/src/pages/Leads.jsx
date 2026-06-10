@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  getLeadById,
   getLeadDetail,
   listAllLeads,
   listCampaigns,
@@ -166,24 +167,60 @@ export default function Leads() {
 }
 
 
+// ── Lead detail modal helpers ────────────────────────────────────────────
+
+const HISTORY_STATUS_CLASS = {
+  success: 'text-emerald-700',
+  warn: 'text-amber-700',
+  fail: 'text-red-700',
+};
+
+const LINKEDIN_CONN_LABEL = {
+  unknown: 'Unknown',
+  invited: 'Invited',
+  connected: 'Connected',
+  declined: 'Declined',
+};
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+
 function LeadCrmModal({ lead, onClose }) {
   const queryClient = useQueryClient();
   const toast = useToast();
+  // New cross-campaign endpoint carries the full timeline.  Keep the
+  // legacy per-campaign call as a fallback so a delete-while-open or
+  // routing change doesn't leave the modal blank.
   const { data: detail } = useQuery({
+    queryKey: ['lead-detail-v2', lead.id],
+    queryFn: () => getLeadById(lead.id),
+  });
+  const { data: legacyDetail } = useQuery({
     queryKey: ['lead-detail', lead.campaign_id, lead.id],
     queryFn: () => getLeadDetail(lead.campaign_id, lead.id),
+    // Avoids a wasted call when the new endpoint succeeds first.
+    enabled: !detail,
   });
+  const view = detail || legacyDetail;
+
   const [notes, setNotes] = useState('');
   const [hydrated, setHydrated] = useState(false);
-  if (detail && !hydrated) {
-    setNotes(detail.notes || '');
+  if (view && !hydrated) {
+    setNotes(view.notes || '');
     setHydrated(true);
   }
-  const dirty = hydrated && notes !== (detail?.notes || '');
+  const dirty = hydrated && notes !== (view?.notes || '');
 
   const saveMutation = useMutation({
+    // updateLeadEmail still takes campaign_id (per-campaign route).  Use
+    // the lead's own campaign_id so the call lands correctly.
     mutationFn: () => updateLeadEmail(lead.campaign_id, lead.id, { notes }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
       queryClient.invalidateQueries({ queryKey: ['lead-detail', lead.campaign_id, lead.id] });
       queryClient.invalidateQueries({ queryKey: ['all-leads'] });
       toast.success('Notes saved');
@@ -191,23 +228,60 @@ function LeadCrmModal({ lead, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save notes'),
   });
 
+  // Derived display values (safe on partial detail loads).
+  const fullName = (lead.first_name || lead.last_name)
+    ? `${lead.first_name || ''} ${lead.last_name || ''}`.trim()
+    : lead.email;
+  const history = view?.history || [];
+  const counts = view?.history_counts || {};
+  const sigSummary = view?.research_summary || {};
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl p-6 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
         data-testid="lead-crm-modal"
       >
+        {/* Header */}
         <div className="flex justify-between items-start mb-4">
           <div>
-            <h2 className="m-0 text-lg font-semibold text-slate-900">
-              {lead.first_name || lead.last_name
-                ? `${lead.first_name || ''} ${lead.last_name || ''}`.trim()
-                : lead.email}
-            </h2>
+            <h2 className="m-0 text-lg font-semibold text-slate-900">{fullName}</h2>
             <div className="text-sm text-slate-500 mt-0.5">
-              {lead.email}{lead.company ? ` · ${lead.company}` : ''}
-              {lead.campaign_name && <> · <span className="text-slate-400">campaign</span> {lead.campaign_name}</>}
+              {lead.email}
+              {(view?.job_title || lead.job_title) && (
+                <> · {view?.job_title || lead.job_title}</>
+              )}
+              {(view?.company || lead.company) && (
+                <> at {view?.company || lead.company}</>
+              )}
+              {lead.campaign_name && (
+                <> · <span className="text-slate-400">campaign</span> {lead.campaign_name}</>
+              )}
+            </div>
+            {/* Stat pills: quick at-a-glance roll-up */}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="lead-stat-pills">
+              <StatusPill value={lead.send_status} />
+              {counts.opened > 0 && (
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700">
+                  👀 {counts.opened} open{counts.opened === 1 ? '' : 's'}
+                </span>
+              )}
+              {counts.clicked > 0 && (
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700">
+                  🖱️ {counts.clicked} click{counts.clicked === 1 ? '' : 's'}
+                </span>
+              )}
+              {counts.replied > 0 && (
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
+                  💬 {counts.replied} repl{counts.replied === 1 ? 'y' : 'ies'}
+                </span>
+              )}
+              {(counts.hard_bounce || counts.soft_bounce) && (
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-700">
+                  ⚠️ bounced
+                </span>
+              )}
             </div>
           </div>
           <button
@@ -218,21 +292,152 @@ function LeadCrmModal({ lead, onClose }) {
           >×</button>
         </div>
 
+        {/* Contact / outreach info card */}
+        <div
+          data-testid="lead-contact-section"
+          className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs"
+        >
+          <InfoRow label="Email">
+            <a href={`mailto:${lead.email}`} className="text-blue-600 hover:underline">{lead.email}</a>
+          </InfoRow>
+          {(view?.phone || null) && (
+            <InfoRow label="Phone">
+              <a href={`tel:${view.phone}`} className="text-blue-600 hover:underline">{view.phone}</a>
+            </InfoRow>
+          )}
+          {view?.linkedin_url && (
+            <InfoRow label="LinkedIn">
+              <a
+                href={view.linkedin_url}
+                target="_blank" rel="noopener noreferrer"
+                data-testid="lead-linkedin-link"
+                className="text-blue-600 hover:underline"
+              >
+                Open profile ↗
+              </a>
+              {view?.linkedin_connection_status && view.linkedin_connection_status !== 'unknown' && (
+                <span className="ml-2 text-slate-500">
+                  ({LINKEDIN_CONN_LABEL[view.linkedin_connection_status] || view.linkedin_connection_status})
+                </span>
+              )}
+            </InfoRow>
+          )}
+          {view?.company_website && (
+            <InfoRow label="Website">
+              <a
+                href={
+                  view.company_website.startsWith('http')
+                    ? view.company_website
+                    : `https://${view.company_website}`
+                }
+                target="_blank" rel="noopener noreferrer"
+                className="text-blue-600 hover:underline"
+              >
+                {view.company_website} ↗
+              </a>
+            </InfoRow>
+          )}
+          {sigSummary.industry && <InfoRow label="Industry">{sigSummary.industry}</InfoRow>}
+          {sigSummary.size_hint && <InfoRow label="Size">{sigSummary.size_hint}</InfoRow>}
+        </div>
+
         {/* Composed email preview */}
-        {detail?.composed_subject || detail?.composed_body ? (
-          <div className="border border-slate-200 rounded-lg overflow-hidden mb-4">
-            <div className="bg-slate-50 border-b border-slate-200 px-4 py-2.5">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-2">Subject</span>
-              <span className="text-sm text-slate-900 font-medium">{detail.composed_subject || '—'}</span>
+        {view?.composed_subject || view?.composed_body ? (
+          <details className="border border-slate-200 rounded-lg overflow-hidden mb-4" open>
+            <summary className="bg-slate-50 border-b border-slate-200 px-4 py-2.5 cursor-pointer text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              Composed email
+            </summary>
+            <div className="px-4 py-2.5 border-b border-slate-100">
+              <span className="text-xs font-semibold text-slate-500 mr-2">Subject:</span>
+              <span className="text-sm text-slate-900 font-medium">{view.composed_subject || '—'}</span>
             </div>
             <div className="p-4">
               <pre className="text-sm text-slate-800 whitespace-pre-wrap font-sans leading-relaxed m-0">
-                {detail.composed_body || '—'}
+                {view.composed_body || '—'}
               </pre>
             </div>
-          </div>
+          </details>
         ) : (
           <div className="text-sm text-slate-500 italic py-2 mb-4">No email composed yet.</div>
+        )}
+
+        {/* Activity timeline */}
+        <details className="border border-slate-200 rounded-lg overflow-hidden mb-4" open>
+          <summary className="bg-slate-50 border-b border-slate-200 px-4 py-2.5 cursor-pointer text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center justify-between">
+            <span>Activity history</span>
+            <span className="text-slate-400 normal-case font-normal">
+              {history.length} event{history.length === 1 ? '' : 's'}
+            </span>
+          </summary>
+          <div data-testid="lead-history-list" className="divide-y divide-slate-100">
+            {history.length === 0 ? (
+              <div className="p-4 text-sm text-slate-500 italic">
+                No activity yet — this lead hasn't moved through any sequence step or
+                received any opens/clicks.
+              </div>
+            ) : (
+              history.map((h, i) => (
+                <div key={i} className="flex items-start gap-3 px-4 py-2.5 text-sm">
+                  <span className="text-lg leading-tight">{h.icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className={`font-medium ${HISTORY_STATUS_CLASS[h.status] || 'text-slate-900'}`}>
+                      {h.action}
+                    </div>
+                    {h.detail && (
+                      <div className="text-xs text-slate-500 mt-0.5 break-words" title={h.detail}>
+                        {h.detail.length > 200 ? `${h.detail.slice(0, 200)}…` : h.detail}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-400 whitespace-nowrap">{fmtTime(h.at)}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </details>
+
+        {/* Research details */}
+        {(sigSummary.person_news?.length > 0
+          || sigSummary.company_news?.length > 0
+          || sigSummary.company_description) && (
+          <details className="border border-slate-200 rounded-lg overflow-hidden mb-4">
+            <summary className="bg-slate-50 border-b border-slate-200 px-4 py-2.5 cursor-pointer text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              Research findings
+              {sigSummary.from_cache && (
+                <span className="ml-2 text-amber-600 normal-case font-normal">(from cache)</span>
+              )}
+            </summary>
+            <div className="p-4 space-y-3 text-sm">
+              {sigSummary.company_description && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+                    Company
+                  </div>
+                  <p className="text-slate-700 m-0">{sigSummary.company_description}</p>
+                </div>
+              )}
+              {sigSummary.person_news?.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+                    Person news
+                  </div>
+                  <ul className="list-disc list-inside text-slate-700 m-0 space-y-0.5">
+                    {sigSummary.person_news.map((n, i) => <li key={i}>{n}</li>)}
+                  </ul>
+                </div>
+              )}
+              {sigSummary.company_news?.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+                    Company news
+                  </div>
+                  <ul className="list-disc list-inside text-slate-700 m-0 space-y-0.5">
+                    {sigSummary.company_news.map((n, i) => <li key={i}>{n}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
         )}
 
         {/* Notes */}
@@ -243,7 +448,7 @@ function LeadCrmModal({ lead, onClose }) {
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            rows={6}
+            rows={5}
             placeholder="Met at Lattice summit; warm intro from Sara…"
             data-testid="lead-notes-textarea"
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
@@ -261,6 +466,19 @@ function LeadCrmModal({ lead, onClose }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+/** Small key/value row used in the contact-info card.  Renders nothing
+ *  when ``children`` is empty so call-sites can guard with ``&&`` and
+ *  still get clean layout. */
+function InfoRow({ label, children }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="text-slate-500 w-20 shrink-0">{label}</span>
+      <span className="text-slate-900 truncate">{children}</span>
     </div>
   );
 }
