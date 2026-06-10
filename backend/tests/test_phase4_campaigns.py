@@ -698,6 +698,214 @@ async def test_get_lead_detail_skips_research_summary_when_blob_empty(client, db
     assert resp.json()["research_summary"] == {}
 
 
+async def test_ignore_lead_suppresses_email_and_halts_states(client, db_session):
+    """``POST /leads/{id}/ignore`` writes a Suppression row AND flips
+    every active LeadSequenceState for any lead with the same email to
+    HALTED with a clear reason.  Effect: future campaigns skip the
+    email (send pipeline + sequencer both check suppression) and the
+    current campaign stops progressing them."""
+    from app.models import (
+        LeadSequenceState, LeadSequenceStatus, Sequence,
+        SequenceNode, SequenceNodeKind, Suppression,
+    )
+    from sqlalchemy import select as _select
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="C1"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(campaign_id=cid, email="target@example.com", first_name="T")
+    db_session.add(lead)
+    await db_session.flush()
+
+    # Reuse the auto-created sequence + add a node so the state row has
+    # something to point at.
+    seq = (await db_session.execute(
+        _select(Sequence).where(Sequence.campaign_id == cid)
+    )).scalar_one()
+    node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+        config={"subject_template": "s", "body_template": "b"},
+        is_entry=True,
+    )
+    db_session.add(node)
+    await db_session.flush()
+    db_session.add(LeadSequenceState(
+        sequence_id=seq.id, lead_id=lead.id, current_node_id=node.id,
+        status=LeadSequenceStatus.ACTIVE,
+    ))
+    await db_session.commit()
+
+    resp = await client.post(f"/leads/{lead.id}/ignore")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["suppressed"] is True
+    assert body["already_suppressed"] is False
+    assert body["leads_halted"] == 1
+    assert str(cid) in body["campaigns_affected"]
+
+    # Suppression row present, keyed on lowered email.
+    s = await db_session.scalar(
+        _select(Suppression).where(Suppression.email == "target@example.com")
+    )
+    assert s is not None
+    assert s.reason.value == "manual"
+
+    # State row is now HALTED with the ignored-by-user reason.
+    state = await db_session.scalar(
+        _select(LeadSequenceState).where(LeadSequenceState.lead_id == lead.id)
+    )
+    assert state.status == LeadSequenceStatus.HALTED
+    assert state.halt_reason and "ignored" in state.halt_reason.lower()
+
+
+async def test_ignore_lead_halts_states_across_multiple_campaigns(client, db_session):
+    """When the same email appears in TWO campaigns, ignoring once
+    halts both sequence state rows + reports both campaigns back."""
+    from app.models import (
+        LeadSequenceState, LeadSequenceStatus, Sequence,
+        SequenceNode, SequenceNodeKind,
+    )
+    from sqlalchemy import select as _select
+
+    c1 = (await client.post("/campaigns/", json=_campaign_payload(name="C1"))).json()
+    c2 = (await client.post("/campaigns/", json=_campaign_payload(name="C2"))).json()
+    c1id, c2id = uuid.UUID(c1["id"]), uuid.UUID(c2["id"])
+
+    lead1 = Lead(campaign_id=c1id, email="dup@x.com", first_name="A")
+    lead2 = Lead(campaign_id=c2id, email="dup@x.com", first_name="A")
+    db_session.add_all([lead1, lead2])
+    await db_session.flush()
+
+    for cid, lead in ((c1id, lead1), (c2id, lead2)):
+        seq = (await db_session.execute(
+            _select(Sequence).where(Sequence.campaign_id == cid)
+        )).scalar_one()
+        node = SequenceNode(
+            sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+            config={"subject_template": "s", "body_template": "b"},
+            is_entry=True,
+        )
+        db_session.add(node)
+        await db_session.flush()
+        db_session.add(LeadSequenceState(
+            sequence_id=seq.id, lead_id=lead.id, current_node_id=node.id,
+            status=LeadSequenceStatus.ACTIVE,
+        ))
+    await db_session.commit()
+
+    # Ignore via lead1's id — should still halt lead2's state too.
+    resp = await client.post(f"/leads/{lead1.id}/ignore")
+    body = resp.json()
+    assert body["leads_halted"] == 2
+    assert set(body["campaigns_affected"]) == {str(c1id), str(c2id)}
+
+    # Both states halted.
+    states = (await db_session.execute(
+        _select(LeadSequenceState)
+        .where(LeadSequenceState.lead_id.in_([lead1.id, lead2.id]))
+    )).scalars().all()
+    assert all(s.status == LeadSequenceStatus.HALTED for s in states)
+
+
+async def test_ignore_lead_is_idempotent_on_repeat(client, db_session):
+    """Re-ignoring an already-suppressed lead returns
+    ``already_suppressed: true`` and doesn't error.  Defensive — repeat
+    clicks from a confused user shouldn't 500."""
+    from app.models import Suppression, SuppressionReason
+    from sqlalchemy import select as _select
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="X"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(campaign_id=cid, email="repeat@x.com")
+    db_session.add(lead)
+    db_session.add(Suppression(email="repeat@x.com", reason=SuppressionReason.MANUAL))
+    await db_session.commit()
+
+    resp = await client.post(f"/leads/{lead.id}/ignore")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["already_suppressed"] is True
+    # Still only one suppression row.
+    rows = (await db_session.execute(
+        _select(Suppression).where(Suppression.email == "repeat@x.com")
+    )).scalars().all()
+    assert len(rows) == 1
+
+
+async def test_ignore_lead_404_for_unknown(client):
+    import uuid as _uuid
+    resp = await client.post(f"/leads/{_uuid.uuid4()}/ignore")
+    assert resp.status_code == 404
+
+
+async def test_lead_detail_surfaces_is_suppressed_flag(client, db_session):
+    """``GET /leads/{id}`` returns ``is_suppressed=true`` +
+    ``suppression_reason`` so the UI can render the badge + swap the
+    Ignore button for Un-ignore."""
+    from app.models import Suppression, SuppressionReason
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="S"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(campaign_id=cid, email="susp@x.com")
+    db_session.add(lead)
+    db_session.add(Suppression(email="susp@x.com", reason=SuppressionReason.MANUAL))
+    await db_session.commit()
+
+    resp = await client.get(f"/leads/{lead.id}")
+    body = resp.json()
+    assert body["is_suppressed"] is True
+    assert body["suppression_reason"] == "manual"
+
+
+async def test_unignore_lead_removes_suppression(client, db_session):
+    """``DELETE /leads/{id}/ignore`` removes the suppression row.  Does
+    NOT reactivate halted state rows — that's intentional (prevents
+    accidental mass-resends)."""
+    from app.models import (
+        LeadSequenceState, LeadSequenceStatus, Sequence,
+        SequenceNode, SequenceNodeKind, Suppression, SuppressionReason,
+    )
+    from sqlalchemy import select as _select
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="U"))).json()
+    cid = uuid.UUID(c["id"])
+    lead = Lead(campaign_id=cid, email="un@x.com")
+    db_session.add(lead)
+    db_session.add(Suppression(email="un@x.com", reason=SuppressionReason.MANUAL))
+    await db_session.flush()
+    # Seed a halted state row so we can verify it STAYS halted after unignore.
+    seq = (await db_session.execute(
+        _select(Sequence).where(Sequence.campaign_id == cid)
+    )).scalar_one()
+    node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL,
+        config={"subject_template": "s", "body_template": "b"},
+        is_entry=True,
+    )
+    db_session.add(node)
+    await db_session.flush()
+    db_session.add(LeadSequenceState(
+        sequence_id=seq.id, lead_id=lead.id, current_node_id=node.id,
+        status=LeadSequenceStatus.HALTED,
+        halt_reason="ignored by user (manual suppression)",
+    ))
+    await db_session.commit()
+
+    resp = await client.delete(f"/leads/{lead.id}/ignore")
+    assert resp.status_code == 204
+
+    # Suppression row gone.
+    rows = (await db_session.execute(
+        _select(Suppression).where(Suppression.email == "un@x.com")
+    )).scalars().all()
+    assert rows == []
+
+    # State row STAYS HALTED — user has to re-enroll explicitly.
+    state = await db_session.scalar(
+        _select(LeadSequenceState).where(LeadSequenceState.lead_id == lead.id)
+    )
+    assert state.status == LeadSequenceStatus.HALTED
+
+
 async def test_apply_signature_400_when_campaign_has_no_signature(client):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     resp = await client.post(f"/campaigns/{created['id']}/apply-signature")

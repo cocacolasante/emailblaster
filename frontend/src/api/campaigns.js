@@ -124,6 +124,22 @@ export async function getLeadById(leadId) {
   return data;
 }
 
+/** Add the lead's email to the workspace suppression list AND halt any
+ *  active sequence state rows for any lead carrying that email.  Future
+ *  campaigns can't contact them; current ones stop progressing.
+ *  Idempotent — returns {already_suppressed: true} on a re-ignore. */
+export async function ignoreLead(leadId) {
+  const { data } = await client.post(`/leads/${leadId}/ignore`);
+  return data;
+}
+
+/** Reverse of ignoreLead — pulls the email off the suppression list.
+ *  Does NOT reactivate the halted state rows; user has to re-enroll
+ *  via the Activity tab if they want to contact the lead again. */
+export async function unignoreLead(leadId) {
+  await client.delete(`/leads/${leadId}/ignore`);
+}
+
 export async function applySignature(campaignId) {
   const { data } = await client.post(`/campaigns/${campaignId}/apply-signature`);
   return data;

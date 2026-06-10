@@ -9,6 +9,8 @@ vi.mock('../api/campaigns.js', () => ({
   getLeadDetail: vi.fn(),
   getLeadById: vi.fn(),
   updateLeadEmail: vi.fn(),
+  ignoreLead: vi.fn(),
+  unignoreLead: vi.fn(),
 }));
 
 import * as api from '../api/campaigns.js';
@@ -223,6 +225,89 @@ describe('Leads page', () => {
     // Header roll-up pill for opens.
     const pills = within(modal).getByTestId('lead-stat-pills');
     expect(within(pills).getByText(/1 open/)).toBeInTheDocument();
+  });
+
+  it('Ignore button calls ignoreLead after user confirms', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l5', campaign_id: 'c1', campaign_name: 'Q2', first_name: 'I',
+        last_name: 'G', email: 'ig@x.com', company: 'X',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l5', campaign_id: 'c1', email: 'ig@x.com',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+      is_suppressed: false, suppression_reason: null,
+    });
+    api.ignoreLead.mockResolvedValue({
+      suppressed: true, already_suppressed: false,
+      leads_halted: 1, campaigns_affected: ['c1'],
+    });
+
+    // Auto-confirm the window.confirm dialog.
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l5'));
+
+    const modal = await screen.findByTestId('lead-crm-modal');
+    const ignoreBtn = await within(modal).findByTestId('lead-ignore-btn');
+    await user.click(ignoreBtn);
+
+    await waitFor(() => {
+      expect(api.ignoreLead).toHaveBeenCalledWith('l5');
+    });
+  });
+
+  it('Ignore button does NOT call API when user cancels the confirm', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l6', campaign_id: 'c1', campaign_name: 'Q2', email: 'no@x.com',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l6', campaign_id: 'c1', email: 'no@x.com',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+      is_suppressed: false,
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l6'));
+    const modal = await screen.findByTestId('lead-crm-modal');
+    await user.click(await within(modal).findByTestId('lead-ignore-btn'));
+
+    expect(api.ignoreLead).not.toHaveBeenCalled();
+  });
+
+  it('Suppressed lead shows the badge + swaps Ignore button for Un-ignore', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l7', campaign_id: 'c1', campaign_name: 'Q2', email: 'sup@x.com',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l7', campaign_id: 'c1', email: 'sup@x.com',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+      is_suppressed: true, suppression_reason: 'manual',
+    });
+    api.unignoreLead.mockResolvedValue();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l7'));
+    const modal = await screen.findByTestId('lead-crm-modal');
+
+    // Badge present.
+    expect(await within(modal).findByTestId('lead-suppressed-badge')).toBeInTheDocument();
+    // Ignore button is gone; Un-ignore button is shown.
+    expect(within(modal).queryByTestId('lead-ignore-btn')).toBeNull();
+    const unignoreBtn = within(modal).getByTestId('lead-unignore-btn');
+    expect(unignoreBtn).toBeInTheDocument();
+
+    // Clicking it calls unignoreLead.
+    await user.click(unignoreBtn);
+    await waitFor(() => expect(api.unignoreLead).toHaveBeenCalledWith('l7'));
   });
 
   it('history section shows an empty hint when the timeline is empty', async () => {

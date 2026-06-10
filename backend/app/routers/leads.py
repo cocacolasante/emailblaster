@@ -16,15 +16,19 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
+    LeadSequenceState,
+    LeadSequenceStatus,
     LeadStepExecution,
     LeadStepResult,
     SendStatus,
     SequenceNode,
     SequenceNodeKind,
     Suppression,
+    SuppressionReason,
 )
 from app.schemas.lead import (
     ConfirmUploadResponse,
+    IgnoreLeadResponse,
     LeadDetail,
     LeadHistoryItem,
     LeadSummary,
@@ -245,6 +249,14 @@ async def get_lead_detail(
     # source row landed first in the list.
     history.sort(key=lambda h: h.at, reverse=True)
 
+    # Suppression check (workspace-wide, keyed on lowered email).  Both
+    # the bulk send pipeline and the sequencer block sends to a
+    # suppressed email, so this drives the UI badge + the disabled state
+    # on the Ignore button.
+    suppression = await db.scalar(
+        select(Suppression).where(Suppression.email == lead.email.lower().strip())
+    )
+
     detail = LeadDetail(
         id=lead.id,
         campaign_id=lead.campaign_id,
@@ -279,8 +291,105 @@ async def get_lead_detail(
         history=history,
         history_counts=counts,
         research_summary=_research_summary(lead.research_data),
+        is_suppressed=suppression is not None,
+        suppression_reason=(
+            suppression.reason.value if suppression is not None else None
+        ),
     )
     return detail
+
+
+@router.post("/leads/{lead_id}/ignore", response_model=IgnoreLeadResponse)
+async def ignore_lead(
+    lead_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> IgnoreLeadResponse:
+    """Mark a lead's email as workspace-wide suppressed AND halt every
+    active sequence state row for any Lead carrying that same email.
+
+    Two effects combined:
+    1. Future campaigns are protected — the bulk send pipeline + the
+       sequencer step gates both reject sends to a suppressed email, so
+       even if the user later uploads a CSV containing the same address,
+       no outreach can land.
+    2. Current campaigns are stopped — every ACTIVE state row for any
+       lead with this email is flipped to HALTED with a clear reason.
+       The next sequencer tick will see them halted and skip them.
+
+    Idempotent: re-ignoring an already-suppressed lead just halts any
+    state rows that have since drifted back to ACTIVE (defensive — in
+    practice once HALTED stays HALTED).
+    """
+    lead = await db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    canonical = lead.email.lower().strip()
+
+    # Step 1: upsert into the suppression list.  Unique index on email
+    # means a duplicate INSERT would 23505 — handle the existence check
+    # up front so we can report it back to the UI.
+    existing = await db.scalar(
+        select(Suppression).where(Suppression.email == canonical)
+    )
+    already_suppressed = existing is not None
+    if not already_suppressed:
+        db.add(Suppression(email=canonical, reason=SuppressionReason.MANUAL))
+
+    # Step 2: halt every sequence state row for ANY lead with the same
+    # email (could be more than one row if the email is shared across
+    # multiple campaigns).  We only flip ACTIVE rows — already-HALTED
+    # rows are left as-is so we don't overwrite an earlier halt reason.
+    state_rows = (await db.execute(
+        select(LeadSequenceState, Lead.campaign_id)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(Lead.email == lead.email)  # same case as the original lead
+        .where(LeadSequenceState.status == LeadSequenceStatus.ACTIVE)
+    )).all()
+
+    halted_count = 0
+    campaigns_affected: set[uuid.UUID] = set()
+    for state, campaign_id in state_rows:
+        state.status = LeadSequenceStatus.HALTED
+        state.halt_reason = "ignored by user (manual suppression)"
+        state.next_run_at = None
+        halted_count += 1
+        campaigns_affected.add(campaign_id)
+
+    await db.commit()
+
+    return IgnoreLeadResponse(
+        suppressed=True,
+        already_suppressed=already_suppressed,
+        leads_halted=halted_count,
+        campaigns_affected=sorted(campaigns_affected),
+    )
+
+
+@router.delete("/leads/{lead_id}/ignore", status_code=204, response_model=None)
+async def unignore_lead(
+    lead_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Remove the lead's email from the suppression list so future
+    campaigns CAN contact them again.
+
+    Does NOT reactivate the halted sequence state rows on existing
+    campaigns — if the user wants to re-enroll the lead they can do so
+    via the Activity tab or by re-uploading them.  Keeping the previous
+    halt intact prevents an accidental un-ignore from triggering a
+    surprise mass-send."""
+    lead = await db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    canonical = lead.email.lower().strip()
+    suppression = await db.scalar(
+        select(Suppression).where(Suppression.email == canonical)
+    )
+    if suppression is not None:
+        await db.delete(suppression)
+        await db.commit()
 
 
 # Lead-model fields the user is allowed to populate from a CSV column.

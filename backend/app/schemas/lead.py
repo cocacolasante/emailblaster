@@ -91,6 +91,24 @@ class LeadDetail(LeadResponse):
     # Lightweight roll-ups for the UI header pills.
     history_counts: dict[str, int]  # {"sent": 3, "opened": 1, "replied": 0, ...}
     research_summary: dict[str, Any]  # {industry, person_news, company_news, ...}
+    # True when the lead's email is on the workspace suppression list —
+    # the bulk send pipeline blocks them and the sequencer beat will
+    # never advance them.  UI shows a "Suppressed" badge + disables the
+    # Ignore button.
+    is_suppressed: bool = False
+    # Why they're suppressed when ``is_suppressed`` is True (manual,
+    # unsubscribed, hard_bounce, spam).  None when not suppressed.
+    suppression_reason: str | None = None
+
+
+class IgnoreLeadResponse(BaseModel):
+    """Result of POST ``/leads/{id}/ignore`` — how many lead rows we
+    halted (could be more than one if the same email appears in multiple
+    campaigns) + which campaigns those rows belonged to."""
+    suppressed: bool
+    already_suppressed: bool
+    leads_halted: int
+    campaigns_affected: list[uuid.UUID]
 
 
 class PaginatedLeads(BaseModel):

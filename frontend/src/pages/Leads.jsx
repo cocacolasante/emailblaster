@@ -4,8 +4,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getLeadById,
   getLeadDetail,
+  ignoreLead,
   listAllLeads,
   listCampaigns,
+  unignoreLead,
   updateLeadEmail,
 } from '../api/campaigns.js';
 import { useToast } from '../components/Toast.jsx';
@@ -228,6 +230,42 @@ function LeadCrmModal({ lead, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save notes'),
   });
 
+  const ignoreMutation = useMutation({
+    mutationFn: () => ignoreLead(lead.id),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      const halted = data?.leads_halted ?? 0;
+      const camps = (data?.campaigns_affected || []).length;
+      if (data?.already_suppressed) {
+        toast.success(
+          halted > 0
+            ? `Already suppressed — halted ${halted} drifted lead row${halted === 1 ? '' : 's'}.`
+            : 'This lead was already suppressed.',
+        );
+      } else {
+        toast.success(
+          `Lead ignored — suppressed and halted ${halted} sequence${halted === 1 ? '' : 's'}` +
+          (camps > 1 ? ` across ${camps} campaigns.` : '.'),
+        );
+      }
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to ignore lead'),
+  });
+
+  const unignoreMutation = useMutation({
+    mutationFn: () => unignoreLead(lead.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      toast.success('Lead un-suppressed — future campaigns can contact them again.');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to un-ignore lead'),
+  });
+
+  const isSuppressed = view?.is_suppressed === true;
+  const suppressionReason = view?.suppression_reason;
+
   // Derived display values (safe on partial detail loads).
   const fullName = (lead.first_name || lead.last_name)
     ? `${lead.first_name || ''} ${lead.last_name || ''}`.trim()
@@ -262,6 +300,19 @@ function LeadCrmModal({ lead, onClose }) {
             {/* Stat pills: quick at-a-glance roll-up */}
             <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="lead-stat-pills">
               <StatusPill value={lead.send_status} />
+              {isSuppressed && (
+                <span
+                  data-testid="lead-suppressed-badge"
+                  className="px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-800"
+                  title={
+                    suppressionReason
+                      ? `Suppressed (${suppressionReason}) — workspace-wide; future campaigns cannot contact this email.`
+                      : 'Suppressed workspace-wide; future campaigns cannot contact this email.'
+                  }
+                >
+                  🚫 Suppressed
+                </span>
+              )}
               {counts.opened > 0 && (
                 <span className="px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700">
                   👀 {counts.opened} open{counts.opened === 1 ? '' : 's'}
@@ -284,12 +335,54 @@ function LeadCrmModal({ lead, onClose }) {
               )}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 text-xl bg-transparent border-none cursor-pointer p-1"
-            aria-label="Close"
-          >×</button>
+          <div className="flex items-center gap-2">
+            {/* Ignore / Un-ignore — primary destructive action up top so
+                the user finds it without scrolling.  Disabled while the
+                detail is still loading so the user can't kick off the
+                action before seeing the current suppression state. */}
+            {isSuppressed ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm(
+                    'Remove this lead from the suppression list?  ' +
+                    'Future campaigns will be able to contact this email again.  ' +
+                    'This does NOT reactivate any already-halted sequence steps — ' +
+                    "you'd need to re-enroll the lead via the Activity tab.",
+                  )) unignoreMutation.mutate();
+                }}
+                disabled={!view || unignoreMutation.isPending}
+                data-testid="lead-unignore-btn"
+                className="px-3 py-1.5 text-xs font-medium border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg disabled:opacity-50"
+              >
+                {unignoreMutation.isPending ? 'Un-ignoring…' : 'Un-ignore'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm(
+                    `Ignore ${lead.email}?\n\n` +
+                    "• They'll be added to the workspace suppression list.\n" +
+                    '• Any active sequence steps for this email (across all campaigns) will be halted.\n' +
+                    "• Future campaigns that include this email will skip them automatically.\n\n" +
+                    'You can un-ignore later from this same modal.',
+                  )) ignoreMutation.mutate();
+                }}
+                disabled={!view || ignoreMutation.isPending}
+                data-testid="lead-ignore-btn"
+                className="px-3 py-1.5 text-xs font-medium border border-red-300 text-red-700 hover:bg-red-50 rounded-lg disabled:opacity-50"
+              >
+                {ignoreMutation.isPending ? 'Ignoring…' : '🚫 Ignore lead'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-600 text-xl bg-transparent border-none cursor-pointer p-1"
+              aria-label="Close"
+            >×</button>
+          </div>
         </div>
 
         {/* Contact / outreach info card */}
