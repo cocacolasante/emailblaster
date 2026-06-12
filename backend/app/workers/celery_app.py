@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import settings
 
@@ -18,6 +19,7 @@ celery_app = Celery(
         "app.workers.lead_sweeper",
         "app.workers.social_listening",
         "app.workers.agent_sweeper",
+        "app.workers.digest",
     ],
 )
 
@@ -80,5 +82,11 @@ celery_app.conf.beat_schedule = {
         # Nudge open opportunities idle > AGENT_STALE_OPP_DAYS.
         "task": "agent_sweeper.sweep_stale_opps",
         "schedule": 3600.0,  # hourly
+    },
+    "agent-daily-digest": {
+        # One summary email a day; idempotent via the digest:<date>
+        # dedup key, so a beat double-fire can't send two.
+        "task": "digest.send_daily",
+        "schedule": crontab(minute=0, hour=settings.AGENT_DIGEST_HOUR_UTC),
     },
 }
