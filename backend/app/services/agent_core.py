@@ -16,12 +16,34 @@ action; the agent only *prompts* it via reminders/notifications.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AGENT_SETTINGS_SINGLETON_ID, AgentSettings
+from app.models import (
+    AGENT_SETTINGS_SINGLETON_ID,
+    AgentAction,
+    AgentActionStatus,
+    AgentActionType,
+    AgentSettings,
+    CrmActivity,
+    CrmActivityDirection,
+    CrmActivityType,
+    Lead,
+    NotificationKind,
+)
+from app.services import notifications
 
 logger = logging.getLogger(__name__)
+
+# Reminder subjects double as the idempotency match key (open agent
+# task with this subject for the same parent = already reminded).
+CONVERT_REMINDER_SUBJECT = "Convert lead to opportunity"
+FOLLOWUP_REMINDER_SUBJECT = "Follow up — positive reply"
 
 
 async def get_agent_settings(session: AsyncSession) -> AgentSettings:
@@ -40,3 +62,304 @@ async def get_agent_settings(session: AsyncSession) -> AgentSettings:
         # confidence threshold) carry real values instead of None.
         await session.refresh(row)
     return row
+
+
+def record_agent_action(
+    session: AsyncSession,
+    *,
+    action_type: AgentActionType,
+    status: AgentActionStatus,
+    summary: str,
+    lead_id: uuid.UUID | None = None,
+    opportunity_id: uuid.UUID | None = None,
+    activity_id: uuid.UUID | None = None,
+    detail: dict[str, Any] | None = None,
+    model: str | None = None,
+    cost_usd: float | None = None,
+) -> AgentAction:
+    """Append one audit row (added to the session, not flushed)."""
+    row = AgentAction(
+        action_type=action_type,
+        status=status,
+        summary=summary[:500],
+        lead_id=lead_id,
+        opportunity_id=opportunity_id,
+        activity_id=activity_id,
+        detail=detail,
+        model=model,
+        cost_usd=Decimal(str(round(cost_usd, 6))) if cost_usd else None,
+    )
+    session.add(row)
+    return row
+
+
+def next_business_day(now: datetime) -> datetime:
+    """``now`` + 1 day, rolled forward past Saturday/Sunday."""
+    due = now + timedelta(days=1)
+    while due.weekday() >= 5:  # 5=Sat, 6=Sun
+        due += timedelta(days=1)
+    return due
+
+
+async def _open_agent_task_exists(
+    session: AsyncSession,
+    *,
+    subject: str,
+    lead_id: uuid.UUID | None = None,
+    opportunity_id: uuid.UUID | None = None,
+) -> bool:
+    """True when an open (uncompleted) agent-generated task with this
+    subject already exists for the given parent — the reminder
+    idempotency check."""
+    q = select(CrmActivity.id).where(
+        CrmActivity.activity_type == CrmActivityType.TASK,
+        CrmActivity.completed_at.is_(None),
+        CrmActivity.is_agent_generated.is_(True),
+        CrmActivity.subject == subject,
+    )
+    if lead_id is not None:
+        q = q.where(CrmActivity.lead_id == lead_id)
+    if opportunity_id is not None:
+        q = q.where(CrmActivity.opportunity_id == opportunity_id)
+    return (await session.scalar(q.limit(1))) is not None
+
+
+async def process_inbound_reply(
+    session: AsyncSession,
+    lead: Lead,
+    msg: dict[str, Any],
+    classification: Any,  # reply_sentiment.ReplyClassification
+) -> dict[str, Any]:
+    """Run the agent's reply pipeline for ONE newly-polled inbound reply.
+
+    Steps (each individually gated by AgentSettings):
+      1. Log an inbound-email CrmActivity carrying the sentiment.
+      2. Positive + confident + unconverted → idempotent convert-reminder
+         task (due next business day).
+      3. Positive + already converted → follow-up task on the deal.
+      4. Notifications per the notify_* toggles, deduped on message id.
+
+    Every step writes an AgentAction audit row.  Caller owns the
+    transaction (commit after).  Returns a summary dict for logging.
+    """
+    agent_settings = await get_agent_settings(session)
+    message_id = (msg.get("message_id") or "") or f"uid:{msg.get('uid', uuid.uuid4().hex)}"
+    now = datetime.now(timezone.utc)
+    result: dict[str, Any] = {
+        "activity_logged": False,
+        "reminder_created": False,
+        "notified": False,
+    }
+
+    sentiment = getattr(classification, "sentiment", "neutral")
+    confidence = float(getattr(classification, "confidence", 0.0))
+    summary_line = getattr(classification, "summary", "") or ""
+    classify_detail = {
+        "sentiment": sentiment,
+        "intent": getattr(classification, "intent", "other"),
+        "confidence": confidence,
+        "summary": summary_line,
+        "suggested_next_action": getattr(classification, "suggested_next_action", ""),
+        "message_id": message_id,
+    }
+
+    # ---- audit the classification itself ----
+    record_agent_action(
+        session,
+        action_type=AgentActionType.CLASSIFY_REPLY,
+        status=(
+            AgentActionStatus.FAILED
+            if getattr(classification, "parse_failed", False)
+            else AgentActionStatus.SUCCESS
+        ),
+        summary=f"Classified reply as {sentiment} ({confidence:.2f})",
+        lead_id=lead.id,
+        detail=classify_detail,
+        model=getattr(classification, "model", None) or None,
+        cost_usd=float(getattr(classification, "cost_usd", 0.0) or 0.0),
+    )
+
+    converted_opp_id = getattr(lead, "converted_opportunity_id", None)
+
+    # ---- 1. log the inbound email activity ----
+    activity: CrmActivity | None = None
+    if agent_settings.auto_log_replies:
+        activity = CrmActivity(
+            lead_id=lead.id,
+            # Converted lead → mirror onto the deal timeline too.
+            opportunity_id=converted_opp_id,
+            activity_type=CrmActivityType.EMAIL,
+            direction=CrmActivityDirection.INBOUND,
+            subject=(msg.get("subject") or "(no subject)")[:500],
+            body=(msg.get("body_text") or "")[:4000] or None,
+            sentiment=sentiment,
+            is_agent_generated=True,
+            occurred_at=msg.get("received_at") or now,
+        )
+        session.add(activity)
+        await session.flush()
+        result["activity_logged"] = True
+        record_agent_action(
+            session,
+            action_type=AgentActionType.LOG_ACTIVITY,
+            status=AgentActionStatus.SUCCESS,
+            summary=f"Logged inbound reply from {msg.get('from_email', '?')}",
+            lead_id=lead.id,
+            opportunity_id=converted_opp_id,
+            activity_id=activity.id,
+        )
+    else:
+        record_agent_action(
+            session,
+            action_type=AgentActionType.LOG_ACTIVITY,
+            status=AgentActionStatus.SKIPPED,
+            summary="auto_log_replies disabled",
+            lead_id=lead.id,
+        )
+
+    # ---- 2./3. reminder tasks on a confident positive ----
+    is_positive = sentiment == "positive"
+    confident = confidence >= float(agent_settings.min_confidence_to_act)
+    if is_positive and not confident:
+        record_agent_action(
+            session,
+            action_type=AgentActionType.CREATE_REMINDER,
+            status=AgentActionStatus.SKIPPED,
+            summary=(
+                f"confidence {confidence:.2f} below threshold "
+                f"{agent_settings.min_confidence_to_act}"
+            ),
+            lead_id=lead.id,
+        )
+    elif is_positive and converted_opp_id is None:
+        if not agent_settings.auto_create_convert_reminders:
+            record_agent_action(
+                session,
+                action_type=AgentActionType.CREATE_REMINDER,
+                status=AgentActionStatus.SKIPPED,
+                summary="auto_create_convert_reminders disabled",
+                lead_id=lead.id,
+            )
+        elif await _open_agent_task_exists(
+            session, subject=CONVERT_REMINDER_SUBJECT, lead_id=lead.id,
+        ):
+            record_agent_action(
+                session,
+                action_type=AgentActionType.CREATE_REMINDER,
+                status=AgentActionStatus.SKIPPED,
+                summary="open convert reminder already exists",
+                lead_id=lead.id,
+            )
+        else:
+            reminder = CrmActivity(
+                lead_id=lead.id,
+                activity_type=CrmActivityType.TASK,
+                subject=CONVERT_REMINDER_SUBJECT,
+                body=(
+                    f"Positive reply received ({confidence:.0%} confidence): "
+                    f"{summary_line}"
+                )[:1000],
+                due_at=next_business_day(now),
+                is_agent_generated=True,
+            )
+            session.add(reminder)
+            await session.flush()
+            result["reminder_created"] = True
+            record_agent_action(
+                session,
+                action_type=AgentActionType.CREATE_REMINDER,
+                status=AgentActionStatus.SUCCESS,
+                summary="Created convert-lead reminder (due next business day)",
+                lead_id=lead.id,
+                activity_id=reminder.id,
+            )
+    elif is_positive and converted_opp_id is not None:
+        if await _open_agent_task_exists(
+            session, subject=FOLLOWUP_REMINDER_SUBJECT,
+            opportunity_id=converted_opp_id,
+        ):
+            record_agent_action(
+                session,
+                action_type=AgentActionType.CREATE_REMINDER,
+                status=AgentActionStatus.SKIPPED,
+                summary="open follow-up reminder already exists on the deal",
+                lead_id=lead.id,
+                opportunity_id=converted_opp_id,
+            )
+        else:
+            followup = CrmActivity(
+                lead_id=lead.id,
+                opportunity_id=converted_opp_id,
+                activity_type=CrmActivityType.TASK,
+                subject=FOLLOWUP_REMINDER_SUBJECT,
+                body=(
+                    f"Positive reply received ({confidence:.0%} confidence): "
+                    f"{summary_line}"
+                )[:1000],
+                due_at=next_business_day(now),
+                is_agent_generated=True,
+            )
+            session.add(followup)
+            await session.flush()
+            result["reminder_created"] = True
+            record_agent_action(
+                session,
+                action_type=AgentActionType.CREATE_REMINDER,
+                status=AgentActionStatus.SUCCESS,
+                summary="Created follow-up reminder on the converted deal",
+                lead_id=lead.id,
+                opportunity_id=converted_opp_id,
+                activity_id=followup.id,
+            )
+
+    # ---- 4. notifications ----
+    lead_name = " ".join(
+        x for x in [lead.first_name, lead.last_name] if x
+    ) or lead.email
+    should_notify_positive = (
+        is_positive and confident and agent_settings.notify_on_positive_reply
+    )
+    should_notify_any = agent_settings.notify_on_any_reply
+    if should_notify_positive or should_notify_any:
+        kind = (
+            NotificationKind.POSITIVE_REPLY
+            if should_notify_positive
+            else NotificationKind.REPLY
+        )
+        outcome = await notifications.notify(
+            session,
+            agent_settings,
+            kind=kind,
+            title=(
+                f"Positive reply from {lead_name}"
+                if should_notify_positive
+                else f"Reply from {lead_name}"
+            ),
+            body=(
+                f"{summary_line}\n\nSubject: {msg.get('subject', '')}\n"
+                f"From: {msg.get('from_email', '')}"
+            ),
+            dedup_key=f"{kind.value}:{message_id}",
+            lead_id=lead.id,
+            opportunity_id=converted_opp_id,
+            activity_id=activity.id if activity is not None else None,
+        )
+        result["notified"] = outcome["notification"] is not None
+        record_agent_action(
+            session,
+            action_type=AgentActionType.SEND_NOTIFICATION,
+            status=(
+                AgentActionStatus.SUCCESS
+                if outcome["notification"] is not None
+                else AgentActionStatus.SKIPPED
+            ),
+            summary=(
+                "Notified owner of reply"
+                if outcome["notification"] is not None
+                else "notification deduped (already sent for this message)"
+            ),
+            lead_id=lead.id,
+            detail={"deduped": outcome["deduped"], "emailed": outcome["emailed"]},
+        )
+
+    return result

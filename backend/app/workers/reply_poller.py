@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models import (
+    AgentActionStatus,
+    AgentActionType,
     Campaign,
     CampaignStatus,
     ConnectedAccount,
@@ -32,7 +34,7 @@ from app.models import (
     EmailEvent,
     EmailEventType,
 )
-from app.services import imap_client  # decryption stays inside imap_client
+from app.services import agent_core, imap_client, reply_sentiment
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,26 @@ SINCE_GRACE = timedelta(hours=1)
 # worth of replies at 10 replies/poll which is plenty for our cadence
 # (every 20 minutes).
 MAX_PROCESSED_IDS = 500
+
+
+async def _run_agent_for_reply(session: AsyncSession, lead, msg: dict) -> None:
+    """Classify one inbound reply and hand it to the agent core."""
+    campaign_goal = None
+    if lead.campaign_id is not None:
+        campaign = await session.get(Campaign, lead.campaign_id)
+        campaign_goal = getattr(campaign, "goal", None)
+    classification = await reply_sentiment.classify_reply(
+        subject=msg.get("subject", ""),
+        body_text=msg.get("body_text", ""),
+        lead_context={
+            "name": " ".join(x for x in [lead.first_name, lead.last_name] if x),
+            "email": lead.email,
+            "company": lead.company,
+            "job_title": lead.job_title,
+            "campaign_goal": campaign_goal,
+        },
+    )
+    await agent_core.process_inbound_reply(session, lead, dict(msg), classification)
 
 
 async def poll_account_for_replies(
@@ -108,6 +130,28 @@ async def poll_account_for_replies(
             },
         ))
         replies_found += 1
+
+        # ---- agent pipeline (classify → log → remind → notify) ----
+        # Runs ONLY for newly-processed messages: the fetcher already
+        # skipped anything in processed_imap_message_ids, so a re-poll
+        # can never re-classify (and never double-spends Anthropic).
+        # Best-effort: any agent failure logs an audit row and moves on
+        # — reply recording must never be blocked by the agent.
+        if settings.AGENT_ENABLED:
+            try:
+                await _run_agent_for_reply(session, lead, msg)
+            except Exception as exc:  # noqa: BLE001 — agent must never break polling
+                logger.exception("agent reply pipeline failed for %s", mid)
+                try:
+                    agent_core.record_agent_action(
+                        session,
+                        action_type=AgentActionType.CLASSIFY_REPLY,
+                        status=AgentActionStatus.FAILED,
+                        summary=f"agent pipeline crashed: {exc}",
+                        lead_id=lead.id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
     if newly_processed:
         # Append new IDs, dedup, trim to last MAX_PROCESSED_IDS preserving

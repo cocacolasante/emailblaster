@@ -81,6 +81,66 @@ class FetchedMessage(TypedDict, total=False):
     references: list[str]
     subject: str
     from_email: str
+    # Plain-text body (text/plain part preferred, stripped-HTML fallback),
+    # truncated to _BODY_MAX_CHARS for the reply classifier.
+    body_text: str
+    # Parsed from the Date header; None when missing/unparseable.
+    received_at: datetime | None
+
+
+# Classifier input cap — replies longer than this carry no extra signal
+# and only add input-token cost.
+_BODY_MAX_CHARS = 4000
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_BLOCK_RE = re.compile(
+    r"<(?:style|script)\b[^>]*>.*?</(?:style|script)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_body_text(msg: email.message.Message) -> str:
+    """Pull a plain-text body from a parsed email: first ``text/plain``
+    part wins; falls back to tag-stripped ``text/html``.  Truncated to
+    ``_BODY_MAX_CHARS``."""
+    plain: str | None = None
+    html: str | None = None
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    for part in parts:
+        ctype = (part.get_content_type() or "").lower()
+        if ctype not in ("text/plain", "text/html"):
+            continue
+        if part.is_multipart():
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            text = payload.decode(charset, errors="replace")
+        except Exception:  # noqa: BLE001 — bad charset/encoding, skip part
+            continue
+        if ctype == "text/plain" and plain is None:
+            plain = text
+            break  # plain wins; no need to keep walking
+        if ctype == "text/html" and html is None:
+            html = text
+    body = plain
+    if body is None and html is not None:
+        stripped = _HTML_BLOCK_RE.sub(" ", html)
+        stripped = _HTML_TAG_RE.sub(" ", stripped)
+        body = re.sub(r"\s+", " ", stripped).strip()
+    return (body or "")[:_BODY_MAX_CHARS]
+
+
+def _parse_received_at(msg: email.message.Message) -> datetime | None:
+    raw = msg.get("Date", "") or ""
+    if not raw:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(raw)
+    except Exception:  # noqa: BLE001 — malformed Date header
+        return None
 
 
 def _clean_message_id(raw: str) -> str:
@@ -146,6 +206,8 @@ def fetch_recent_messages(
         uids = data[0].split()
         for uid in uids:
             # BODY.PEEK[HEADER] is the side-effect-free fetch variant.
+            # Header-only first so skip-set messages never pay the
+            # full-body transfer.
             typ, msg_data = client.fetch(uid, "(BODY.PEEK[HEADER])")
             if typ != "OK" or not msg_data:
                 continue
@@ -167,6 +229,20 @@ def fetch_recent_messages(
                         for r in refs_raw.split()
                         if r.strip()
                     ]
+                    # Body for the reply classifier — full-message PEEK
+                    # (still side-effect-free per RFC 3501 §6.4.5), parsed
+                    # with the stdlib MIME walker.  Soft-fails to "".
+                    body_text = ""
+                    try:
+                        typ_b, body_data = client.fetch(uid, "(BODY.PEEK[])")
+                        if typ_b == "OK" and body_data:
+                            for bpart in body_data:
+                                if isinstance(bpart, tuple) and len(bpart) > 1:
+                                    full = email.message_from_bytes(bpart[1])
+                                    body_text = _extract_body_text(full)
+                                    break
+                    except Exception:  # noqa: BLE001 — body fetch is best-effort
+                        logger.debug("body fetch failed for uid %s", uid)
                     out.append(FetchedMessage(
                         uid=uid.decode() if isinstance(uid, bytes) else str(uid),
                         message_id=message_id,
@@ -174,6 +250,8 @@ def fetch_recent_messages(
                         references=refs,
                         subject=headers.get("Subject", "") or "",
                         from_email=(from_email_addr or "").lower(),
+                        body_text=body_text,
+                        received_at=_parse_received_at(headers),
                     ))
                     break
         return out

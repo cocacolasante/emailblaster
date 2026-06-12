@@ -81,9 +81,12 @@ def test_fetch_recent_messages_uses_readonly_select_and_peek_fetch():
 
     # select must be readonly=True
     m.select.assert_called_with("INBOX", readonly=True)
-    # fetch must use the side-effect-free PEEK form
-    fetch_args = m.fetch.call_args
-    assert fetch_args[0][1] == "(BODY.PEEK[HEADER])"
+    # EVERY fetch (header pass AND the body pass added for the reply
+    # classifier) must use a side-effect-free PEEK form — plain BODY[]
+    # sets \Seen.
+    assert m.fetch.call_count >= 1
+    for call in m.fetch.call_args_list:
+        assert "BODY.PEEK[" in call[0][1], call[0][1]
     # And no STORE call (no Seen-flag mutation) was ever issued.
     m.store.assert_not_called()
 
@@ -301,3 +304,123 @@ async def test_match_scoped_to_campaign_ids(db_session):
         db_session, msg, [other_campaign.id]
     )
     assert matched is None
+
+
+# --------------------------------------------------------------------------
+# Body extraction (agent reply classifier input)
+# --------------------------------------------------------------------------
+
+
+def _full_message_bytes(headers: dict[str, str], body: str) -> bytes:
+    head = "\r\n".join(f"{k}: {v}" for k, v in headers.items())
+    return (head + "\r\n\r\n" + body).encode()
+
+
+def test_fetch_recent_messages_extracts_plain_text_body():
+    """The second (body) fetch parses text/plain into body_text and the
+    Date header into received_at."""
+    headers = {
+        "From": "jane@external.com",
+        "Subject": "Re: hello",
+        "Message-ID": "<mid-body-1>",
+        "Date": "Thu, 11 Jun 2026 09:30:00 +0000",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    header_bytes = _imap_message_bytes(headers)
+    full_bytes = _full_message_bytes(headers, "Yes — let's talk Tuesday.\r\nJane")
+
+    m = MagicMock()
+    m.select.return_value = ("OK", [b"1"])
+    m.search.return_value = ("OK", [b"5"])
+    # First fetch = header pass, second = full-body pass.
+    m.fetch.side_effect = [
+        ("OK", [(b"5 (BODY[HEADER]", header_bytes)]),
+        ("OK", [(b"5 (BODY[]", full_bytes)]),
+    ]
+
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        msgs = imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+
+    assert len(msgs) == 1
+    assert "let's talk Tuesday" in msgs[0]["body_text"]
+    assert msgs[0]["received_at"] is not None
+    assert msgs[0]["received_at"].year == 2026
+
+
+def test_fetch_recent_messages_html_fallback_strips_tags():
+    """No text/plain part → fall back to tag-stripped text/html."""
+    boundary = "BOUNDARY42"
+    headers = {
+        "From": "j@x.com",
+        "Subject": "Re: hi",
+        "Message-ID": "<mid-html-1>",
+        "Content-Type": f'multipart/alternative; boundary="{boundary}"',
+    }
+    body = (
+        f"--{boundary}\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n\r\n"
+        "<html><body><p>Sounds <b>great</b>, send the deck.</p></body></html>\r\n"
+        f"--{boundary}--\r\n"
+    )
+    m = MagicMock()
+    m.select.return_value = ("OK", [b"1"])
+    m.search.return_value = ("OK", [b"6"])
+    m.fetch.side_effect = [
+        ("OK", [(b"6 (BODY[HEADER]", _imap_message_bytes(headers))]),
+        ("OK", [(b"6 (BODY[]", _full_message_bytes(headers, body))]),
+    ]
+
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        msgs = imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+
+    assert len(msgs) == 1
+    text = msgs[0]["body_text"]
+    assert "Sounds" in text and "great" in text and "send the deck" in text
+    assert "<" not in text  # tags stripped
+
+
+def test_fetch_recent_messages_body_truncated_to_cap():
+    headers = {
+        "From": "j@x.com", "Subject": "Re: hi",
+        "Message-ID": "<mid-long-1>",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    long_body = "word " * 3000  # ~15000 chars
+    m = MagicMock()
+    m.select.return_value = ("OK", [b"1"])
+    m.search.return_value = ("OK", [b"7"])
+    m.fetch.side_effect = [
+        ("OK", [(b"7 (BODY[HEADER]", _imap_message_bytes(headers))]),
+        ("OK", [(b"7 (BODY[]", _full_message_bytes(headers, long_body))]),
+    ]
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        msgs = imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+    assert len(msgs[0]["body_text"]) <= 4000
+
+
+def test_fetch_recent_messages_body_fetch_failure_soft_fails():
+    """A failed body fetch must not drop the message — headers still
+    surface with an empty body_text."""
+    headers = {
+        "From": "j@x.com", "Subject": "Re: hi",
+        "Message-ID": "<mid-bodyfail-1>",
+    }
+    m = MagicMock()
+    m.select.return_value = ("OK", [b"1"])
+    m.search.return_value = ("OK", [b"8"])
+    m.fetch.side_effect = [
+        ("OK", [(b"8 (BODY[HEADER]", _imap_message_bytes(headers))]),
+        RuntimeError("body fetch exploded"),
+    ]
+    with patch("app.services.imap_client.IMAP4_SSL", return_value=m):
+        msgs = imap_client.fetch_recent_messages(
+            "h", 993, True, "u", "p", datetime(2026, 5, 1, tzinfo=timezone.utc),
+        )
+    assert len(msgs) == 1
+    assert msgs[0]["body_text"] == ""
