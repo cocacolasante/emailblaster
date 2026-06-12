@@ -151,6 +151,7 @@ async def process_inbound_reply(
     result: dict[str, Any] = {
         "activity_logged": False,
         "reminder_created": False,
+        "draft_created": False,
         "notified": False,
     }
 
@@ -315,7 +316,57 @@ async def process_inbound_reply(
                 activity_id=followup.id,
             )
 
-    # ---- 4. notifications ----
+    # ---- 4. suggested reply draft (optional, Sonnet) ----
+    draft_body: str | None = None
+    if agent_settings.auto_draft_replies and activity is not None:
+        from app.services import reply_drafter  # local import to avoid cycles
+
+        intent = getattr(classification, "intent", "other")
+        if not reply_drafter.should_draft(intent):
+            record_agent_action(
+                session,
+                action_type=AgentActionType.DRAFT_REPLY,
+                status=AgentActionStatus.SKIPPED,
+                summary=f"no draft for intent={intent}",
+                lead_id=lead.id,
+                activity_id=activity.id,
+            )
+        else:
+            draft = await reply_drafter.draft_reply(
+                subject=msg.get("subject", ""),
+                body_text=msg.get("body_text", ""),
+                classification=classification,
+                lead_context={
+                    "name": " ".join(
+                        x for x in [lead.first_name, lead.last_name] if x
+                    ),
+                    "email": lead.email,
+                    "company": lead.company,
+                    "job_title": lead.job_title,
+                },
+            )
+            if draft.ok:
+                draft_body = draft.body
+                result["draft_created"] = True
+            record_agent_action(
+                session,
+                action_type=AgentActionType.DRAFT_REPLY,
+                status=(
+                    AgentActionStatus.SUCCESS if draft.ok else AgentActionStatus.FAILED
+                ),
+                summary=(
+                    "Drafted suggested reply" if draft.ok
+                    else "reply draft failed — see logs"
+                ),
+                lead_id=lead.id,
+                activity_id=activity.id,
+                # The triage feed reads draft_body off this audit row.
+                detail={"draft_body": draft.body} if draft.ok else None,
+                model=draft.model or None,
+                cost_usd=draft.cost_usd,
+            )
+
+    # ---- 5. notifications ----
     lead_name = " ".join(
         x for x in [lead.first_name, lead.last_name] if x
     ) or lead.email
@@ -329,6 +380,12 @@ async def process_inbound_reply(
             if should_notify_positive
             else NotificationKind.REPLY
         )
+        notif_body = (
+            f"{summary_line}\n\nSubject: {msg.get('subject', '')}\n"
+            f"From: {msg.get('from_email', '')}"
+        )
+        if draft_body:
+            notif_body += f"\n\n--- Suggested reply (review before sending) ---\n{draft_body}"
         outcome = await notifications.notify(
             session,
             agent_settings,
@@ -338,10 +395,7 @@ async def process_inbound_reply(
                 if should_notify_positive
                 else f"Reply from {lead_name}"
             ),
-            body=(
-                f"{summary_line}\n\nSubject: {msg.get('subject', '')}\n"
-                f"From: {msg.get('from_email', '')}"
-            ),
+            body=notif_body,
             dedup_key=f"{kind.value}:{message_id}",
             lead_id=lead.id,
             opportunity_id=converted_opp_id,
