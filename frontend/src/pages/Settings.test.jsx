@@ -16,9 +16,30 @@ vi.mock('../api/connectedAccounts.js', () => ({
 vi.mock('../api/settings.js', () => ({
   getApiStatus: vi.fn(),
 }));
+vi.mock('../api/agent.js', () => ({
+  getAgentSettings: vi.fn(),
+  updateAgentSettings: vi.fn(),
+}));
 
 import * as accountsApi from '../api/connectedAccounts.js';
 import * as settingsApi from '../api/settings.js';
+import * as agentApi from '../api/agent.js';
+
+const AGENT_SETTINGS = {
+  auto_log_replies: true,
+  auto_create_convert_reminders: true,
+  auto_draft_replies: false,
+  stale_opp_nudges_enabled: true,
+  daily_digest_enabled: true,
+  notify_on_positive_reply: true,
+  notify_on_any_reply: false,
+  min_confidence_to_act: 0.6,
+  quiet_hours_start_utc: null,
+  quiet_hours_end_utc: null,
+  agent_enabled: true,
+  owner_email_configured: false,
+  updated_at: '2026-06-12T10:00:00Z',
+};
 
 function renderSettings() {
   const queryClient = new QueryClient({
@@ -55,6 +76,7 @@ beforeEach(() => {
     apollo: false,
     hunter: false,
   });
+  agentApi.getAgentSettings.mockResolvedValue(AGENT_SETTINGS);
 });
 
 describe('Settings page tabs', () => {
@@ -193,5 +215,49 @@ describe('Connected inboxes list', () => {
     renderSettings();
     await screen.findByTestId('account-card');
     expect(screen.queryByTestId('default-sender-explainer')).toBeNull();
+  });
+});
+
+describe('Agent tab', () => {
+  it('renders the toggles + owner-email warning when not configured', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Agent' }));
+
+    expect(await screen.findByTestId('agent-tab')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-toggle-auto_log_replies')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-toggle-daily_digest_enabled')).toBeInTheDocument();
+    // OWNER_NOTIFY_EMAIL not configured → amber warning.
+    expect(screen.getByTestId('owner-email-status')).toHaveTextContent(/not set/i);
+    // Kill-switch banner NOT shown when agent_enabled.
+    expect(screen.queryByTestId('agent-killswitch-banner')).toBeNull();
+  });
+
+  it('toggling a checkbox PATCHes the setting', async () => {
+    agentApi.updateAgentSettings.mockResolvedValue({
+      ...AGENT_SETTINGS, auto_draft_replies: true,
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Agent' }));
+    await screen.findByTestId('agent-tab');
+
+    const label = screen.getByTestId('agent-toggle-auto_draft_replies');
+    await user.click(label.querySelector('input[type="checkbox"]'));
+    await waitFor(() => {
+      // React Query 5 passes a context object as the 2nd arg — check the payload only.
+      expect(agentApi.updateAgentSettings).toHaveBeenCalled();
+      expect(agentApi.updateAgentSettings.mock.calls[0][0]).toEqual({ auto_draft_replies: true });
+    });
+  });
+
+  it('shows the kill-switch banner when AGENT_ENABLED is off', async () => {
+    agentApi.getAgentSettings.mockResolvedValue({
+      ...AGENT_SETTINGS, agent_enabled: false,
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Agent' }));
+    expect(await screen.findByTestId('agent-killswitch-banner')).toBeInTheDocument();
   });
 });

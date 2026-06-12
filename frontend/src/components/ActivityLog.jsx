@@ -234,6 +234,28 @@ export default function ActivityLog({ leadId, opportunityId }) {
                         ({a.direction})
                       </span>
                     )}
+                    {a.is_agent_generated && (
+                      <span
+                        data-testid={`ai-tag-${a.id}`}
+                        title="Logged automatically by the agent"
+                        className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700 align-middle"
+                      >
+                        AI
+                      </span>
+                    )}
+                    {a.sentiment && (
+                      <span
+                        className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold align-middle ${
+                          a.sentiment === 'positive'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : a.sentiment === 'negative'
+                              ? 'bg-red-100 text-red-700'
+                              : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        {a.sentiment}
+                      </span>
+                    )}
                   </div>
                   {a.body && (
                     <div className="text-xs text-slate-500 mt-0.5 whitespace-pre-wrap">{a.body}</div>

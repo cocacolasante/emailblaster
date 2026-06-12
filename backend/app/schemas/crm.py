@@ -207,6 +207,9 @@ class ActivityResponse(BaseModel):
     completed_at: datetime | None
     occurred_at: datetime
     created_at: datetime
+    # Agent fields (migration 0027) — lets the UI badge automated rows.
+    sentiment: str | None = None
+    is_agent_generated: bool = False
 
 
 class PaginatedActivities(BaseModel):

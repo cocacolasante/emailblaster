@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings, validate_required_settings
 from app.routers import (
+    agent,
     analytics,
     campaigns,
     connected_accounts,
@@ -117,3 +118,4 @@ app.include_router(sequences.router)
 app.include_router(research_client.router)
 app.include_router(social_radar.router)
 app.include_router(crm.router)
+app.include_router(agent.router)

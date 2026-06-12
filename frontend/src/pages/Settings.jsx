@@ -12,6 +12,7 @@ import {
   testLinkedInAccount,
 } from '../api/linkedinAccounts.js';
 import { getApiStatus } from '../api/settings.js';
+import { getAgentSettings, updateAgentSettings } from '../api/agent.js';
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import ConnectLinkedInModal from '../components/ConnectLinkedInModal.jsx';
 
@@ -381,6 +382,138 @@ function ApiStatusTab() {
 }
 
 
+const AGENT_TOGGLES = [
+  { key: 'auto_log_replies', label: 'Auto-log inbound replies', hint: 'Each reply becomes an inbound email activity on the lead (and deal, if converted).' },
+  { key: 'auto_create_convert_reminders', label: 'Convert reminders on positive replies', hint: 'A confident positive reply creates a "Convert lead to opportunity" task. The agent never converts on its own.' },
+  { key: 'auto_draft_replies', label: 'Draft suggested replies (Sonnet)', hint: 'Generates a suggested reply you can copy — never sent automatically.' },
+  { key: 'stale_opp_nudges_enabled', label: 'Stale deal nudges', hint: 'Open deals idle for a week get a re-engage task + alert.' },
+  { key: 'daily_digest_enabled', label: 'Daily digest email', hint: 'One summary email a day: due/overdue tasks, replies, pipeline movement.' },
+  { key: 'notify_on_positive_reply', label: 'Email me on positive replies', hint: '' },
+  { key: 'notify_on_any_reply', label: 'Email me on every reply', hint: 'Noisy — positive-only is usually enough.' },
+];
+
+function AgentTab() {
+  const queryClient = useQueryClient();
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['agent-settings'],
+    queryFn: getAgentSettings,
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: updateAgentSettings,
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['agent-settings'], updated);
+    },
+  });
+
+  if (isLoading) return <p className="text-sm text-slate-500">Loading agent settings…</p>;
+  if (error) return <p className="text-sm text-red-600">Failed to load agent settings</p>;
+
+  const onToggle = (key) => updateMutation.mutate({ [key]: !data[key] });
+
+  return (
+    <div data-testid="agent-tab">
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">CRM &amp; inbox agent</h2>
+      <p className="text-sm text-slate-500 mt-0 mb-5">
+        The agent logs replies, reminds you about tasks, and flags quiet
+        deals. It never emails prospects, converts leads, or changes deal
+        stages — those stay yours.
+      </p>
+
+      {!data.agent_enabled && (
+        <div data-testid="agent-killswitch-banner" className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
+          The agent is disabled at the deployment level (<code>AGENT_ENABLED=false</code>).
+          These toggles will have no effect until it's re-enabled.
+        </div>
+      )}
+      <div data-testid="owner-email-status" className={`mb-5 text-sm rounded-lg px-4 py-3 border ${data.owner_email_configured ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+        {data.owner_email_configured
+          ? 'Owner alert email is configured — notifications will be emailed to you.'
+          : 'OWNER_NOTIFY_EMAIL is not set — alerts will appear in the app bell but no emails will be sent.'}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm divide-y divide-slate-100">
+        {AGENT_TOGGLES.map((t) => (
+          <label key={t.key} data-testid={`agent-toggle-${t.key}`} className="flex items-start gap-3 px-5 py-4 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!data[t.key]}
+              onChange={() => onToggle(t.key)}
+              className="mt-0.5 w-4 h-4"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-800">{t.label}</span>
+              {t.hint && <span className="block text-xs text-slate-400 mt-0.5">{t.hint}</span>}
+            </span>
+          </label>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mt-4 flex flex-col gap-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-800 mb-1" htmlFor="agent-confidence">
+            Minimum confidence to act ({Math.round((data.min_confidence_to_act ?? 0.6) * 100)}%)
+          </label>
+          <input
+            id="agent-confidence"
+            data-testid="agent-confidence-input"
+            type="range" min="0" max="1" step="0.05"
+            value={data.min_confidence_to_act ?? 0.6}
+            onChange={(e) => updateMutation.mutate({ min_confidence_to_act: parseFloat(e.target.value) })}
+            className="w-full max-w-xs"
+          />
+          <p className="text-xs text-slate-400 m-0">
+            Classifications below this confidence are logged but never trigger reminders or alerts.
+          </p>
+        </div>
+        <div>
+          <span className="block text-sm font-medium text-slate-800 mb-1">Quiet hours (UTC)</span>
+          <div className="flex items-center gap-2">
+            <select
+              data-testid="quiet-start-select"
+              value={data.quiet_hours_start_utc ?? ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '') updateMutation.mutate({ clear_quiet_hours: true });
+                else updateMutation.mutate({
+                  quiet_hours_start_utc: parseInt(v, 10),
+                  quiet_hours_end_utc: data.quiet_hours_end_utc ?? (parseInt(v, 10) + 8) % 24,
+                });
+              }}
+              className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm bg-white"
+            >
+              <option value="">Off</option>
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              ))}
+            </select>
+            <span className="text-sm text-slate-500">to</span>
+            <select
+              data-testid="quiet-end-select"
+              value={data.quiet_hours_end_utc ?? ''}
+              disabled={data.quiet_hours_start_utc == null}
+              onChange={(e) => updateMutation.mutate({
+                quiet_hours_start_utc: data.quiet_hours_start_utc,
+                quiet_hours_end_utc: parseInt(e.target.value, 10),
+              })}
+              className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm bg-white disabled:opacity-50"
+            >
+              <option value="">—</option>
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              ))}
+            </select>
+          </div>
+          <p className="text-xs text-slate-400 m-0 mt-1">
+            Alert emails inside this window are held; the daily digest sweeps them up.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 export default function Settings() {
   const [tab, setTab] = useState('inboxes');
 
@@ -414,6 +547,18 @@ export default function Settings() {
         </button>
         <button
           role="tab"
+          aria-selected={tab === 'agent'}
+          onClick={() => setTab('agent')}
+          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
+            tab === 'agent'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          Agent
+        </button>
+        <button
+          role="tab"
           aria-selected={tab === 'api'}
           onClick={() => setTab('api')}
           className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
@@ -427,6 +572,7 @@ export default function Settings() {
       </div>
       {tab === 'inboxes' && <ConnectedInboxesTab />}
       {tab === 'linkedin' && <LinkedInAccountsTab />}
+      {tab === 'agent' && <AgentTab />}
       {tab === 'api' && <ApiStatusTab />}
     </div>
   );

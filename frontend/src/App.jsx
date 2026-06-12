@@ -8,12 +8,14 @@ import SequenceBuilder from './pages/SequenceBuilder.jsx';
 import Leads from './pages/Leads.jsx';
 import Opportunities from './pages/Opportunities.jsx';
 import OpportunityDetail from './pages/OpportunityDetail.jsx';
+import Replies from './pages/Replies.jsx';
 import ResearchClient from './pages/ResearchClient.jsx';
 import SocialRadar from './pages/SocialRadar.jsx';
 import Settings from './pages/Settings.jsx';
 import Nav from './components/Nav.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { ToastProvider } from './components/Toast.jsx';
+import NotificationBell from './components/NotificationBell.jsx';
 
 export default function App() {
   return (
@@ -21,6 +23,7 @@ export default function App() {
       <div className="flex min-h-screen bg-slate-50">
         <Nav />
         <main className="flex-1 min-w-0 overflow-auto">
+          <NotificationBell />
           <ErrorBoundary>
             <Routes>
               <Route path="/" element={<Campaigns />} />
@@ -32,6 +35,7 @@ export default function App() {
               <Route path="/leads" element={<Leads />} />
               <Route path="/opportunities" element={<Opportunities />} />
               <Route path="/opportunities/:id" element={<OpportunityDetail />} />
+              <Route path="/replies" element={<Replies />} />
               <Route path="/research-client" element={<ResearchClient />} />
               <Route path="/social-radar" element={<SocialRadar />} />
               <Route path="/settings" element={<Settings />} />
