@@ -22,8 +22,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer,
-    LargeBinary, Numeric, Text, func, text,
+    Boolean, CheckConstraint, Date, DateTime, Enum, ForeignKey, Index,
+    Integer, LargeBinary, Numeric, Text, func, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -177,6 +177,22 @@ class CrmActivity(Base):
     # be backdated); defaults to now.
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    # --- Agent fields (migration 0027) ---
+    # Stamped once a due/overdue reminder email fired for this task —
+    # the sweeper's idempotency anchor (one reminder per task, ever).
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    # positive | neutral | negative — set by the reply classifier on
+    # agent-logged inbound emails.  Free text (not an enum) so the
+    # classifier vocabulary can evolve without a migration.
+    sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True when the agent (not the human) created this row — lets the
+    # UI badge automated entries and queries exclude them.
+    is_agent_generated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
     )
 
     created_at: Mapped[datetime] = mapped_column(

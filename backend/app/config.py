@@ -138,6 +138,33 @@ class Settings(BaseSettings):
     LINKEDIN_DAILY_DM_CAP: int = 30             # per-account DMs / day
     LINKEDIN_MONTHLY_PAGE_INVITE_CAP: int = 250 # per-PAGE invites / month
 
+    # --- Agent / notifications ---
+    # Where agent alerts (positive-reply pings, task reminders, the daily
+    # digest) are emailed.  Empty = notifications persist in the DB but
+    # no email goes out.
+    OWNER_NOTIFY_EMAIL: str = ""
+    OWNER_NOTIFY_NAME: str = "Operator"
+    # Master kill-switch for every autonomous agent behaviour (reply
+    # classification, reminders, nudges, digest).  The finer-grained
+    # per-behaviour toggles live in the runtime-editable AgentSettings
+    # DB row; this env var is the hard off-switch that wins over all of
+    # them — useful for incident response without touching the DB.
+    AGENT_ENABLED: bool = True
+    # Classification (reply sentiment/intent) is an extraction task —
+    # Haiku handles it fine and runs per inbound reply, so cost matters.
+    ANTHROPIC_AGENT_MODEL: str = "claude-haiku-4-5-20251001"
+    # Reply DRAFTS are prose the user may actually send — Sonnet quality.
+    # Only invoked when AgentSettings.auto_draft_replies is on.
+    ANTHROPIC_AGENT_DRAFT_MODEL: str = "claude-sonnet-4-6"
+    AGENT_REMINDER_SWEEP_INTERVAL_MINUTES: int = 30
+    # Hour (UTC) the daily digest email goes out.
+    AGENT_DIGEST_HOUR_UTC: int = 12
+    # An open opportunity with no activity for this many days gets a
+    # nudge task + notification.
+    AGENT_STALE_OPP_DAYS: int = 7
+    # Tasks due within this window trigger a "due soon" reminder.
+    AGENT_TASK_DUE_SOON_HOURS: int = 24
+
     # App
     SECRET_KEY: str = "dev-secret-change-me"
     FRONTEND_URL: str = "http://localhost:5173"

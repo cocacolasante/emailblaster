@@ -17,7 +17,11 @@
       "Bash(grep -nA6 \"backend:\\\\|worker:\" docker-compose.yml)",
       "Bash(grep -E \"^ [A-Z_].*\\\\\\\\$\" /Users/anthonycolasante/Projects/emailblaster/docker-compose.yml)",
       "Skill(code-review)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(sed -n 40/60p docker-compose.yml)",
+      "Bash(sed -n '40,75p' docker-compose.yml)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

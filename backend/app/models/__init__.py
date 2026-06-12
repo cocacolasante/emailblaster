@@ -1,4 +1,13 @@
 """SQLAlchemy models. Import side-effect registers all tables on Base.metadata."""
+from app.models.agent import (
+    AGENT_SETTINGS_SINGLETON_ID,
+    AgentAction,
+    AgentActionStatus,
+    AgentActionType,
+    AgentSettings,
+    Notification,
+    NotificationKind,
+)
 from app.models.campaign import Campaign, CampaignStatus, ResearchMode
 from app.models.connected_account import ConnectedAccount, ConnectedAccountTestStatus
 from app.models.crm import (
@@ -45,6 +54,13 @@ from app.models.suppression import Suppression, SuppressionReason, canonical_ema
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
+    "AGENT_SETTINGS_SINGLETON_ID",
+    "AgentAction",
+    "AgentActionStatus",
+    "AgentActionType",
+    "AgentSettings",
+    "Notification",
+    "NotificationKind",
     "Campaign",
     "CampaignStatus",
     "ResearchMode",
