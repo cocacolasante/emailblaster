@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AGENT_SETTINGS_SINGLETON_ID,
+    CLOSED_STAGES,
     AgentAction,
     AgentActionStatus,
     AgentActionType,
@@ -35,6 +36,7 @@ from app.models import (
     CrmActivityType,
     Lead,
     NotificationKind,
+    Opportunity,
 )
 from app.services import notifications
 
@@ -44,6 +46,7 @@ logger = logging.getLogger(__name__)
 # task with this subject for the same parent = already reminded).
 CONVERT_REMINDER_SUBJECT = "Convert lead to opportunity"
 FOLLOWUP_REMINDER_SUBJECT = "Follow up — positive reply"
+STALE_OPP_NUDGE_SUBJECT = "Re-engage — deal has gone quiet"
 
 
 async def get_agent_settings(session: AsyncSession) -> AgentSettings:
@@ -360,6 +363,111 @@ async def process_inbound_reply(
             ),
             lead_id=lead.id,
             detail={"deduped": outcome["deduped"], "emailed": outcome["emailed"]},
+        )
+
+    return result
+
+
+async def flag_stale_opportunities(session: AsyncSession) -> dict[str, Any]:
+    """Nudge open opportunities that have gone quiet.
+
+    A deal counts as stale when its most recent CrmActivity
+    ``occurred_at`` (falling back to the deal's own ``updated_at`` when
+    it has no activities) is older than ``AGENT_STALE_OPP_DAYS`` AND it
+    has no open task already (an open task means the operator is
+    already on the hook for it — including a previous nudge).
+
+    For each stale deal: one nudge TASK (due next business day,
+    ``reminder_sent_at`` pre-stamped so the reminder sweeper doesn't
+    double-ping — the stale notification IS the ping) + one
+    ``stale_opportunity`` notification deduped per-deal-per-ISO-week,
+    so a deal that stays quiet re-surfaces at most weekly after the
+    nudge task is completed.
+
+    Caller owns the transaction.
+    """
+    from app.config import settings as app_settings
+
+    agent_settings = await get_agent_settings(session)
+    result: dict[str, Any] = {"checked": 0, "flagged": 0}
+    if not agent_settings.stale_opp_nudges_enabled:
+        result["skipped"] = "stale_opp_nudges_disabled"
+        return result
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=app_settings.AGENT_STALE_OPP_DAYS)
+
+    open_opps = (await session.execute(
+        select(Opportunity).where(Opportunity.stage.not_in(CLOSED_STAGES))
+    )).scalars().all()
+    result["checked"] = len(open_opps)
+
+    for opp in open_opps:
+        latest_activity = await session.scalar(
+            select(CrmActivity.occurred_at)
+            .where(CrmActivity.opportunity_id == opp.id)
+            .order_by(CrmActivity.occurred_at.desc())
+            .limit(1)
+        )
+        last_touch = latest_activity or opp.updated_at
+        if last_touch is None or last_touch > cutoff:
+            continue
+
+        has_open_task = (await session.scalar(
+            select(CrmActivity.id).where(
+                CrmActivity.opportunity_id == opp.id,
+                CrmActivity.activity_type == CrmActivityType.TASK,
+                CrmActivity.completed_at.is_(None),
+            ).limit(1)
+        )) is not None
+        if has_open_task:
+            continue
+
+        idle_days = (now - last_touch).days
+        nudge = CrmActivity(
+            opportunity_id=opp.id,
+            lead_id=opp.source_lead_id,
+            activity_type=CrmActivityType.TASK,
+            subject=STALE_OPP_NUDGE_SUBJECT,
+            body=(
+                f"No activity on \"{opp.name}\" for {idle_days} days "
+                f"(stage: {opp.stage.value}).  Reach out or update the stage."
+            ),
+            due_at=next_business_day(now),
+            is_agent_generated=True,
+            # The stale notification below IS the ping — pre-stamp so the
+            # reminder sweeper doesn't send a second one for this task.
+            reminder_sent_at=now,
+        )
+        session.add(nudge)
+        await session.flush()
+
+        outcome = await notifications.notify(
+            session,
+            agent_settings,
+            kind=NotificationKind.STALE_OPPORTUNITY,
+            title=f"Deal gone quiet: {opp.name} ({idle_days}d idle)"[:300],
+            body=nudge.body,
+            # Per-deal-per-ISO-week dedup: a still-stale deal re-surfaces
+            # at most weekly (and only once its nudge task is closed).
+            dedup_key=f"stale_opportunity:{opp.id}:{now.strftime('%G-W%V')}",
+            opportunity_id=opp.id,
+            lead_id=opp.source_lead_id,
+            activity_id=nudge.id,
+        )
+        result["flagged"] += 1
+        record_agent_action(
+            session,
+            action_type=AgentActionType.FLAG_STALE_OPP,
+            status=AgentActionStatus.SUCCESS,
+            summary=f"Flagged stale deal ({idle_days}d idle): {opp.name}"[:300],
+            opportunity_id=opp.id,
+            activity_id=nudge.id,
+            detail={
+                "idle_days": idle_days,
+                "deduped": outcome["deduped"],
+                "emailed": outcome["emailed"],
+            },
         )
 
     return result

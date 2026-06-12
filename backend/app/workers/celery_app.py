@@ -17,6 +17,7 @@ celery_app = Celery(
         "app.workers.brevo_events_poller",
         "app.workers.lead_sweeper",
         "app.workers.social_listening",
+        "app.workers.agent_sweeper",
     ],
 )
 
@@ -68,5 +69,16 @@ celery_app.conf.beat_schedule = {
         # each.  Per-search frequency lives on the search row.
         "task": "social_listening.scheduled_runner",
         "schedule": 60.0,
+    },
+    "agent-sweep-reminders": {
+        # Owner reminders for open tasks due soon / overdue.  One
+        # reminder per task ever (CrmActivity.reminder_sent_at anchor).
+        "task": "agent_sweeper.sweep_reminders",
+        "schedule": float(settings.AGENT_REMINDER_SWEEP_INTERVAL_MINUTES * 60),
+    },
+    "agent-sweep-stale-opps": {
+        # Nudge open opportunities idle > AGENT_STALE_OPP_DAYS.
+        "task": "agent_sweeper.sweep_stale_opps",
+        "schedule": 3600.0,  # hourly
     },
 }
