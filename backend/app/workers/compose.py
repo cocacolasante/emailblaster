@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.services.sequence_service import campaign_sends_legacy_first_email
 from app.services.signature import apply_signature
+from app.services import copy_insights
 from app.services.template_render import build_merge_context, render_template
 from app.services.web_research import _extract_text, _parse_json
 from app.workers.celery_app import celery_app
@@ -69,8 +70,10 @@ def _build_generic_prompt(
     goal: str, tone: str, sender_name: str,
     first_name: str, last_name: str, company: str,
     company_website: str = "",
+    winning_block: str | None = None,
 ) -> str:
     website_line = f"Website: {company_website}\n" if company_website else ""
+    winning_section = f"{winning_block}\n\n" if winning_block else ""
     return (
         "You are an expert cold email copywriter.\n"
         f"Campaign goal: {goal}\n"
@@ -83,6 +86,7 @@ def _build_generic_prompt(
         "\nResearch on this person was limited. Use only their name and company.\n"
         "Write a compelling subject line and email body under 150 words. Focus on "
         "value, not flattery.\n\n"
+        f"{winning_section}"
         f"{_STYLE_RULES}\n\n"
         'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
     )
@@ -93,6 +97,7 @@ def _build_personalized_prompt(
     first_name: str, last_name: str, company: str, job_title: str,
     research_data: dict[str, Any], corrected_examples: list[str],
     company_website: str = "",
+    winning_block: str | None = None,
 ) -> str:
     person_news = "; ".join(research_data.get("person_news") or []) or "(none)"
     company_news = "; ".join(research_data.get("company_news") or []) or "(none)"
@@ -109,6 +114,10 @@ def _build_personalized_prompt(
     else:
         style_block = "No style corrections yet. Use your best judgment."
 
+    # The reply-driven winning block is ADDITIVE and subordinate to the
+    # user's style corrections above — user voice wins over inference.
+    winning_section = f"{winning_block}\n\n" if winning_block else ""
+
     return (
         "You are an expert cold email copywriter.\n"
         f"Campaign goal: {goal}\n"
@@ -123,6 +132,7 @@ def _build_personalized_prompt(
         f"Company: {company_desc}\n"
         f"Recent company updates: {recent_updates}\n\n"
         f"{style_block}\n\n"
+        f"{winning_section}"
         "Write a personalized subject line and email body. Reference something "
         "specific and real from the research above. Keep under 200 words. No "
         "sycophancy. Do not mention doing research.\n\n"
@@ -334,6 +344,12 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             )).scalars().all()
             corrected_examples = list(sc_rows)
 
+            # Reply-driven winning block (Feature A) — cache-read only,
+            # no LLM call; None until the campaign has positive replies.
+            winning_block = await copy_insights.build_winning_block(
+                session, campaign.id,
+            )
+
             quality = (lead.research_data or {}).get("quality", "low")
             mode = campaign.research_mode
             ctx = {
@@ -371,6 +387,7 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
                     ctx["goal"], ctx["tone"], ctx["sender_name"],
                     ctx["first_name"], ctx["last_name"], ctx["company"],
                     ctx["company_website"],
+                    winning_block=winning_block,
                 )
             else:
                 system_prompt = _build_personalized_prompt(
@@ -378,6 +395,7 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
                     ctx["first_name"], ctx["last_name"], ctx["company"], ctx["job_title"],
                     ctx["research_data"], corrected_examples,
                     ctx["company_website"],
+                    winning_block=winning_block,
                 )
 
             try:

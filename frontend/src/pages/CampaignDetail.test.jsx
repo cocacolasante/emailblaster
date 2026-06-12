@@ -29,6 +29,7 @@ vi.mock('../api/campaigns.js', () => ({
   updateLeadEmail: vi.fn().mockResolvedValue({}),
   getLeadDetail: vi.fn(),
   getDeliverability: vi.fn(),
+  getCopyInsights: vi.fn(),
 }));
 
 // Recharts stub
@@ -91,6 +92,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.getCampaign.mockResolvedValue(RUNNING_CAMPAIGN);
   api.getDeliverability.mockResolvedValue(DELIVERABILITY);
+  api.getCopyInsights.mockResolvedValue({
+    outcome_counts: { positive: 0, neutral: 0, negative: 0 },
+    insights: null, refreshed_at: null, winning_examples: [],
+  });
 });
 
 
@@ -351,5 +356,32 @@ describe('Deliverability guard', () => {
       const payload = api.updateCampaign.mock.calls[0][1];
       expect(payload.send_time_optimization).toBe(true);
     });
+  });
+});
+
+describe("What's working panel", () => {
+  it('hidden when there are no reply outcomes yet', async () => {
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    expect(screen.queryByTestId('whats-working-panel')).toBeNull();
+  });
+
+  it('renders counts, angle sections, and winning examples when data exists', async () => {
+    api.getCopyInsights.mockResolvedValue({
+      outcome_counts: { positive: 3, neutral: 1, negative: 2 },
+      insights: {
+        winning_openers: ['lead with their tech stack'],
+        subject_patterns: ['short, lowercase'],
+        value_framings: [], cta_styles: [], avoid: ['jargon walls'],
+      },
+      refreshed_at: '2026-06-12T10:00:00Z',
+      winning_examples: [{ subject: 'quick one', body: 'The winning body.' }],
+    });
+    renderPage();
+    const panel = await screen.findByTestId('whats-working-panel');
+    expect(within(panel).getByTestId('outcome-counts')).toHaveTextContent('3 positive');
+    expect(panel).toHaveTextContent('lead with their tech stack');
+    expect(panel).toHaveTextContent('jargon walls');
+    expect(within(panel).getByTestId('winning-examples')).toHaveTextContent('quick one');
   });
 });

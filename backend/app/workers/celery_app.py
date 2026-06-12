@@ -21,6 +21,7 @@ celery_app = Celery(
         "app.workers.agent_sweeper",
         "app.workers.digest",
         "app.workers.deliverability",
+        "app.workers.copy_insights_refresher",
     ],
 )
 
@@ -82,6 +83,12 @@ celery_app.conf.beat_schedule = {
     "agent-sweep-stale-opps": {
         # Nudge open opportunities idle > AGENT_STALE_OPP_DAYS.
         "task": "agent_sweeper.sweep_stale_opps",
+        "schedule": 3600.0,  # hourly
+    },
+    "copy-insights-refresh": {
+        # Per-campaign winning-angle summaries; LLM runs only for
+        # campaigns with enough NEW reply outcomes since last refresh.
+        "task": "copy_insights.refresh_all",
         "schedule": 3600.0,  # hourly
     },
     "deliverability-health-sweep": {

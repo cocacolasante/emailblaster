@@ -182,3 +182,10 @@ export async function getDeliverability(id) {
   const { data } = await client.get(`/campaigns/${id}/deliverability`);
   return data;
 }
+
+/** "What's working" panel: reply-outcome counts, cached winning-angle
+ *  summary, and example winning messages. */
+export async function getCopyInsights(id) {
+  const { data } = await client.get(`/campaigns/${id}/copy-insights`);
+  return data;
+}

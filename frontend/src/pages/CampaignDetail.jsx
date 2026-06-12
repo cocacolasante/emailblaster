@@ -7,6 +7,7 @@ import {
   approveAll as approveAllCampaign,
   getCampaign,
   getCampaignActivity,
+  getCopyInsights,
   getDeliverability,
   getLeadDetail,
   getPreviewProgress,
@@ -172,6 +173,84 @@ function LinkedInAccountCard({ campaign, linkedinAccounts, onSave, saving }) {
     </div>
   );
 }
+
+const ANGLE_SECTIONS = [
+  { key: 'winning_openers', label: 'Winning openers' },
+  { key: 'subject_patterns', label: 'Subject patterns that get replies' },
+  { key: 'value_framings', label: 'Value framings' },
+  { key: 'cta_styles', label: 'CTA styles' },
+  { key: 'avoid', label: 'Avoid' },
+];
+
+function WhatsWorkingPanel({ campaignId }) {
+  const { data } = useQuery({
+    queryKey: ['campaign-copy-insights', campaignId],
+    queryFn: () => getCopyInsights(campaignId),
+    refetchInterval: 120_000,
+  });
+  const counts = data?.outcome_counts;
+  const total = counts ? counts.positive + counts.neutral + counts.negative : 0;
+  if (!data || total === 0) return null;
+
+  return (
+    <div
+      data-testid="whats-working-panel"
+      className="bg-white rounded-xl border border-slate-200 shadow-sm p-6"
+    >
+      <h2 className="text-base font-semibold text-slate-900 mb-1">What's working</h2>
+      <p className="text-xs text-slate-400 mt-0 mb-3">
+        Learned from classified replies — winning angles feed back into
+        future composes on this campaign.
+      </p>
+      <div className="flex gap-2 mb-4" data-testid="outcome-counts">
+        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
+          {counts.positive} positive
+        </span>
+        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
+          {counts.neutral} neutral
+        </span>
+        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">
+          {counts.negative} negative
+        </span>
+      </div>
+      {data.insights && (
+        <div className="space-y-3 mb-4">
+          {ANGLE_SECTIONS.map(({ key, label }) => (
+            (data.insights[key] || []).length > 0 && (
+              <div key={key}>
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">{label}</div>
+                <ul className="m-0 pl-4 text-sm text-slate-700">
+                  {data.insights[key].map((item, i) => <li key={i}>{item}</li>)}
+                </ul>
+              </div>
+            )
+          ))}
+        </div>
+      )}
+      {(data.winning_examples || []).length > 0 && (
+        <details data-testid="winning-examples">
+          <summary className="text-xs font-medium text-blue-600 cursor-pointer">
+            {data.winning_examples.length} example message{data.winning_examples.length > 1 ? 's' : ''} that earned positive replies
+          </summary>
+          <div className="mt-2 space-y-2">
+            {data.winning_examples.map((e, i) => (
+              <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="text-xs font-semibold text-slate-700 mb-1">{e.subject}</div>
+                <p className="text-xs text-slate-600 whitespace-pre-wrap m-0">{e.body}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {data.insights === null && (
+        <p className="text-xs text-slate-400 m-0">
+          Angle summary builds automatically once enough replies accumulate.
+        </p>
+      )}
+    </div>
+  );
+}
+
 
 function DeliverabilityStrip({ campaignId }) {
   const { data } = useQuery({
@@ -346,6 +425,8 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
           onSave={onSaveLinkedIn}
           saving={savingLinkedIn}
         />
+
+        <WhatsWorkingPanel campaignId={campaign.id} />
 
         <ScheduleEditor campaignId={campaign.id} campaign={campaign} />
 

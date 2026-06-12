@@ -971,3 +971,38 @@ async def get_deliverability(
         "auto_pause_reason": c.auto_pause_reason,
         "send_time_optimization": c.send_time_optimization,
     }
+
+
+@router.get("/{campaign_id}/copy-insights")
+async def get_copy_insights(
+    campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """"What's working" panel data: reply-outcome counts by sentiment,
+    the cached winning-angle summary, and example winning messages."""
+    from app.models import ReplyOutcome
+    from app.services import copy_insights as ci
+
+    c = await _get_or_404(db, campaign_id)
+    sentiment_rows = (await db.execute(
+        select(ReplyOutcome.sentiment, func.count())
+        .where(ReplyOutcome.campaign_id == c.id)
+        .group_by(ReplyOutcome.sentiment)
+    )).all()
+    counts = {s: n for s, n in sentiment_rows}
+
+    cached = await ci.get_cached_insights(db, c.id)
+    examples = await ci.winning_examples(db, c.id, limit=3)
+    insights = None
+    if cached is not None:
+        insights = {k: v for k, v in cached.insights.items() if k != "_meta"}
+
+    return {
+        "outcome_counts": {
+            "positive": counts.get("positive", 0),
+            "neutral": counts.get("neutral", 0),
+            "negative": counts.get("negative", 0),
+        },
+        "insights": insights,
+        "refreshed_at": cached.refreshed_at.isoformat() if cached else None,
+        "winning_examples": examples,
+    }

@@ -9,6 +9,7 @@ from app.models.agent import (
     NotificationKind,
 )
 from app.models.campaign import Campaign, CampaignStatus, ResearchMode
+from app.models.copy_feedback import CampaignCopyInsights, ReplyOutcome
 from app.models.connected_account import ConnectedAccount, ConnectedAccountTestStatus
 from app.models.crm import (
     CLOSED_STAGES,
@@ -62,6 +63,8 @@ __all__ = [
     "Notification",
     "NotificationKind",
     "Campaign",
+    "CampaignCopyInsights",
+    "ReplyOutcome",
     "CampaignStatus",
     "ResearchMode",
     "ConnectedAccount",

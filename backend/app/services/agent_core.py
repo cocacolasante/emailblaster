@@ -185,6 +185,23 @@ async def process_inbound_reply(
 
     converted_opp_id = getattr(lead, "converted_opportunity_id", None)
 
+    # ---- 0. reply-outcome capture (Feature A copy loop) ----
+    # Snapshot what was actually sent alongside the verdict it earned —
+    # the lead's composed copy is editable later, so attribution must not
+    # read it lazily.  Campaign-less CRM leads have no campaign copy to
+    # attribute, so they're skipped.
+    if lead.campaign_id is not None:
+        from app.models import ReplyOutcome  # local import to avoid cycles
+
+        session.add(ReplyOutcome(
+            lead_id=lead.id,
+            campaign_id=lead.campaign_id,
+            sentiment=sentiment,
+            intent=getattr(classification, "intent", None),
+            composed_subject=lead.composed_subject,
+            composed_body=lead.composed_body,
+        ))
+
     # ---- 1. log the inbound email activity ----
     activity: CrmActivity | None = None
     if agent_settings.auto_log_replies:
