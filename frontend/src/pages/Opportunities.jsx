@@ -1,15 +1,13 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   createOpportunity,
-  deleteOpportunity,
   getPipelineSummary,
   listOpportunities,
-  updateOpportunity,
 } from '../api/crm.js';
 import { useToast } from '../components/Toast.jsx';
-import ActivityLog from '../components/ActivityLog.jsx';
 
 // Pipeline order — matches the backend OpportunityStage enum.
 export const STAGES = [
@@ -45,7 +43,7 @@ function fmtDate(iso) {
 
 
 export default function Opportunities() {
-  const [selectedId, setSelectedId] = useState(null);
+  const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
 
@@ -125,7 +123,7 @@ export default function Opportunities() {
                     <button
                       key={o.id}
                       type="button"
-                      onClick={() => setSelectedId(o.id)}
+                      onClick={() => navigate(`/opportunities/${o.id}`)}
                       data-testid={`opp-card-${o.id}`}
                       className="w-full text-left bg-white rounded-lg border border-slate-200 shadow-sm p-3 hover:border-blue-300 hover:shadow"
                     >
@@ -153,177 +151,7 @@ export default function Opportunities() {
         </div>
       )}
 
-      {selectedId && (
-        <OpportunityModal
-          oppId={selectedId}
-          opportunity={opps.find((o) => o.id === selectedId)}
-          onClose={() => setSelectedId(null)}
-        />
-      )}
       {creating && <NewOpportunityModal onClose={() => setCreating(false)} />}
-    </div>
-  );
-}
-
-
-function OpportunityModal({ oppId, opportunity, onClose }) {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-  const o = opportunity;
-
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['crm-opportunities'] });
-    queryClient.invalidateQueries({ queryKey: ['crm-pipeline'] });
-  };
-
-  const updateMut = useMutation({
-    mutationFn: (payload) => updateOpportunity(oppId, payload),
-    onSuccess: () => { invalidate(); toast.success('Saved'); },
-    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save'),
-  });
-
-  const deleteMut = useMutation({
-    mutationFn: () => deleteOpportunity(oppId),
-    onSuccess: () => {
-      invalidate();
-      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
-      toast.success('Opportunity deleted');
-      onClose();
-    },
-    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to delete'),
-  });
-
-  // Editable money/date fields, hydrated from the card data.
-  const [amount, setAmount] = useState(o?.amount ?? '');
-  const [closeDate, setCloseDate] = useState(o?.close_date ?? '');
-  const [lossReason, setLossReason] = useState(o?.loss_reason ?? '');
-
-  if (!o) return null;
-  const isClosed = o.stage.startsWith('closed_');
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-        data-testid="opportunity-modal"
-      >
-        <div className="flex justify-between items-start mb-4">
-          <div>
-            <h2 className="m-0 text-lg font-semibold text-slate-900">{o.name}</h2>
-            <div className="text-sm text-slate-500 mt-0.5">
-              {[o.first_name, o.last_name].filter(Boolean).join(' ')}
-              {o.job_title && <> · {o.job_title}</>}
-              {o.company && <> at {o.company}</>}
-            </div>
-            {o.email && (
-              <div className="text-xs text-slate-400 mt-0.5">
-                <a href={`mailto:${o.email}`} className="text-blue-600 hover:underline">{o.email}</a>
-                {o.phone && <> · {o.phone}</>}
-                {o.linkedin_url && (
-                  <>
-                    {' · '}
-                    <a href={o.linkedin_url} target="_blank" rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline">LinkedIn ↗</a>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close"
-            className="text-slate-400 hover:text-slate-600 text-xl bg-transparent border-none cursor-pointer p-1">×</button>
-        </div>
-
-        {/* Stage stepper */}
-        <div className="mb-4">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Stage</div>
-          <div className="flex flex-wrap gap-1.5" data-testid="stage-stepper">
-            {STAGES.map((s) => (
-              <button
-                key={s.value}
-                type="button"
-                onClick={() => updateMut.mutate({ stage: s.value })}
-                disabled={updateMut.isPending}
-                aria-pressed={o.stage === s.value}
-                data-testid={`set-stage-${s.value}`}
-                className={`px-2.5 py-1 text-xs font-medium rounded-md border ${
-                  o.stage === s.value
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-          {o.probability != null && (
-            <div className="text-xs text-slate-500 mt-1.5">
-              Win probability: <strong>{o.probability}%</strong>
-              {isClosed && o.closed_at && <> · closed {fmtDate(o.closed_at)}</>}
-            </div>
-          )}
-        </div>
-
-        {/* Amount / close date */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Amount ($)</label>
-            <input
-              type="number" min="0" step="100"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              onBlur={() => updateMut.mutate({ amount: amount === '' ? null : Number(amount) })}
-              data-testid="opp-amount"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Expected close</label>
-            <input
-              type="date"
-              value={closeDate || ''}
-              onChange={(e) => setCloseDate(e.target.value)}
-              onBlur={() => updateMut.mutate({ close_date: closeDate || null })}
-              data-testid="opp-close-date"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            />
-          </div>
-        </div>
-
-        {o.stage === 'closed_lost' && (
-          <div className="mb-4">
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Loss reason</label>
-            <input
-              type="text"
-              value={lossReason}
-              onChange={(e) => setLossReason(e.target.value)}
-              onBlur={() => updateMut.mutate({ loss_reason: lossReason || null })}
-              placeholder="e.g. went with incumbent, budget cut…"
-              data-testid="opp-loss-reason"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            />
-          </div>
-        )}
-
-        {/* Activity log */}
-        <div className="mb-4">
-          <ActivityLog opportunityId={oppId} />
-        </div>
-
-        <div className="flex justify-end pt-3 border-t border-slate-100">
-          <button
-            type="button"
-            onClick={() => {
-              if (confirm(`Delete "${o.name}"? Logged activities on this deal are also deleted. The source lead (if any) becomes convertible again.`)) {
-                deleteMut.mutate();
-              }
-            }}
-            className="px-3 py-1.5 text-xs font-medium border border-red-200 text-red-600 hover:bg-red-50 rounded-lg"
-          >
-            Delete opportunity
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

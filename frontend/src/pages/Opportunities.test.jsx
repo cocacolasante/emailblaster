@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 vi.mock('../api/crm.js', () => ({
@@ -25,7 +26,12 @@ function renderPage() {
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider defaultDuration={0}>
-        <Opportunities />
+        <MemoryRouter initialEntries={['/opportunities']}>
+          <Routes>
+            <Route path="/opportunities" element={<Opportunities />} />
+            <Route path="/opportunities/:id" element={<div data-testid="detail-page" />} />
+          </Routes>
+        </MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -81,28 +87,12 @@ describe('Opportunities page', () => {
     expect(screen.getByTestId('stage-column-closed_won')).toBeInTheDocument();
   });
 
-  it('clicking a card opens the detail modal with the stage stepper', async () => {
+  it('clicking a card navigates to the opportunity detail page', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByTestId('opp-card-o1'));
-    const modal = await screen.findByTestId('opportunity-modal');
-    expect(within(modal).getByTestId('stage-stepper')).toBeInTheDocument();
-    // Current stage pressed.
-    expect(within(modal).getByTestId('set-stage-qualification'))
-      .toHaveAttribute('aria-pressed', 'true');
-    // Probability shown.
-    expect(within(modal).getByText(/25%/)).toBeInTheDocument();
-  });
-
-  it('clicking a stage button moves the deal', async () => {
-    api.updateOpportunity.mockResolvedValue({ ...OPP, stage: 'proposal', probability: 50 });
-    const user = userEvent.setup();
-    renderPage();
-    await user.click(await screen.findByTestId('opp-card-o1'));
-    await user.click(await screen.findByTestId('set-stage-proposal'));
-    await waitFor(() => {
-      expect(api.updateOpportunity).toHaveBeenCalledWith('o1', { stage: 'proposal' });
-    });
+    // The card routes to /opportunities/:id — full record page, not a modal.
+    expect(await screen.findByTestId('detail-page')).toBeInTheDocument();
   });
 
   it('creates a new opportunity via the modal', async () => {

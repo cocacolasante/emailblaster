@@ -71,3 +71,53 @@ export async function updateActivity(id, payload) {
 export async function deleteActivity(id) {
   await client.delete(`/crm/activities/${id}`);
 }
+
+
+// ---------- Documents ----------
+
+export async function listDocuments(oppId) {
+  const { data } = await client.get(`/crm/opportunities/${oppId}/documents`);
+  return data;
+}
+
+export async function uploadDocument(oppId, file) {
+  const form = new FormData();
+  form.append('file', file);
+  const { data } = await client.post(
+    `/crm/opportunities/${oppId}/documents`, form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  );
+  return data;
+}
+
+/** Returns the raw download URL — used as an <a href> so the browser
+ *  handles the attachment natively. */
+export function documentDownloadUrl(docId) {
+  const base = client.defaults.baseURL || '';
+  return `${base.replace(/\/$/, '')}/crm/documents/${docId}/download`;
+}
+
+export async function deleteDocument(docId) {
+  await client.delete(`/crm/documents/${docId}`);
+}
+
+// ---------- Products of interest ----------
+
+export async function listProducts(oppId) {
+  const { data } = await client.get(`/crm/opportunities/${oppId}/products`);
+  return data;
+}
+
+export async function addProduct(oppId, payload) {
+  const { data } = await client.post(`/crm/opportunities/${oppId}/products`, payload);
+  return data;
+}
+
+export async function updateProduct(productId, payload) {
+  const { data } = await client.patch(`/crm/products/${productId}`, payload);
+  return data;
+}
+
+export async function deleteProduct(productId) {
+  await client.delete(`/crm/products/${productId}`);
+}

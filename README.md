@@ -21,7 +21,7 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 - **LinkedIn outreach** — via [Unipile](https://www.unipile.com)'s hosted-Chrome integration (real desktop browser, residential IPs). Eight action kinds: view profile, follow, connect, DM, react to post, comment on post, invite to company page, InMail.
 - **Reply tracking** — IMAP polling against your own inbox (Gmail / Outlook / Yahoo / custom). Credentials encrypted at rest with Fernet. Read-only (never marks messages seen in your mailbox).
 - **Lite-CRM Leads tab** — global cross-campaign lead view with per-lead notes (editable even after the email has sent). Searchable / filterable by campaign / send status / has-notes.
-- **CRM: opportunities + activity logging** — create leads manually (no CSV), convert them to opportunities Salesforce-style (contact snapshot + stage pipeline: prospecting → qualification → proposal → negotiation → closed won/lost, amount, close date, win probability), and log calls / emails / meetings / notes / tasks against leads and deals. Kanban pipeline board with per-stage totals; tasks carry due dates with an overdue indicator; the per-lead timeline merges automated sends/opens with manually-logged touches.
+- **CRM: opportunities + activity logging** — create leads manually (no CSV), convert them to opportunities Salesforce-style (contact snapshot + stage pipeline: prospecting → qualification → proposal → negotiation → closed won/lost, amount, close date, win probability), and log calls / emails / meetings / notes / tasks against leads and deals. Kanban pipeline board with per-stage totals; each deal gets its own record page with document attachments (10MB each, stored in Postgres), products-of-interest line items (qty × price with totals), a required loss-reason flow on closed-lost, and the full activity log; tasks carry due dates with an overdue indicator; the per-lead timeline merges automated sends/opens with manually-logged touches.
 - **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap.
 - **Social Listening Radar** — type a plain-English topic ("frustrated with our IT provider"), Claude expands it to ~20 LinkedIn search phrases, Anthropic web search finds matching public posts, each post is scored 1-10 for buying intent + categorized, and a suggested comment + connection request + follow-up DM is drafted for each. All LinkedIn writes stay manual — the system never auto-posts. Per-search frequency (manual / 6h / 12h / daily / weekly) and soft cost caps per run.
 - **Analytics** — open / click / reply / bounce / spam / unsub rates, sender reputation score (0–100), research-quality breakdown (rich/partial/generic open rates), best subject lines, per-step funnel, timeline chart, per-lead activity drilldown.
@@ -608,10 +608,10 @@ emailblaster/
 ## Running tests
 
 ```bash
-# Backend (791 tests; spins up postgres if not already running)
+# Backend (799 tests; spins up postgres if not already running)
 docker compose run --rm backend pytest
 
-# Frontend (279 tests; pure jsdom, no services needed)
+# Frontend (287 tests; pure jsdom, no services needed)
 docker compose exec frontend npm test --run
 
 # Quick: one specific file

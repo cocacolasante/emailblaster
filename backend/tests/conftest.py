@@ -72,7 +72,8 @@ async def _engine():
     engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE TABLE crm_activities, crm_opportunities, "
+            "TRUNCATE TABLE crm_documents, crm_opportunity_products, "
+            "crm_activities, crm_opportunities, "
             "lead_step_executions, lead_sequence_states, "
             "sequence_edges, sequence_nodes, sequences, "
             "email_events, leads, style_corrections, "

@@ -10,7 +10,8 @@ import math
 import uuid
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,9 +21,11 @@ from app.models import (
     STAGE_DEFAULT_PROBABILITY,
     CrmActivity,
     CrmActivityType,
+    CrmDocument,
     CrmLeadStatus,
     Lead,
     Opportunity,
+    OpportunityProduct,
     OpportunityStage,
 )
 from app.schemas.crm import (
@@ -31,6 +34,7 @@ from app.schemas.crm import (
     ActivityUpdate,
     ConvertLeadRequest,
     ConvertLeadResponse,
+    DocumentResponse,
     LeadCreate,
     LeadCrmUpdate,
     OpportunityCreate,
@@ -39,6 +43,10 @@ from app.schemas.crm import (
     PaginatedActivities,
     PaginatedOpportunities,
     PipelineSummary,
+    ProductCreate,
+    ProductListResponse,
+    ProductResponse,
+    ProductUpdate,
 )
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -492,4 +500,199 @@ async def delete_activity(
     if activity is None:
         raise HTTPException(status_code=404, detail="Activity not found")
     await db.delete(activity)
+    await db.commit()
+
+
+# ============================================================================
+# Documents
+# ============================================================================
+
+# 10MB per file — keeps the BYTEA storage sane.  Proposals / contracts /
+# quotes fit comfortably; anything bigger belongs in a shared drive with
+# a link in the deal description.
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
+
+@router.post(
+    "/opportunities/{opp_id}/documents",
+    response_model=DocumentResponse,
+    status_code=201,
+)
+async def upload_document(
+    opp_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentResponse:
+    await _get_opp_or_404(db, opp_id)
+    data = await file.read()
+    if len(data) == 0:
+        raise HTTPException(status_code=422, detail="File is empty")
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large ({len(data) / 1024 / 1024:.1f}MB). "
+                f"Max {MAX_DOCUMENT_BYTES // 1024 // 1024}MB — for bigger "
+                "files, store a shared-drive link in the deal description."
+            ),
+        )
+    doc = CrmDocument(
+        opportunity_id=opp_id,
+        filename=file.filename or "untitled",
+        content_type=file.content_type or "application/octet-stream",
+        size_bytes=len(data),
+        data=data,
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+    return DocumentResponse.model_validate(doc)
+
+
+@router.get(
+    "/opportunities/{opp_id}/documents",
+    response_model=list[DocumentResponse],
+)
+async def list_documents(
+    opp_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentResponse]:
+    await _get_opp_or_404(db, opp_id)
+    rows = (await db.execute(
+        # Explicit column list — skips loading the (potentially large)
+        # ``data`` BYTEA for the listing.
+        select(
+            CrmDocument.id, CrmDocument.opportunity_id, CrmDocument.filename,
+            CrmDocument.content_type, CrmDocument.size_bytes, CrmDocument.uploaded_at,
+        )
+        .where(CrmDocument.opportunity_id == opp_id)
+        .order_by(CrmDocument.uploaded_at.desc())
+    )).all()
+    return [
+        DocumentResponse(
+            id=r.id, opportunity_id=r.opportunity_id, filename=r.filename,
+            content_type=r.content_type, size_bytes=r.size_bytes,
+            uploaded_at=r.uploaded_at,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/documents/{doc_id}/download")
+async def download_document(
+    doc_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    doc = await db.get(CrmDocument, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # RFC 6266 filename* would handle non-ASCII more completely; a plain
+    # quoted filename with stripped quotes covers the realistic cases.
+    safe_name = (doc.filename or "download").replace('"', "")
+    return Response(
+        content=doc.data,
+        media_type=doc.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+        },
+    )
+
+
+@router.delete("/documents/{doc_id}", status_code=204, response_model=None)
+async def delete_document(
+    doc_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    doc = await db.get(CrmDocument, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await db.delete(doc)
+    await db.commit()
+
+
+# ============================================================================
+# Products of interest
+# ============================================================================
+
+def _product_response(p: OpportunityProduct) -> ProductResponse:
+    resp = ProductResponse.model_validate(p)
+    resp.quantity = float(p.quantity)
+    resp.unit_price = float(p.unit_price) if p.unit_price is not None else None
+    resp.line_total = (
+        round(float(p.quantity) * float(p.unit_price), 2)
+        if p.unit_price is not None else None
+    )
+    return resp
+
+
+@router.post(
+    "/opportunities/{opp_id}/products",
+    response_model=ProductResponse,
+    status_code=201,
+)
+async def add_product(
+    opp_id: uuid.UUID,
+    payload: ProductCreate,
+    db: AsyncSession = Depends(get_db),
+) -> ProductResponse:
+    await _get_opp_or_404(db, opp_id)
+    product = OpportunityProduct(
+        opportunity_id=opp_id,
+        product_name=payload.product_name,
+        quantity=payload.quantity,
+        unit_price=payload.unit_price,
+        notes=payload.notes,
+    )
+    db.add(product)
+    await db.commit()
+    await db.refresh(product)
+    return _product_response(product)
+
+
+@router.get(
+    "/opportunities/{opp_id}/products",
+    response_model=ProductListResponse,
+)
+async def list_products(
+    opp_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> ProductListResponse:
+    await _get_opp_or_404(db, opp_id)
+    rows = (await db.execute(
+        select(OpportunityProduct)
+        .where(OpportunityProduct.opportunity_id == opp_id)
+        .order_by(OpportunityProduct.created_at.asc())
+    )).scalars().all()
+    items = [_product_response(p) for p in rows]
+    return ProductListResponse(
+        items=items,
+        products_total=round(sum(i.line_total or 0 for i in items), 2),
+    )
+
+
+@router.patch("/products/{product_id}", response_model=ProductResponse)
+async def update_product(
+    product_id: uuid.UUID,
+    payload: ProductUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> ProductResponse:
+    product = await db.get(OpportunityProduct, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(product, key, value)
+    await db.commit()
+    await db.refresh(product)
+    return _product_response(product)
+
+
+@router.delete("/products/{product_id}", status_code=204, response_model=None)
+async def delete_product(
+    product_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    product = await db.get(OpportunityProduct, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    await db.delete(product)
     await db.commit()

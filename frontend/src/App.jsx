@@ -7,6 +7,7 @@ import Analytics from './pages/Analytics.jsx';
 import SequenceBuilder from './pages/SequenceBuilder.jsx';
 import Leads from './pages/Leads.jsx';
 import Opportunities from './pages/Opportunities.jsx';
+import OpportunityDetail from './pages/OpportunityDetail.jsx';
 import ResearchClient from './pages/ResearchClient.jsx';
 import SocialRadar from './pages/SocialRadar.jsx';
 import Settings from './pages/Settings.jsx';
@@ -30,6 +31,7 @@ export default function App() {
               <Route path="/campaigns/:id/analytics" element={<Analytics />} />
               <Route path="/leads" element={<Leads />} />
               <Route path="/opportunities" element={<Opportunities />} />
+              <Route path="/opportunities/:id" element={<OpportunityDetail />} />
               <Route path="/research-client" element={<ResearchClient />} />
               <Route path="/social-radar" element={<SocialRadar />} />
               <Route path="/settings" element={<Settings />} />

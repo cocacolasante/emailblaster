@@ -23,7 +23,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer,
-    Numeric, Text, func, text,
+    LargeBinary, Numeric, Text, func, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -190,3 +190,58 @@ class CrmActivity(Base):
     )
 
     opportunity: Mapped["Opportunity | None"] = relationship(back_populates="activities")
+
+
+class CrmDocument(Base):
+    """File attachment on an opportunity (proposal, contract, quote).
+
+    Bytes live in Postgres — right-sized for a single-operator tool
+    (backups capture everything, no object store to run).  The route
+    layer enforces a 10MB per-file cap."""
+
+    __tablename__ = "crm_documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("crm_opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class OpportunityProduct(Base):
+    """Product-of-interest line item (Salesforce OpportunityLineItem,
+    lite).  Free-text product name — no global catalog in v1."""
+
+    __tablename__ = "crm_opportunity_products"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("crm_opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_name: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("1"), server_default="1",
+    )
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

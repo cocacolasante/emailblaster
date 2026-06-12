@@ -215,3 +215,59 @@ class PaginatedActivities(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+# ============================================================================
+# Documents
+# ============================================================================
+
+class DocumentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    opportunity_id: uuid.UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    uploaded_at: datetime
+
+
+# ============================================================================
+# Products of interest
+# ============================================================================
+
+class ProductCreate(BaseModel):
+    product_name: str = Field(min_length=1, max_length=300)
+    quantity: float = Field(default=1, gt=0)
+    unit_price: float | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+    _v_blank = field_validator("notes")(_blank_to_none)
+
+
+class ProductUpdate(BaseModel):
+    product_name: str | None = Field(default=None, min_length=1, max_length=300)
+    quantity: float | None = Field(default=None, gt=0)
+    unit_price: float | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+
+class ProductResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    opportunity_id: uuid.UUID
+    product_name: str
+    quantity: float
+    unit_price: float | None
+    notes: str | None
+    created_at: datetime
+    # Derived: quantity x unit_price (None when no price set).
+    line_total: float | None = None
+
+
+class ProductListResponse(BaseModel):
+    items: list[ProductResponse]
+    # Sum of priced line totals — shown next to the manual deal amount
+    # as a sanity hint ("products add up to $X").
+    products_total: float

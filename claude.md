@@ -1562,7 +1562,31 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-11 — CRM sprint: Salesforce-style leads /
+_Last updated: 2026-06-11 (later) — Opportunity record pages (Salesforce
+lite).  Each opportunity now has its own page at ``/opportunities/:id``
+(Kanban cards navigate there; the old detail modal is gone).  Migration
+0026 adds:
+- ``crm_documents`` — file attachments per deal (proposals/contracts/
+  quotes).  Bytes in Postgres BYTEA (single-operator-sized; no object
+  store), 10MB cap enforced at the route (413 with a shared-drive hint),
+  empty files 422.  Listing skips the BYTEA column; download sets
+  Content-Disposition attachment.
+- ``crm_opportunity_products`` — products-of-interest line items
+  (free-text name + qty x unit price; line_total derived;
+  products_total roll-up returned next to the manual deal amount with
+  a "consider syncing" hint when they diverge).
+The page: header (contact snapshot, amount, probability, closes date,
+won/lost banner), stage stepper (closed_won asks confirm; closed_lost
+opens an inline REQUIRED loss-reason form before the stage flips —
+Salesforce-style), editable details card (amount/close date/probability
+override/description, blur-to-save), products card, documents card
+(upload/download/delete), the full ActivityLog (tasks/notes/calls/
+emails/meetings), created/updated meta + source-lead link + delete
+(un-converts the source lead).  8 new backend tests + 9 new frontend
+(OpportunityDetail.test.jsx); Opportunities tests updated from modal
+to navigation semantics._
+
+_Previously: CRM sprint: Salesforce-style leads /
 opportunities / activities.  Migration 0025:
 - ``leads.campaign_id`` NULLABLE — manual CRM leads exist outside any
   campaign (they never enter compose/send; the global list outer-joins
@@ -1668,7 +1692,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **791 passing**.  Frontend tests: **279 passing**._
+_Backend tests: **799 passing**.  Frontend tests: **287 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -7,8 +7,10 @@ from app.models.crm import (
     CrmActivity,
     CrmActivityDirection,
     CrmActivityType,
+    CrmDocument,
     CrmLeadStatus,
     Opportunity,
+    OpportunityProduct,
     OpportunityStage,
 )
 from app.models.email_event import EmailEvent, EmailEventType
@@ -53,8 +55,10 @@ __all__ = [
     "CrmActivity",
     "CrmActivityDirection",
     "CrmActivityType",
+    "CrmDocument",
     "CrmLeadStatus",
     "Opportunity",
+    "OpportunityProduct",
     "OpportunityStage",
     "EmailEvent",
     "EmailEventType",

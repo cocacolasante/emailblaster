@@ -328,3 +328,131 @@ async def test_opportunity_activity_counts_rollup(client):
     body = resp.json()
     assert body["activity_count"] == 2
     assert body["open_task_count"] == 1
+
+
+# ---------- Documents ----------
+
+async def _make_opp(client, name="Doc deal"):
+    return (await client.post("/crm/opportunities", json={"name": name})).json()
+
+
+async def test_document_upload_list_download_delete(client):
+    opp = await _make_opp(client)
+
+    # Upload.
+    resp = await client.post(
+        f"/crm/opportunities/{opp['id']}/documents",
+        files={"file": ("proposal.pdf", b"%PDF-1.4 fake pdf bytes", "application/pdf")},
+    )
+    assert resp.status_code == 201, resp.text
+    doc = resp.json()
+    assert doc["filename"] == "proposal.pdf"
+    assert doc["content_type"] == "application/pdf"
+    assert doc["size_bytes"] == len(b"%PDF-1.4 fake pdf bytes")
+
+    # List (no data payload in the listing).
+    listing = (await client.get(f"/crm/opportunities/{opp['id']}/documents")).json()
+    assert len(listing) == 1
+    assert listing[0]["filename"] == "proposal.pdf"
+    assert "data" not in listing[0]
+
+    # Download returns the exact bytes + attachment header.
+    dl = await client.get(f"/crm/documents/{doc['id']}/download")
+    assert dl.status_code == 200
+    assert dl.content == b"%PDF-1.4 fake pdf bytes"
+    assert dl.headers["content-type"].startswith("application/pdf")
+    assert 'filename="proposal.pdf"' in dl.headers["content-disposition"]
+
+    # Delete.
+    rm = await client.delete(f"/crm/documents/{doc['id']}")
+    assert rm.status_code == 204
+    assert (await client.get(f"/crm/opportunities/{opp['id']}/documents")).json() == []
+
+
+async def test_document_upload_rejects_oversize(client):
+    from app.routers.crm import MAX_DOCUMENT_BYTES
+    opp = await _make_opp(client)
+    big = b"x" * (MAX_DOCUMENT_BYTES + 1)
+    resp = await client.post(
+        f"/crm/opportunities/{opp['id']}/documents",
+        files={"file": ("huge.bin", big, "application/octet-stream")},
+    )
+    assert resp.status_code == 413
+    assert "too large" in resp.json()["detail"].lower()
+
+
+async def test_document_upload_rejects_empty_file(client):
+    opp = await _make_opp(client)
+    resp = await client.post(
+        f"/crm/opportunities/{opp['id']}/documents",
+        files={"file": ("empty.txt", b"", "text/plain")},
+    )
+    assert resp.status_code == 422
+
+
+async def test_document_upload_404_unknown_opportunity(client):
+    resp = await client.post(
+        f"/crm/opportunities/{uuid.uuid4()}/documents",
+        files={"file": ("x.txt", b"hi", "text/plain")},
+    )
+    assert resp.status_code == 404
+
+
+async def test_documents_cascade_on_opportunity_delete(client, db_session):
+    from app.models import CrmDocument
+    opp = await _make_opp(client)
+    await client.post(
+        f"/crm/opportunities/{opp['id']}/documents",
+        files={"file": ("a.txt", b"a", "text/plain")},
+    )
+    await client.delete(f"/crm/opportunities/{opp['id']}")
+    remaining = (await db_session.execute(
+        select(CrmDocument).where(CrmDocument.opportunity_id == uuid.UUID(opp["id"]))
+    )).scalars().all()
+    assert remaining == []
+
+
+# ---------- Products of interest ----------
+
+async def test_product_add_list_with_line_totals(client):
+    opp = await _make_opp(client, name="Product deal")
+
+    r1 = await client.post(f"/crm/opportunities/{opp['id']}/products", json={
+        "product_name": "Managed IT (24 seats)", "quantity": 24, "unit_price": 95,
+    })
+    assert r1.status_code == 201
+    assert r1.json()["line_total"] == 2280.0
+
+    # Unpriced product → line_total None, excluded from the total.
+    r2 = await client.post(f"/crm/opportunities/{opp['id']}/products", json={
+        "product_name": "Network audit",
+    })
+    assert r2.json()["line_total"] is None
+    assert r2.json()["quantity"] == 1.0  # default
+
+    listing = (await client.get(f"/crm/opportunities/{opp['id']}/products")).json()
+    assert len(listing["items"]) == 2
+    assert listing["products_total"] == 2280.0
+
+
+async def test_product_update_and_delete(client):
+    opp = await _make_opp(client, name="P2")
+    p = (await client.post(f"/crm/opportunities/{opp['id']}/products", json={
+        "product_name": "Seats", "quantity": 10, "unit_price": 50,
+    })).json()
+
+    upd = await client.patch(f"/crm/products/{p['id']}", json={"quantity": 20})
+    assert upd.json()["line_total"] == 1000.0
+
+    rm = await client.delete(f"/crm/products/{p['id']}")
+    assert rm.status_code == 204
+    listing = (await client.get(f"/crm/opportunities/{opp['id']}/products")).json()
+    assert listing["items"] == []
+
+
+async def test_product_rejects_zero_quantity(client):
+    opp = await _make_opp(client, name="P3")
+    resp = await client.post(f"/crm/opportunities/{opp['id']}/products", json={
+        "product_name": "X", "quantity": 0,
+    })
+    assert resp.status_code == 422
