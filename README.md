@@ -22,6 +22,7 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 - **Reply tracking** — IMAP polling against your own inbox (Gmail / Outlook / Yahoo / custom). Credentials encrypted at rest with Fernet. Read-only (never marks messages seen in your mailbox).
 - **Lite-CRM Leads tab** — global cross-campaign lead view with per-lead notes (editable even after the email has sent). Searchable / filterable by campaign / send status / has-notes.
 - **CRM: leads, opportunities + activity logging** — create leads manually (no CSV), convert them to opportunities Salesforce-style (contact snapshot + stage pipeline: prospecting → qualification → proposal → negotiation → closed won/lost, amount, close date, win probability), and log calls / emails / meetings / notes / tasks against leads and deals. Kanban pipeline board with per-stage totals; each deal gets its own record page with document attachments (10MB each, stored in Postgres), products-of-interest line items (qty × price with totals), a required loss-reason flow on closed-lost, and the full activity log; tasks carry due dates with an overdue indicator; the per-lead timeline merges automated sends/opens with manually-logged CRM touches.
+- **CRM & inbox AI agent** — classifies every inbound reply (sentiment + intent, Haiku), auto-logs it as a CRM activity, creates a "Convert lead to opportunity" reminder on confident positive replies, nudges deals idle 7+ days, emails the owner (positive-reply pings, task due/overdue reminders, a daily digest), and optionally drafts suggested replies (Sonnet, never sent automatically). Hard autonomy boundary: the agent never converts leads, never messages prospects, never changes deal stages, never deletes — every autonomous action is recorded in an audit log, and everything is toggleable from Settings → Agent (plus an `AGENT_ENABLED` kill-switch).
 - **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap. Includes a **send-and-track** flow: edit and send the generated email from any connected inbox, with the send automatically logged as an outbound email activity in the CRM (creates a new CRM lead if the address isn't already tracked; attaches to a matching deal when one exists).
 - **Social Listening Radar** — type a plain-English topic ("frustrated with our IT provider"), Claude expands it to ~20 LinkedIn search phrases, Anthropic web search finds matching public posts, each post is scored 1-10 for buying intent + categorized, and a suggested comment + connection request + follow-up DM is drafted for each. All LinkedIn writes stay manual — the system never auto-posts. Per-search frequency (manual / 6h / 12h / daily / weekly) and soft cost caps per run.
 - **Analytics** — open / click / reply / bounce / spam / unsub rates, sender reputation score (0–100), research-quality breakdown (rich/partial/generic open rates), best subject lines, per-step funnel, timeline chart, per-lead activity drilldown.
@@ -69,6 +70,9 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 | `brevo_events_poller.poll` | `BREVO_EVENTS_POLL_INTERVAL_MINUTES` (default 10) | Pulls `delivered`/`opened`/`clicked`/`bounced`/`spam`/`unsubscribed` from Brevo's events API |
 | `lead_sweeper.sweep_stale` | every 5min | Resets `compose_status`/`research_status` rows stuck in RUNNING > 15min back to PENDING + re-enqueues |
 | `social_listening.scheduled_runner` | every 60s | Dispatcher — selects active+non-manual Social Radar searches whose `next_run_at <= now`, enqueues `run_social_search` for each (sequencer-pattern, per-search frequency) |
+| `agent_sweeper.sweep_reminders` | `AGENT_REMINDER_SWEEP_INTERVAL_MINUTES` (default 30) | Owner reminders for open tasks due soon / overdue — one reminder per task ever (`reminder_sent_at` anchor) |
+| `agent_sweeper.sweep_stale_opps` | hourly | Nudge open opportunities idle > `AGENT_STALE_OPP_DAYS` (re-engage task + alert, weekly dedup) |
+| `digest.send_daily` | crontab at `AGENT_DIGEST_HOUR_UTC` (default 12 UTC) | Daily digest email: due/overdue tasks, replies by sentiment, pipeline movement, unsent-alert count |
 
 ### Per-lead pipeline (legacy first-email path)
 
@@ -199,6 +203,14 @@ UNIPILE_API_KEY=...
 UNIPILE_WEBHOOK_SECRET=...
 UNIPILE_WEBHOOK_AUTH_HEADER=X-Unipile-Auth
 
+# Agent / notifications (see Settings → Agent in the UI for runtime toggles)
+OWNER_NOTIFY_EMAIL=you@yourdomain.com   # empty = in-app alerts only, no emails
+AGENT_ENABLED=true
+ANTHROPIC_AGENT_MODEL=claude-haiku-4-5-20251001
+ANTHROPIC_AGENT_DRAFT_MODEL=claude-sonnet-4-6
+AGENT_DIGEST_HOUR_UTC=12
+AGENT_STALE_OPP_DAYS=7
+
 # LinkedIn rate caps
 LINKEDIN_DAILY_ACTION_CAP=20
 LINKEDIN_MIN_ACTION_DELAY_SECONDS=30
@@ -218,7 +230,7 @@ docker compose up --build -d
 docker compose exec backend alembic upgrade head
 ```
 
-This brings up postgres + redis + backend + worker + beat + frontend, and applies all 26 migrations.
+This brings up postgres + redis + backend + worker + beat + frontend, and applies all 27 migrations.
 
 When it's done:
 
@@ -550,7 +562,8 @@ emailblaster/
 │   │   ├── main.py                  FastAPI app + CORS middleware + 500-handler with CORS
 │   │   ├── config.py                pydantic-settings (all env vars)
 │   │   ├── database.py              Async SQLAlchemy engine + get_db + AsyncSessionLocal
-│   │   ├── models/                  14 ORM models
+│   │   ├── models/                  15 ORM models
+│   │   │   ├── agent.py             AgentSettings (singleton) + Notification (dedup_key) + AgentAction (audit); NotificationKind / AgentActionType / AgentActionStatus enums
 │   │   │   ├── campaign.py          Campaign + CampaignStatus + ResearchMode enums
 │   │   │   ├── connected_account.py Inbox credential record (Fernet-encrypted password)
 │   │   │   ├── crm.py               Opportunity + CrmActivity + CrmDocument (BYTEA) + OpportunityProduct; enums CrmLeadStatus / OpportunityStage / CrmActivityType / CrmActivityDirection / CLOSED_STAGES / STAGE_DEFAULT_PROBABILITY constants
@@ -565,6 +578,7 @@ emailblaster/
 │   │   │   └── webhook_event.py     Idempotency table for Unipile webhook deliveries
 │   │   ├── schemas/                 Pydantic request/response shapes
 │   │   ├── routers/
+│   │   │   ├── agent.py             GET/PATCH /agent/settings + /agent/notifications (+read) + /agent/actions + /agent/replies triage feed
 │   │   │   ├── analytics.py         GET /campaigns/{id}/analytics + activity
 │   │   │   ├── campaigns.py         CRUD + pause/resume + retry-failed + signature + leads list + delete
 │   │   │   ├── connected_accounts.py Inbox CRUD + test connection
@@ -594,6 +608,10 @@ emailblaster/
 │   │   │   ├── social_listening_linkedin_crosslink.py Pure-fn: extract linkedin.com/posts + /feed/update URLs from Reddit post bodies; synthesize $0 opportunities
 │   │   │   ├── _anthropic.py        Shared get_client/extract_text/parse_json helpers
 │   │   │   ├── _anthropic_cost.py   Per-model/tool price table; used by estimate endpoint + mid-run cap
+│   │   │   ├── agent_core.py        Agent orchestration: process_inbound_reply, flag_stale_opportunities, settings singleton, audit writer — enforces the autonomy boundary
+│   │   │   ├── reply_sentiment.py   Haiku strict-JSON reply classifier (sentiment/intent/confidence; neutral fallback)
+│   │   │   ├── reply_drafter.py     Sonnet suggested-reply drafts (opt-in, never sent automatically)
+│   │   │   ├── notifications.py     Notification rows (dedup) + owner email via Brevo + quiet-hours deferral
 │   │   │   ├── compose_client.py    One-off compose with char-limit enforcement
 │   │   │   ├── csv_parser.py        CSV column detection + auto-mapping
 │   │   │   ├── email_template.py    HTML+text rendering, unsubscribe link injection
@@ -615,10 +633,12 @@ emailblaster/
 │   │       ├── linkedin_poller.py   Unipile webhook fallback (inbox events, accepted invites)
 │   │       ├── brevo_events_poller.py Polls Brevo events API every 10min
 │   │       ├── social_listening.py  4 tasks: expand_topic, run_search, qualify_post, scheduled_runner
-│   │       └── lead_sweeper.py      Resets stale RUNNING rows to PENDING and re-enqueues
-│   ├── alembic/versions/            26 migrations (0001 initial → 0026 CRM documents + products)
+│   │       ├── lead_sweeper.py      Resets stale RUNNING rows to PENDING and re-enqueues
+│   │       ├── agent_sweeper.py     Task due/overdue reminders + stale-opportunity nudges (beat)
+│   │       └── digest.py            Daily digest email (crontab at AGENT_DIGEST_HOUR_UTC)
+│   ├── alembic/versions/            27 migrations (0001 initial → 0027 agent core)
 │   ├── scripts/                     One-off remediation scripts (see below)
-│   └── tests/                       803 backend tests
+│   └── tests/                       868 backend tests
 ├── frontend/
 │   └── src/
 │       ├── pages/
@@ -631,13 +651,15 @@ emailblaster/
 │       │   ├── Leads.jsx              Global leads — CRM status, convert, activity log, ignore
 │       │   ├── Opportunities.jsx      Kanban pipeline board (exports STAGES + fmtAmount)
 │       │   ├── OpportunityDetail.jsx  Full deal record — stage stepper, details, products, documents, activity
+│       │   ├── Replies.jsx            Reply triage feed — sentiment badges, one-click Convert, AI draft viewer
 │       │   ├── ResearchClient.jsx     One-off research + send-and-CRM-track flow
 │       │   ├── SocialRadar.jsx        Feed + Searches tabs + editor modal (Social Listening Radar)
 │       │   └── Settings.jsx           Inboxes + LinkedIn accounts + default sender
 │       ├── components/              Nav, Toast, ErrorBoundary, EmailPreviewCard, LeadTable, LeadUpload,
 │       │                            ScheduleConfig, MetricsGrid, ConnectInboxModal, ConnectLinkedInModal,
 │       │                            SignatureEditor (inline in CampaignDetail),
-│       │                            ActivityLog (shared — lead modal + opportunity detail page)
+│       │                            ActivityLog (shared — lead modal + opportunity detail page),
+│       │                            NotificationBell (fixed top-right, unread badge + dropdown)
 │       └── api/                     axios wrappers per resource; crm.js covers all CRM endpoints
 ├── docker-compose.yml               6 services, all bound to 127.0.0.1
 ├── scripts/dev_tunnel.py            ngrok + Unipile webhook resync (pure stdlib)
@@ -663,10 +685,10 @@ emailblaster/
 ## Running tests
 
 ```bash
-# Backend (803 tests; spins up postgres if not already running)
+# Backend (868 tests; spins up postgres if not already running)
 docker compose run --rm backend pytest
 
-# Frontend (290 tests; pure jsdom, no services needed)
+# Frontend (303 tests; pure jsdom, no services needed)
 docker compose exec frontend npm test --run
 
 # Quick: one specific file

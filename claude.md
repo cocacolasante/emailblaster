@@ -22,7 +22,8 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Social Listening Radar — intent-feed for
+- **Last completed:** **CRM & inbox AI agent** (2026-06-12 snapshot at
+  the bottom of this file has full detail).  Previously: **Social Listening Radar — intent-feed for
   LinkedIn posts.**  New sidebar item with two tabs (Feed + Searches).
   The user types a plain-English topic ("frustrated with our IT
   provider"), Claude (Haiku) fans it out to 15-30 LinkedIn search
@@ -1562,7 +1563,81 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-12 — Research-a-client sends auto-track in the
+_Last updated: 2026-06-12 (later) — CRM & inbox AI agent (6 phases,
+migration 0027).  The agent automates CRM hygiene under a hard
+autonomy boundary: it MAY log activities, create reminder TASKS,
+email the OWNER, and flag stale deals; it may NEVER convert a lead,
+message a prospect, change a deal stage, or delete anything — those
+stay human actions it only prompts via reminders/notifications.
+
+- **Data (0027):** ``agent_settings`` (singleton id=1, runtime
+  toggles + min_confidence_to_act + quiet hours, bootstrapped lazily
+  by ``agent_core.get_agent_settings``; env ``AGENT_ENABLED`` is the
+  hard kill-switch above it), ``notifications`` (UI bell feed; UNIQUE
+  ``dedup_key`` is the idempotency anchor; FKs SET NULL), and
+  ``agent_actions`` (append-only audit incl. skips/failures with
+  model + cost_usd).  ``crm_activities`` gained ``reminder_sent_at``
+  (one reminder per task ever), ``sentiment``, ``is_agent_generated``.
+- **Reply pipeline:** ``imap_client.FetchedMessage`` now carries
+  ``body_text`` (text/plain preferred, tag-stripped HTML fallback,
+  4000-char cap, fetched via a second ``BODY.PEEK[]`` — still no
+  ``\Seen`` mutation; the PEEK contract test asserts EVERY fetch) +
+  ``received_at``.  ``reply_sentiment.classify_reply`` (Haiku,
+  ``ANTHROPIC_AGENT_MODEL``) returns strict-JSON sentiment/intent/
+  confidence; OOO can never be positive; parse/API failure → neutral
+  fallback with ``parse_failed=True``.  ``agent_core.
+  process_inbound_reply`` logs the inbound activity (mirrored onto
+  the deal when converted), creates an idempotent convert reminder on
+  a confident positive (open-task check per lead, due next business
+  day), a follow-up task on the deal when already converted, and
+  notifications deduped on message id.  Wired into ``reply_poller``
+  after the REPLIED event — only for newly-processed messages, so a
+  re-poll never re-classifies; agent failure is caught + audited and
+  never blocks reply recording.
+- **Sweeps (beat):** ``agent_sweeper.sweep_reminders`` (every
+  ``AGENT_REMINDER_SWEEP_INTERVAL_MINUTES``) pings due-soon/overdue
+  open tasks once each; ``agent_sweeper.sweep_stale_opps`` (hourly) →
+  ``agent_core.flag_stale_opportunities`` nudges open deals idle ≥
+  ``AGENT_STALE_OPP_DAYS`` with no open task (nudge task pre-stamps
+  ``reminder_sent_at`` so the reminder sweep doesn't double-ping;
+  notification deduped per-deal-per-ISO-week); ``digest.send_daily``
+  (crontab ``AGENT_DIGEST_HOUR_UTC``) sends one summary email a day
+  (overdue/due-today/replies-by-sentiment/pipeline movement/unsent-
+  alert count) — deliberately BYPASSES quiet hours since it's the
+  sweep-up channel for alerts quiet hours deferred; idempotent via
+  ``digest:<date>``.
+- **Notifications:** ``services/notifications.py`` —
+  ``create_notification`` (dedup-key guard), ``send_notification_email``
+  (Brevo → ``OWNER_NOTIFY_EMAIL``, never raises, warns once when
+  unset), ``notify()`` composite with quiet-hours email deferral (row
+  persists, ``emailed_at`` NULL).
+- **Drafts (opt-in, OFF by default):** ``reply_drafter.draft_reply``
+  (Sonnet, ``ANTHROPIC_AGENT_DRAFT_MODEL``) writes a suggested reply
+  to the ``draft_reply`` audit row (``detail.draft_body``) + the
+  notification body.  NEVER sent.  Skipped for OOO/unsubscribe/
+  not_interested intents.
+- **API:** new ``/agent`` router — GET/PATCH ``/agent/settings``
+  (quiet hours must be set as a pair; ``clear_quiet_hours`` resets),
+  ``/agent/notifications`` (+ ``/read``, ``/read-all``),
+  ``/agent/actions``, ``/agent/replies`` (triage feed with
+  ``convert_eligible``; convert reuses the existing
+  ``POST /crm/leads/{id}/convert``).
+- **Frontend:** new ``pages/Replies.jsx`` (sentiment badges, one-click
+  Convert, View-draft panel), ``components/NotificationBell.jsx``
+  (fixed top-right, unread badge, 60s poll), Settings → Agent tab
+  (toggles, confidence slider, quiet hours, owner-email status +
+  kill-switch banners), AI tag + sentiment chip on agent-generated
+  rows in ``ActivityLog``, Replies nav entry.
+- **Config:** ``OWNER_NOTIFY_EMAIL`` (empty = in-app only, no
+  emails), ``OWNER_NOTIFY_NAME``, ``AGENT_ENABLED``,
+  ``ANTHROPIC_AGENT_MODEL`` (Haiku), ``ANTHROPIC_AGENT_DRAFT_MODEL``
+  (Sonnet), sweep interval / digest hour / stale days / due-soon
+  window — all wired into the compose ``environment:`` blocks of all
+  three Python services + ``.env.example``.
+- Tests: 61 new backend (models, sentiment, pipeline, sweeper, quiet
+  hours, stale nudges, digest, router, drafter) + 13 new frontend._
+
+_Previously: Research-a-client sends auto-track in the
 CRM.  ``POST /research-client/send`` now finds-or-creates a CRM lead
 after the Brevo send succeeds: lookup is case-insensitive on
 ``lower(Lead.email)`` (most-recently-updated row wins when the email
@@ -1712,7 +1787,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **803 passing**.  Frontend tests: **290 passing**._
+_Backend tests: **868 passing**.  Frontend tests: **303 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
