@@ -21,8 +21,8 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 - **LinkedIn outreach** — via [Unipile](https://www.unipile.com)'s hosted-Chrome integration (real desktop browser, residential IPs). Eight action kinds: view profile, follow, connect, DM, react to post, comment on post, invite to company page, InMail.
 - **Reply tracking** — IMAP polling against your own inbox (Gmail / Outlook / Yahoo / custom). Credentials encrypted at rest with Fernet. Read-only (never marks messages seen in your mailbox).
 - **Lite-CRM Leads tab** — global cross-campaign lead view with per-lead notes (editable even after the email has sent). Searchable / filterable by campaign / send status / has-notes.
-- **CRM: opportunities + activity logging** — create leads manually (no CSV), convert them to opportunities Salesforce-style (contact snapshot + stage pipeline: prospecting → qualification → proposal → negotiation → closed won/lost, amount, close date, win probability), and log calls / emails / meetings / notes / tasks against leads and deals. Kanban pipeline board with per-stage totals; each deal gets its own record page with document attachments (10MB each, stored in Postgres), products-of-interest line items (qty × price with totals), a required loss-reason flow on closed-lost, and the full activity log; tasks carry due dates with an overdue indicator; the per-lead timeline merges automated sends/opens with manually-logged touches.
-- **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap.
+- **CRM: leads, opportunities + activity logging** — create leads manually (no CSV), convert them to opportunities Salesforce-style (contact snapshot + stage pipeline: prospecting → qualification → proposal → negotiation → closed won/lost, amount, close date, win probability), and log calls / emails / meetings / notes / tasks against leads and deals. Kanban pipeline board with per-stage totals; each deal gets its own record page with document attachments (10MB each, stored in Postgres), products-of-interest line items (qty × price with totals), a required loss-reason flow on closed-lost, and the full activity log; tasks carry due dates with an overdue indicator; the per-lead timeline merges automated sends/opens with manually-logged CRM touches.
+- **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap. Includes a **send-and-track** flow: edit and send the generated email from any connected inbox, with the send automatically logged as an outbound email activity in the CRM (creates a new CRM lead if the address isn't already tracked; attaches to a matching deal when one exists).
 - **Social Listening Radar** — type a plain-English topic ("frustrated with our IT provider"), Claude expands it to ~20 LinkedIn search phrases, Anthropic web search finds matching public posts, each post is scored 1-10 for buying intent + categorized, and a suggested comment + connection request + follow-up DM is drafted for each. All LinkedIn writes stay manual — the system never auto-posts. Per-search frequency (manual / 6h / 12h / daily / weekly) and soft cost caps per run.
 - **Analytics** — open / click / reply / bounce / spam / unsub rates, sender reputation score (0–100), research-quality breakdown (rich/partial/generic open rates), best subject lines, per-step funnel, timeline chart, per-lead activity drilldown.
 
@@ -218,7 +218,7 @@ docker compose up --build -d
 docker compose exec backend alembic upgrade head
 ```
 
-This brings up postgres + redis + backend + worker + beat + frontend, and applies all 14 migrations.
+This brings up postgres + redis + backend + worker + beat + frontend, and applies all 26 migrations.
 
 When it's done:
 
@@ -457,6 +457,53 @@ Pick output kind (email subject+body, or LinkedIn DM body-only) and a char limit
 
 **No LinkedIn views fire from this tool** — it's pure Anthropic + web search, so it doesn't surface in the prospect's "who viewed your profile" feed.
 
+#### Sending + CRM tracking
+
+After researching, click **Add email** to open the email action panel. You can:
+
+- **Edit** subject and body before sending
+- **Pick a sender** from any connected inbox (defaults to the Settings default)
+- **Enter a signature** that's injected at the bottom
+
+Click **Send** to deliver via Brevo. On success, the send is automatically tracked in the CRM:
+- If the recipient email isn't in the CRM yet, a new campaign-less lead is created (name split from the recipient name).
+- If a lead already exists, the activity is logged against the existing record (no duplicate lead created).
+- If an opportunity carries the same email, the activity is attached to the deal timeline too.
+
+The confirmation row tells you what happened: *"Added to CRM as a new lead + email logged."* or *"Email logged on their existing CRM record."* CRM write failures are best-effort — if the CRM write fails for any reason, the send still reports success (the email already left).
+
+### CRM
+
+Sidebar → **Leads** and **Opportunities**. A Salesforce-lite CRM woven into the outreach tool.
+
+#### Leads
+
+The global Leads page (`/leads`) shows both campaign leads AND manually-created CRM leads. Manually create a lead with **+ New lead** (email is the unique key; canonicalized to lowercase).
+
+Per-lead modal:
+- **CRM status** — new / working / qualified / converted / unqualified. `converted` is reserved for the convert endpoint (can't be set manually).
+- **Convert to opportunity** — snapshots the contact (name, email, phone, company, job title, LinkedIn URL) into a new deal and logs a note activity spanning both records. Prevents double-conversion (409 on re-convert).
+- **Activity log** — calls / emails / meetings / notes / tasks logged against the lead. Tasks carry due dates with an overdue indicator (red badge). The timeline merges these with automated campaign send events and email events.
+- **Notes** — free-text field editable at any time.
+
+Leads can be **ignored** (suppression-listed) via the Ignore button, which prevents them from appearing in future campaigns or receiving further sends. Unignorable too.
+
+#### Opportunities
+
+Sidebar → **Opportunities** → Kanban pipeline board with six stages: Prospecting → Qualification → Proposal → Negotiation → Closed Won / Closed Lost. Each column shows the deal count and total value. Closed columns are hidden by default (toggle with "Show closed"). Click **+ New opportunity** to create one directly; normally you'll create via lead conversion.
+
+**Opportunity detail page** (`/opportunities/:id`):
+
+- **Header** — contact snapshot (name, email, company, job title, LinkedIn), deal amount, win probability (auto-set by stage default unless overridden), closes date.
+- **Won/Lost banner** — shown on closed deals; lost deals show the loss reason.
+- **Stage stepper** — click any stage to advance. Closed Won asks for confirmation. Closed Lost opens an inline required loss-reason form before the stage flips.
+- **Details card** — amount, close date, probability override, description. All editable inline (blur to save).
+- **Products of interest** — add line items (name, qty, unit price). `line_total` derived per row; `products_total` roll-up shown next to the deal amount with a "consider syncing" note when they diverge.
+- **Documents** — upload proposals / contracts / quotes (10 MB cap each, stored in Postgres). Per-file download and delete. Files larger than 10 MB return a 413 with a shared-drive suggestion.
+- **Activity log** — log calls, emails, meetings, notes, tasks. Tasks have due dates with overdue highlighting. Full history of all touches in reverse-chronological order.
+- **Created/updated meta** — audit timestamps + link back to the source lead.
+- **Delete** — un-converts the source lead (back to `qualified`) and wipes the deal.
+
 ### Social Listening Radar
 
 Sidebar → **Social Radar**.  An "intent feed" — discover LinkedIn posts where someone is venting about a vendor, asking for tech recommendations, or otherwise signaling buying intent, then surface them with AI-drafted suggested responses you manually approve before posting.
@@ -503,11 +550,12 @@ emailblaster/
 │   │   ├── main.py                  FastAPI app + CORS middleware + 500-handler with CORS
 │   │   ├── config.py                pydantic-settings (all env vars)
 │   │   ├── database.py              Async SQLAlchemy engine + get_db + AsyncSessionLocal
-│   │   ├── models/                  13 ORM models
+│   │   ├── models/                  14 ORM models
 │   │   │   ├── campaign.py          Campaign + CampaignStatus + ResearchMode enums
 │   │   │   ├── connected_account.py Inbox credential record (Fernet-encrypted password)
+│   │   │   ├── crm.py               Opportunity + CrmActivity + CrmDocument (BYTEA) + OpportunityProduct; enums CrmLeadStatus / OpportunityStage / CrmActivityType / CrmActivityDirection / CLOSED_STAGES / STAGE_DEFAULT_PROBABILITY constants
 │   │   │   ├── email_event.py       sent / delivered / opened / clicked / replied / bounced / spam / unsub
-│   │   │   ├── lead.py              Lead + ResearchStatus / ComposeStatus / SendStatus / LinkedInConnectionStatus enums
+│   │   │   ├── lead.py              Lead (campaign_id nullable since migration 0025) + ResearchStatus / ComposeStatus / SendStatus / LinkedInConnectionStatus / CrmLeadStatus enums; crm_status + converted_opportunity_id + notes columns
 │   │   │   ├── linkedin_account.py  Unipile-bound LinkedIn account row
 │   │   │   ├── research_cache.py    Email-keyed JSONB research cache (90d TTL)
 │   │   │   ├── social_listening.py  3 models: SocialListeningSearch + Post + Opportunity
@@ -520,10 +568,11 @@ emailblaster/
 │   │   │   ├── analytics.py         GET /campaigns/{id}/analytics + activity
 │   │   │   ├── campaigns.py         CRUD + pause/resume + retry-failed + signature + leads list + delete
 │   │   │   ├── connected_accounts.py Inbox CRUD + test connection
-│   │   │   ├── leads.py             Upload preview + confirm-upload + global GET /leads
+│   │   │   ├── crm.py               /crm/leads (manual create + crm_status PATCH + convert) + /crm/opportunities (CRUD + pipeline summary) + /crm/activities (CRUD + open_tasks) + /crm/documents (upload/download/delete) + /crm/products
+│   │   │   ├── leads.py             Upload preview + confirm-upload + global GET /leads + ignore/unignore + per-lead detail with merged timeline
 │   │   │   ├── linkedin_accounts.py LinkedIn account CRUD + Unipile hosted-auth + discoverable / import
 │   │   │   ├── preview.py           Sample preview + approve-all + reject
-│   │   │   ├── research_client.py   POST /research-client (one-off research tool)
+│   │   │   ├── research_client.py   POST /research-client (one-off research) + POST /research-client/send (send + CRM auto-track)
 │   │   │   ├── sequences.py         GET / replace / publish sequence graphs
 │   │   │   ├── social_radar.py      Searches CRUD + opportunities feed + expand-preview
 │   │   │   ├── settings.py          App-level settings exposure
@@ -538,15 +587,18 @@ emailblaster/
 │   │   │   ├── hunter.py            Hunter.io email verification client
 │   │   │   ├── research_cache.py    lookup / upsert helpers
 │   │   │   ├── research_client.py   One-off research generator (Anthropic-only, no Unipile)
-│   │   │   ├── social_listening_topic_expander.py  Haiku expansion (1 call → 15-30 phrases)
-│   │   │   ├── social_listening_discovery.py       Sonnet+web_search → list of DiscoveredPost
-│   │   │   ├── social_listening_qualifier.py       Haiku per-post strict-JSON scorer + drafter
+│   │   │   ├── social_listening_topic_expander.py    Haiku expansion (1 call → 15-30 phrases)
+│   │   │   ├── social_listening_discovery.py         Sonnet+web_search → list of DiscoveredPost; per-source routing (LinkedIn / Reddit RSS / Twitter)
+│   │   │   ├── social_listening_qualifier.py         Haiku per-post strict-JSON scorer + drafter (batched 10/call)
+│   │   │   ├── social_listening_reddit_api.py        Direct Reddit RSS parser (stdlib xml.etree; returns DiscoveredPost)
+│   │   │   ├── social_listening_linkedin_crosslink.py Pure-fn: extract linkedin.com/posts + /feed/update URLs from Reddit post bodies; synthesize $0 opportunities
 │   │   │   ├── _anthropic.py        Shared get_client/extract_text/parse_json helpers
+│   │   │   ├── _anthropic_cost.py   Per-model/tool price table; used by estimate endpoint + mid-run cap
 │   │   │   ├── compose_client.py    One-off compose with char-limit enforcement
 │   │   │   ├── csv_parser.py        CSV column detection + auto-mapping
 │   │   │   ├── email_template.py    HTML+text rendering, unsubscribe link injection
 │   │   │   ├── template_render.py   {{merge_field}} substitution for template-mode campaigns
-│   │   │   ├── signature.py         Sign-off detection + replacement
+│   │   │   ├── signature.py         Sign-off detection + replacement; render_email_with_signature → (html, text)
 │   │   │   ├── sequence_conditions.py JSON expression language + evaluator + DAG cycle detector
 │   │   │   ├── sequence_service.py  ensure_default_sequence, enroll_leads, validate_graph, replace_graph
 │   │   │   └── linkedin/            Unipile provider
@@ -564,26 +616,29 @@ emailblaster/
 │   │       ├── brevo_events_poller.py Polls Brevo events API every 10min
 │   │       ├── social_listening.py  4 tasks: expand_topic, run_search, qualify_post, scheduled_runner
 │   │       └── lead_sweeper.py      Resets stale RUNNING rows to PENDING and re-enqueues
-│   ├── alembic/versions/            14 migrations (0001 initial → 0014 social listening)
+│   ├── alembic/versions/            26 migrations (0001 initial → 0026 CRM documents + products)
 │   ├── scripts/                     One-off remediation scripts (see below)
-│   └── tests/                       610 backend tests
+│   └── tests/                       803 backend tests
 ├── frontend/
 │   └── src/
 │       ├── pages/
-│       │   ├── Campaigns.jsx        Campaign list
-│       │   ├── CampaignCreate.jsx   4-step wizard
-│       │   ├── CampaignDetail.jsx   Overview / Sequence / Activity / Leads / Analytics tabs
-│       │   ├── Preview.jsx          Sample review + approve/reject
-│       │   ├── SequenceBuilder.jsx  React-Flow DAG editor
-│       │   ├── Analytics.jsx        Full-page analytics view
-│       │   ├── Leads.jsx            Global cross-campaign leads + notes modal
-│       │   ├── ResearchClient.jsx   One-off research tool
-│       │   ├── SocialRadar.jsx      Feed + Searches tabs + editor modal (Social Listening Radar)
-│       │   └── Settings.jsx         Inboxes + LinkedIn accounts
+│       │   ├── Campaigns.jsx          Campaign list
+│       │   ├── CampaignCreate.jsx     4-step wizard
+│       │   ├── CampaignDetail.jsx     Overview / Sequence / Activity / Leads / Analytics tabs
+│       │   ├── Preview.jsx            Sample review + approve/reject
+│       │   ├── SequenceBuilder.jsx    React-Flow DAG editor
+│       │   ├── Analytics.jsx          Full-page analytics view
+│       │   ├── Leads.jsx              Global leads — CRM status, convert, activity log, ignore
+│       │   ├── Opportunities.jsx      Kanban pipeline board (exports STAGES + fmtAmount)
+│       │   ├── OpportunityDetail.jsx  Full deal record — stage stepper, details, products, documents, activity
+│       │   ├── ResearchClient.jsx     One-off research + send-and-CRM-track flow
+│       │   ├── SocialRadar.jsx        Feed + Searches tabs + editor modal (Social Listening Radar)
+│       │   └── Settings.jsx           Inboxes + LinkedIn accounts + default sender
 │       ├── components/              Nav, Toast, ErrorBoundary, EmailPreviewCard, LeadTable, LeadUpload,
 │       │                            ScheduleConfig, MetricsGrid, ConnectInboxModal, ConnectLinkedInModal,
-│       │                            SignatureEditor (inline in CampaignDetail)
-│       └── api/                     axios wrappers per resource
+│       │                            SignatureEditor (inline in CampaignDetail),
+│       │                            ActivityLog (shared — lead modal + opportunity detail page)
+│       └── api/                     axios wrappers per resource; crm.js covers all CRM endpoints
 ├── docker-compose.yml               6 services, all bound to 127.0.0.1
 ├── scripts/dev_tunnel.py            ngrok + Unipile webhook resync (pure stdlib)
 ├── docs/
