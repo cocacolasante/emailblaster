@@ -10,6 +10,12 @@ import {
   updateLeadEmail,
 } from '../api/campaigns.js';
 import { useToast } from '../components/Toast.jsx';
+import ActivityLog from '../components/ActivityLog.jsx';
+import {
+  convertLead,
+  createCrmLead,
+  updateLeadCrmStatus,
+} from '../api/crm.js';
 
 const STATUS_CLASSES = {
   pending: 'bg-slate-100 text-slate-700',
@@ -21,6 +27,17 @@ const STATUS_CLASSES = {
   // a delivery problem at a glance.
   suppressed: 'bg-red-50 text-red-600',
 };
+
+const CRM_STATUS_CLASSES = {
+  new: 'bg-sky-100 text-sky-700',
+  working: 'bg-amber-100 text-amber-700',
+  qualified: 'bg-emerald-100 text-emerald-700',
+  converted: 'bg-violet-100 text-violet-700',
+  unqualified: 'bg-slate-200 text-slate-600',
+};
+
+// Statuses the user can set directly; ``converted`` only via Convert.
+const SETTABLE_CRM_STATUSES = ['new', 'working', 'qualified', 'unqualified'];
 
 function StatusPill({ value }) {
   if (!value) return <span className="text-slate-400">—</span>;
@@ -37,6 +54,7 @@ export default function Leads() {
   const [search, setSearch] = useState('');
   const [hasNotes, setHasNotes] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [creating, setCreating] = useState(false);
 
   const { data: campaigns = [] } = useQuery({
     queryKey: ['campaigns'],
@@ -56,10 +74,20 @@ export default function Leads() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <h1 className="text-2xl font-bold text-slate-900 mb-1">Leads</h1>
+      <div className="flex items-center justify-between mb-1">
+        <h1 className="text-2xl font-bold text-slate-900 m-0">Leads</h1>
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          data-testid="new-lead-btn"
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg"
+        >
+          + New lead
+        </button>
+      </div>
       <p className="text-sm text-slate-500 mb-5">
-        Every lead across every campaign. Click a row to view the composed email
-        and add CRM notes.
+        Every lead across every campaign — plus manually-created CRM leads.
+        Click a row for the full record: history, activities, notes, convert.
       </p>
 
       {/* Filters */}
@@ -167,6 +195,118 @@ export default function Leads() {
       {selected && (
         <LeadCrmModal lead={selected} onClose={() => setSelected(null)} />
       )}
+      {creating && (
+        <NewLeadModal onClose={() => setCreating(false)} />
+      )}
+    </div>
+  );
+}
+
+
+function NewLeadModal({ onClose }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [form, setForm] = useState({
+    email: '', first_name: '', last_name: '', company: '',
+    job_title: '', phone: '', linkedin_url: '', notes: '',
+  });
+  const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const createMut = useMutation({
+    mutationFn: () => createCrmLead({
+      email: form.email.trim(),
+      first_name: form.first_name.trim() || null,
+      last_name: form.last_name.trim() || null,
+      company: form.company.trim() || null,
+      job_title: form.job_title.trim() || null,
+      phone: form.phone.trim() || null,
+      linkedin_url: form.linkedin_url.trim() || null,
+      notes: form.notes.trim() || null,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      toast.success('Lead created');
+      onClose();
+    },
+    onError: (err) => {
+      const d = err?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : 'Failed to create lead');
+    },
+  });
+
+  const canSave = form.email.trim().includes('@') && !createMut.isPending;
+
+  const field = (key, label, props = {}) => (
+    <div>
+      <label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>
+      <input
+        type="text"
+        value={form[key]}
+        onChange={(e) => update(key, e.target.value)}
+        data-testid={`new-lead-${key}`}
+        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+        {...props}
+      />
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="new-lead-modal"
+      >
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="m-0 text-lg font-semibold text-slate-900">New lead</h2>
+          <button type="button" onClick={onClose} aria-label="Close"
+            className="text-slate-400 hover:text-slate-600 text-xl bg-transparent border-none cursor-pointer p-1">×</button>
+        </div>
+        <div className="space-y-3">
+          {field('email', 'Email *', { placeholder: 'jane@acme.com' })}
+          <div className="grid grid-cols-2 gap-3">
+            {field('first_name', 'First name')}
+            {field('last_name', 'Last name')}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {field('company', 'Company')}
+            {field('job_title', 'Job title')}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {field('phone', 'Phone')}
+            {field('linkedin_url', 'LinkedIn URL')}
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Notes</label>
+            <textarea
+              value={form.notes}
+              onChange={(e) => update('notes', e.target.value)}
+              rows={3}
+              data-testid="new-lead-notes"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
+            />
+          </div>
+          <p className="text-xs text-slate-500 m-0">
+            Manually-created leads are CRM records — they don't enter any
+            campaign's email pipeline unless you add them to one later.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose}
+              className="px-3 py-1.5 text-sm border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50">
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => createMut.mutate()}
+              disabled={!canSave}
+              data-testid="new-lead-save"
+              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg"
+            >
+              {createMut.isPending ? 'Creating…' : 'Create lead'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -261,8 +401,31 @@ function LeadCrmModal({ lead, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to un-ignore lead'),
   });
 
+  const crmStatusMut = useMutation({
+    mutationFn: (status) => updateLeadCrmStatus(lead.id, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      toast.success('Lead status updated');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to update status'),
+  });
+
+  const convertMut = useMutation({
+    mutationFn: () => convertLead(lead.id, {}),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      queryClient.invalidateQueries({ queryKey: ['crm-opportunities'] });
+      toast.success(`Converted — opportunity "${data.opportunity.name}" created. Find it on the Opportunities page.`);
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to convert lead'),
+  });
+
   const isSuppressed = view?.is_suppressed === true;
   const suppressionReason = view?.suppression_reason;
+  const crmStatus = view?.crm_status || 'new';
+  const isConverted = crmStatus === 'converted';
 
   // Derived display values (safe on partial detail loads).
   const fullName = (lead.first_name || lead.last_name)
@@ -298,6 +461,28 @@ function LeadCrmModal({ lead, onClose }) {
             {/* Stat pills: quick at-a-glance roll-up */}
             <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="lead-stat-pills">
               <StatusPill value={lead.send_status} />
+              {isConverted ? (
+                <span
+                  data-testid="crm-status-converted-badge"
+                  className={`px-2 py-0.5 rounded text-xs font-semibold ${CRM_STATUS_CLASSES.converted}`}
+                  title="This lead has been converted to an opportunity — see the Opportunities page."
+                >
+                  ✦ Converted
+                </span>
+              ) : (
+                <select
+                  value={crmStatus}
+                  onChange={(e) => crmStatusMut.mutate(e.target.value)}
+                  disabled={!view || crmStatusMut.isPending}
+                  data-testid="crm-status-select"
+                  className={`px-1.5 py-0.5 rounded text-xs font-medium border-0 cursor-pointer ${CRM_STATUS_CLASSES[crmStatus] || 'bg-slate-100 text-slate-700'}`}
+                  title="CRM lead status"
+                >
+                  {SETTABLE_CRM_STATUSES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              )}
               {isSuppressed && (
                 <span
                   data-testid="lead-suppressed-badge"
@@ -334,6 +519,24 @@ function LeadCrmModal({ lead, onClose }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {!isConverted && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm(
+                    `Convert ${lead.email} to an opportunity?\n\n` +
+                    'Contact info is copied onto a new deal (stage: Qualification). ' +
+                    'The lead is marked Converted and the deal appears on the ' +
+                    'Opportunities page where you can set amount + close date.',
+                  )) convertMut.mutate();
+                }}
+                disabled={!view || convertMut.isPending}
+                data-testid="lead-convert-btn"
+                className="px-3 py-1.5 text-xs font-medium border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded-lg disabled:opacity-50"
+              >
+                {convertMut.isPending ? 'Converting…' : '✦ Convert to opportunity'}
+              </button>
+            )}
             {/* Ignore / Un-ignore — primary destructive action up top so
                 the user finds it without scrolling.  Disabled while the
                 detail is still loading so the user can't kick off the
@@ -530,6 +733,11 @@ function LeadCrmModal({ lead, onClose }) {
             </div>
           </details>
         )}
+
+        {/* Manual CRM activity log (calls / emails / meetings / notes / tasks) */}
+        <div className="mb-4">
+          <ActivityLog leadId={lead.id} />
+        </div>
 
         {/* Notes */}
         <div className="space-y-2">

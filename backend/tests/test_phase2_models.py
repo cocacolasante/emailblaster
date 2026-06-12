@@ -226,12 +226,16 @@ async def test_suppression_email_unique(db_session):
     await db_session.rollback()
 
 
-async def test_lead_requires_campaign_fk(db_session):
-    bad = Lead(email="orphan@example.com")  # no campaign_id
-    db_session.add(bad)
-    with pytest.raises(IntegrityError):
-        await db_session.commit()
-    await db_session.rollback()
+async def test_lead_campaign_fk_is_optional_since_crm(db_session):
+    """Migration 0025 made campaign_id NULLABLE — a CRM lead can be
+    created manually outside any campaign.  Campaign-less leads default
+    to crm_status='new' and never enter the compose/send pipeline."""
+    crm_lead = Lead(email="orphan@example.com")  # no campaign_id — OK now
+    db_session.add(crm_lead)
+    await db_session.commit()
+    await db_session.refresh(crm_lead)
+    assert crm_lead.campaign_id is None
+    assert crm_lead.crm_status == "new"
 
 
 # ---------- Indexes ----------

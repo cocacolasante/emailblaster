@@ -1562,7 +1562,38 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-01 (later) — Watchlist scalability bundle.
+_Last updated: 2026-06-11 — CRM sprint: Salesforce-style leads /
+opportunities / activities.  Migration 0025:
+- ``leads.campaign_id`` NULLABLE — manual CRM leads exist outside any
+  campaign (they never enter compose/send; the global list outer-joins
+  Campaign).  ``leads.crm_status`` (new/working/qualified/converted/
+  unqualified) + ``leads.converted_opportunity_id``.
+- ``crm_opportunities`` — stage pipeline (prospecting → qualification →
+  proposal → negotiation → closed_won/closed_lost), amount, close date,
+  probability (auto-follows stage default unless explicitly set),
+  contact snapshot copied at conversion, source-lead link (SET NULL).
+- ``crm_activities`` — manual touches (call/email/meeting/note/task)
+  attachable to a lead AND/OR an opportunity (DB CHECK requires ≥1
+  parent).  Tasks carry due_at/completed_at + a partial index for the
+  open-tasks view; calls/emails carry direction.
+New ``/crm`` router: manual lead create (canonicalises email), crm_status
+PATCH (``converted`` reserved for the convert endpoint), lead→opportunity
+conversion (snapshot copy + conversion logged as a note activity spanning
+both parents + 409 on double-convert), opportunities CRUD (stage
+transitions stamp/clear closed_at + loss_reason), pipeline summary
+roll-up, activities CRUD with open_tasks=true ordered by due date.
+Deleting an opportunity un-converts its source lead (back to qualified).
+Lead-detail timeline now merges THREE sources: step executions + email
+events + CRM activities (kind="crm", counts keyed crm_<type>).
+Frontend: + New lead modal on Leads; CRM status select + Convert button
++ shared ActivityLog component in the lead modal; new Opportunities nav
+page with Kanban board (per-stage roll-ups, closed columns toggleable),
+stage-stepper detail modal, amount/close-date inline edit, loss reason
+on closed_lost, activity log per deal.  21 new backend tests
+(test_phase35_crm.py) + 16 new frontend; 1 pre-existing test updated
+(lead-requires-campaign became lead-campaign-optional)._
+
+_Previously: Watchlist scalability bundle.
 Three coordinated changes to take the LinkedIn profile watchlist from
 a comfortable ~50 profiles to a comfortable ~500:
 
@@ -1637,7 +1668,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **770 passing**.  Frontend tests: **266 passing**._
+_Backend tests: **791 passing**.  Frontend tests: **279 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

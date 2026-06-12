@@ -1,6 +1,16 @@
 """SQLAlchemy models. Import side-effect registers all tables on Base.metadata."""
 from app.models.campaign import Campaign, CampaignStatus, ResearchMode
 from app.models.connected_account import ConnectedAccount, ConnectedAccountTestStatus
+from app.models.crm import (
+    CLOSED_STAGES,
+    STAGE_DEFAULT_PROBABILITY,
+    CrmActivity,
+    CrmActivityDirection,
+    CrmActivityType,
+    CrmLeadStatus,
+    Opportunity,
+    OpportunityStage,
+)
 from app.models.email_event import EmailEvent, EmailEventType
 from app.models.lead import ComposeStatus, Lead, LinkedInConnectionStatus, ResearchStatus, SendStatus
 from app.models.linkedin_account import LinkedInAccount, LinkedInAccountStatus
@@ -38,6 +48,14 @@ __all__ = [
     "ResearchMode",
     "ConnectedAccount",
     "ConnectedAccountTestStatus",
+    "CLOSED_STAGES",
+    "STAGE_DEFAULT_PROBABILITY",
+    "CrmActivity",
+    "CrmActivityDirection",
+    "CrmActivityType",
+    "CrmLeadStatus",
+    "Opportunity",
+    "OpportunityStage",
     "EmailEvent",
     "EmailEventType",
     "Lead",

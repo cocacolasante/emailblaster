@@ -54,10 +54,14 @@ class Lead(Base):
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(
+    # Nullable since migration 0025: a CRM lead can be created manually,
+    # outside any campaign.  Campaign-less leads never enter the
+    # compose/send pipeline — they're CRM records until the user adds
+    # them to a campaign.
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("campaigns.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     email: Mapped[str] = mapped_column(Text, nullable=False, index=True)
@@ -111,6 +115,21 @@ class Lead(Base):
         server_default=LinkedInConnectionStatus.UNKNOWN.value,
     )
     linkedin_last_reply_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ---- CRM fields (migration 0025) ----
+    # Salesforce-style lead status.  ``converted`` is set by the
+    # lead-conversion endpoint; the rest are user-managed.
+    crm_status: Mapped[str] = mapped_column(
+        Enum("new", "working", "qualified", "converted", "unqualified",
+             name="crm_lead_status"),
+        nullable=False, default="new", server_default="new",
+    )
+    # Set at conversion — the opportunity this lead became.  SET NULL on
+    # opportunity delete so the lead survives.
+    converted_opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("crm_opportunities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

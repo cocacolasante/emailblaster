@@ -16,7 +16,8 @@
       "WebFetch(domain:linkedin.api-docs.io)",
       "Bash(grep -nA6 \"backend:\\\\|worker:\" docker-compose.yml)",
       "Bash(grep -E \"^ [A-Z_].*\\\\\\\\$\" /Users/anthonycolasante/Projects/emailblaster/docker-compose.yml)",
-      "Skill(code-review)"
+      "Skill(code-review)",
+      "Bash(python3 *)"
     ]
   }
 }

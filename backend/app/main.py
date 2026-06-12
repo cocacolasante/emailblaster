@@ -18,6 +18,7 @@ from app.routers import (
     social_radar,
     settings as settings_router,
     webhooks,
+    crm,
 )
 
 logging.basicConfig(
@@ -115,3 +116,4 @@ app.include_router(settings_router.router)
 app.include_router(sequences.router)
 app.include_router(research_client.router)
 app.include_router(social_radar.router)
+app.include_router(crm.router)

@@ -13,7 +13,18 @@ vi.mock('../api/campaigns.js', () => ({
   unignoreLead: vi.fn(),
 }));
 
+vi.mock('../api/crm.js', () => ({
+  createCrmLead: vi.fn(),
+  updateLeadCrmStatus: vi.fn(),
+  convertLead: vi.fn(),
+  listActivities: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, total_pages: 0 }),
+  createActivity: vi.fn(),
+  updateActivity: vi.fn(),
+  deleteActivity: vi.fn(),
+}));
+
 import * as api from '../api/campaigns.js';
+import * as crmApi from '../api/crm.js';
 import Leads from './Leads.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
@@ -41,6 +52,7 @@ function leadsPayload(items, overrides = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  crmApi.listActivities.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, total_pages: 0 });
   api.listCampaigns.mockResolvedValue([
     { id: 'c1', name: 'Q2 outreach' },
     { id: 'c2', name: 'C-suite blast' },
@@ -308,6 +320,76 @@ describe('Leads page', () => {
     // Clicking it calls unignoreLead.
     await user.click(unignoreBtn);
     await waitFor(() => expect(api.unignoreLead).toHaveBeenCalledWith('l7'));
+  });
+
+  it('+ New lead opens the create modal and posts to createCrmLead', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([]));
+    crmApi.createCrmLead.mockResolvedValue({ id: 'nl1', email: 'new@x.com', crm_status: 'new' });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTestId('new-lead-btn'));
+    const modal = await screen.findByTestId('new-lead-modal');
+    await user.type(within(modal).getByTestId('new-lead-email'), 'new@x.com');
+    await user.type(within(modal).getByTestId('new-lead-first_name'), 'Nia');
+    await user.type(within(modal).getByTestId('new-lead-company'), 'NewCo');
+    await user.click(within(modal).getByTestId('new-lead-save'));
+
+    await waitFor(() => {
+      const payload = crmApi.createCrmLead.mock.calls[0][0];
+      expect(payload.email).toBe('new@x.com');
+      expect(payload.first_name).toBe('Nia');
+      expect(payload.company).toBe('NewCo');
+    });
+  });
+
+  it('Convert button calls convertLead after confirm; converted lead shows badge instead', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l8', campaign_id: 'c1', campaign_name: 'Q2', email: 'cv@x.com',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l8', campaign_id: 'c1', email: 'cv@x.com',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+      is_suppressed: false, crm_status: 'qualified',
+    });
+    crmApi.convertLead.mockResolvedValue({
+      opportunity: { id: 'o9', name: 'CV deal' },
+      lead_id: 'l8', lead_crm_status: 'converted',
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l8'));
+    const modal = await screen.findByTestId('lead-crm-modal');
+
+    // CRM status select shows the current status.
+    const select = await within(modal).findByTestId('crm-status-select');
+    expect(select).toHaveValue('qualified');
+
+    await user.click(within(modal).getByTestId('lead-convert-btn'));
+    await waitFor(() => expect(crmApi.convertLead).toHaveBeenCalledWith('l8', {}));
+  });
+
+  it('converted lead shows the Converted badge and hides the Convert button', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l9', campaign_id: 'c1', campaign_name: 'Q2', email: 'done@x.com',
+        send_status: 'pending', has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l9', campaign_id: 'c1', email: 'done@x.com',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+      is_suppressed: false, crm_status: 'converted',
+      converted_opportunity_id: 'o5',
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l9'));
+    const modal = await screen.findByTestId('lead-crm-modal');
+    expect(await within(modal).findByTestId('crm-status-converted-badge')).toBeInTheDocument();
+    expect(within(modal).queryByTestId('lead-convert-btn')).toBeNull();
+    expect(within(modal).queryByTestId('crm-status-select')).toBeNull();
   });
 
   it('history section shows an empty hint when the timeline is empty', async () => {

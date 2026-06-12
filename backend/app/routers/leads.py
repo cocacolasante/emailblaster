@@ -13,6 +13,8 @@ from app.database import get_db
 from app.models import (
     Campaign,
     CampaignStatus,
+    CrmActivity,
+    CrmActivityType,
     EmailEvent,
     EmailEventType,
     Lead,
@@ -84,7 +86,9 @@ async def list_all_leads(
 
     rows_q = (
         select(Lead, Campaign.name)
-        .join(Campaign, Campaign.id == Lead.campaign_id)
+        # OUTER join — manually-created CRM leads have campaign_id NULL
+        # and must still appear in the global list.
+        .outerjoin(Campaign, Campaign.id == Lead.campaign_id)
         .where(*filters)
         .order_by(Lead.updated_at.desc())
         .limit(page_size)
@@ -154,6 +158,17 @@ _EVENT_STATUS = {
 }
 
 
+# Manual CRM activity type → (label-prefix, icon).  The subject the user
+# typed is appended so a call logs as "Call: intro chat with Jane".
+_CRM_ACTIVITY_LABEL = {
+    CrmActivityType.CALL: ("Call", "📞"),
+    CrmActivityType.EMAIL: ("Email (logged)", "📧"),
+    CrmActivityType.MEETING: ("Meeting", "📅"),
+    CrmActivityType.NOTE: ("Note", "📝"),
+    CrmActivityType.TASK: ("Task", "☑️"),
+}
+
+
 def _research_summary(blob: dict | None) -> dict:
     """Pick the most useful fields out of the (potentially noisy)
     ``research_data`` JSONB so the UI doesn't have to render the whole
@@ -188,8 +203,12 @@ async def get_lead_detail(
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    # Campaign name for the header context.
-    campaign = await db.get(Campaign, lead.campaign_id)
+    # Campaign name for the header context.  Manually-created CRM leads
+    # have no campaign (campaign_id None) — skip the lookup.
+    campaign = (
+        await db.get(Campaign, lead.campaign_id)
+        if lead.campaign_id is not None else None
+    )
     campaign_name = campaign.name if campaign is not None else None
 
     # Sequence executions, joined to the node so we can label by kind.
@@ -205,6 +224,14 @@ async def get_lead_detail(
         select(EmailEvent)
         .where(EmailEvent.lead_id == lead_id)
         .order_by(EmailEvent.occurred_at.desc())
+    )).scalars().all()
+
+    # Manual CRM activities (calls / logged emails / meetings / notes /
+    # tasks the user recorded) — third source on the unified timeline.
+    crm_rows = (await db.execute(
+        select(CrmActivity)
+        .where(CrmActivity.lead_id == lead_id)
+        .order_by(CrmActivity.occurred_at.desc())
     )).scalars().all()
 
     history: list[LeadHistoryItem] = []
@@ -246,6 +273,28 @@ async def get_lead_detail(
         ))
         counts[event.event_type.value] = counts.get(event.event_type.value, 0) + 1
 
+    for act in crm_rows:
+        prefix, icon = _CRM_ACTIVITY_LABEL.get(
+            act.activity_type, (act.activity_type.value.title(), "•"),
+        )
+        is_open_task = (
+            act.activity_type == CrmActivityType.TASK
+            and act.completed_at is None
+        )
+        direction = f" ({act.direction.value})" if act.direction else ""
+        history.append(LeadHistoryItem(
+            at=act.occurred_at,
+            kind="crm",
+            action=f"{prefix}{direction}: {act.subject}",
+            status="warn" if is_open_task else "success",
+            icon=icon,
+            detail=act.body,
+            external_id=str(act.id),
+        ))
+        counts[f"crm_{act.activity_type.value}"] = (
+            counts.get(f"crm_{act.activity_type.value}", 0) + 1
+        )
+
     # Stable chronological order (newest first) regardless of which
     # source row landed first in the list.
     history.sort(key=lambda h: h.at, reverse=True)
@@ -283,6 +332,8 @@ async def get_lead_detail(
         notes=lead.notes,
         has_notes=bool(lead.notes),
         campaign_name=campaign_name,
+        crm_status=lead.crm_status,
+        converted_opportunity_id=lead.converted_opportunity_id,
         raw_csv_row=lead.raw_csv_row,
         research_data=lead.research_data,
         composed_subject=lead.composed_subject,

@@ -13,7 +13,8 @@ class LeadSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    campaign_id: uuid.UUID
+    # None for manually-created CRM leads (no campaign).
+    campaign_id: uuid.UUID | None
     email: str
     first_name: str | None
     last_name: str | None
@@ -30,6 +31,9 @@ class LeadSummary(BaseModel):
     notes: str | None = None
     has_notes: bool = False
     campaign_name: str | None = None
+    # CRM fields (migration 0025).
+    crm_status: str = "new"
+    converted_opportunity_id: uuid.UUID | None = None
 
 
 class LeadEmailUpdate(BaseModel):
