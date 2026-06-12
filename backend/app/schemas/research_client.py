@@ -90,3 +90,8 @@ class SendClientEmailResponse(BaseModel):
     message_id: str
     sent_at: datetime
     to_email: str
+    # CRM auto-tracking results (best-effort — None/False when the CRM
+    # write failed; the email itself still went out).
+    crm_lead_id: str | None = None
+    crm_lead_created: bool = False
+    crm_activity_logged: bool = False

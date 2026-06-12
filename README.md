@@ -608,10 +608,10 @@ emailblaster/
 ## Running tests
 
 ```bash
-# Backend (799 tests; spins up postgres if not already running)
+# Backend (803 tests; spins up postgres if not already running)
 docker compose run --rm backend pytest
 
-# Frontend (287 tests; pure jsdom, no services needed)
+# Frontend (290 tests; pure jsdom, no services needed)
 docker compose exec frontend npm test --run
 
 # Quick: one specific file

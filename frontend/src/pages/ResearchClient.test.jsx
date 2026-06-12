@@ -328,6 +328,60 @@ describe('ResearchClient — email action panel', () => {
       .toMatch(/jane@example\.com/);
   });
 
+  it('confirmation row shows the new-lead CRM note when crm_lead_created', async () => {
+    const user = userEvent.setup();
+    api.sendClientEmail.mockResolvedValue({
+      message_id: 'msg-1', sent_at: '2026-06-04T15:30:00Z',
+      to_email: 'jane@example.com',
+      crm_lead_id: 'l1', crm_lead_created: true, crm_activity_logged: true,
+    });
+    await _composeEmail(user);
+    await user.click(screen.getByTestId('add-email-btn'));
+    await user.type(screen.getByTestId('send-to-email'), 'jane@example.com');
+    await user.click(screen.getByTestId('send-email-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crm-tracking-note').textContent)
+        .toMatch(/new lead/i);
+    });
+  });
+
+  it('confirmation row shows the existing-record CRM note when the lead already existed', async () => {
+    const user = userEvent.setup();
+    api.sendClientEmail.mockResolvedValue({
+      message_id: 'msg-1', sent_at: '2026-06-04T15:30:00Z',
+      to_email: 'jane@example.com',
+      crm_lead_id: 'l1', crm_lead_created: false, crm_activity_logged: true,
+    });
+    await _composeEmail(user);
+    await user.click(screen.getByTestId('add-email-btn'));
+    await user.type(screen.getByTestId('send-to-email'), 'jane@example.com');
+    await user.click(screen.getByTestId('send-email-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crm-tracking-note').textContent)
+        .toMatch(/existing CRM record/i);
+    });
+  });
+
+  it('no CRM note when crm tracking failed server-side', async () => {
+    const user = userEvent.setup();
+    api.sendClientEmail.mockResolvedValue({
+      message_id: 'msg-1', sent_at: '2026-06-04T15:30:00Z',
+      to_email: 'jane@example.com',
+      crm_lead_id: null, crm_lead_created: false, crm_activity_logged: false,
+    });
+    await _composeEmail(user);
+    await user.click(screen.getByTestId('add-email-btn'));
+    await user.type(screen.getByTestId('send-to-email'), 'jane@example.com');
+    await user.click(screen.getByTestId('send-email-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('email-send-success')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('crm-tracking-note')).toBeNull();
+  });
+
   it('a backend 502 surfaces the detail inside the form (no toast needed)', async () => {
     const user = userEvent.setup();
     api.sendClientEmail.mockRejectedValue({

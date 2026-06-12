@@ -1165,3 +1165,145 @@ async def test_send_endpoint_502_on_network_error(client, monkeypatch):
         })
     assert resp.status_code == 502
     assert "network" in resp.json()["detail"].lower()
+
+
+# ---- CRM auto-tracking on send --------------------------------------------
+
+async def test_send_creates_crm_lead_and_logs_email_activity(client, monkeypatch, db_session):
+    """Sending to an email with NO existing lead creates a campaign-less
+    CRM lead (name split from to_name) and logs an outbound email
+    activity against it."""
+    from sqlalchemy import func as _f, select as _select
+    from app.models import CrmActivity, Lead
+
+    monkeypatch.setattr(
+        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
+    )
+    send_mock = AsyncMock(return_value="msg-crm-1")
+    with patch("app.routers.research_client.brevo.send_email", new=send_mock):
+        resp = await client.post("/research-client/send", json={
+            "to_email": "Fresh.Prospect@Acme.io",
+            "to_name": "Jane Van Doe",
+            "subject": "Quick thought",
+            "body": "Hi Jane, worth a chat?",
+            "sender_name": "Anthony",
+        })
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["crm_lead_created"] is True
+    assert body["crm_activity_logged"] is True
+    assert body["crm_lead_id"]
+
+    lead = await db_session.scalar(
+        _select(Lead).where(_f.lower(Lead.email) == "fresh.prospect@acme.io")
+    )
+    assert lead is not None
+    assert lead.campaign_id is None          # CRM lead, no campaign
+    assert lead.first_name == "Jane"
+    assert lead.last_name == "Van Doe"       # split on FIRST space only
+    assert lead.crm_status == "new"
+
+    act = await db_session.scalar(
+        _select(CrmActivity).where(CrmActivity.lead_id == lead.id)
+    )
+    assert act is not None
+    assert act.activity_type.value == "email"
+    assert act.direction.value == "outbound"
+    assert act.subject == "Quick thought"
+    assert "worth a chat" in act.body
+
+
+async def test_send_reuses_existing_lead_no_duplicate(client, monkeypatch, db_session):
+    """An email that already has a lead row gets the activity logged on
+    the existing record — no second lead created."""
+    from sqlalchemy import func as _f, select as _select
+    from app.models import CrmActivity, Lead
+
+    monkeypatch.setattr(
+        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
+    )
+    existing = Lead(campaign_id=None, email="known@x.com", first_name="K")
+    db_session.add(existing)
+    await db_session.commit()
+
+    send_mock = AsyncMock(return_value="msg-crm-2")
+    with patch("app.routers.research_client.brevo.send_email", new=send_mock):
+        resp = await client.post("/research-client/send", json={
+            # Different casing — must still match the existing row.
+            "to_email": "Known@X.com",
+            "subject": "Hello again",
+            "body": "Following up.",
+            "sender_name": "A",
+        })
+
+    body = resp.json()
+    assert body["crm_lead_created"] is False
+    assert body["crm_lead_id"] == str(existing.id)
+
+    leads = (await db_session.execute(
+        _select(Lead).where(_f.lower(Lead.email) == "known@x.com")
+    )).scalars().all()
+    assert len(leads) == 1  # no duplicate
+
+    act = await db_session.scalar(
+        _select(CrmActivity).where(CrmActivity.lead_id == existing.id)
+    )
+    assert act is not None
+    assert act.subject == "Hello again"
+
+
+async def test_send_attaches_activity_to_matching_opportunity(client, monkeypatch, db_session):
+    """When an opportunity carries the same email, the logged activity
+    spans BOTH parents so the deal timeline captures the touch."""
+    from sqlalchemy import select as _select
+    from app.models import CrmActivity, Opportunity
+
+    monkeypatch.setattr(
+        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
+    )
+    opp = Opportunity(name="Deal", email="deal@x.com")
+    db_session.add(opp)
+    await db_session.commit()
+
+    send_mock = AsyncMock(return_value="msg-crm-3")
+    with patch("app.routers.research_client.brevo.send_email", new=send_mock):
+        resp = await client.post("/research-client/send", json={
+            "to_email": "deal@x.com",
+            "subject": "Proposal attached",
+            "body": "See attached.",
+            "sender_name": "A",
+        })
+
+    assert resp.json()["crm_activity_logged"] is True
+    act = await db_session.scalar(
+        _select(CrmActivity).where(CrmActivity.opportunity_id == opp.id)
+    )
+    assert act is not None
+    assert act.lead_id is not None  # also attached to the (new) lead
+
+
+async def test_send_succeeds_even_when_crm_tracking_fails(client, monkeypatch):
+    """CRM tracking is best-effort: a failure there must not fail the
+    send response (the email already went out via Brevo)."""
+    monkeypatch.setattr(
+        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
+    )
+    send_mock = AsyncMock(return_value="msg-crm-4")
+
+    def _explode(*a, **k):
+        raise RuntimeError("CRM write blew up")
+
+    with patch("app.routers.research_client.brevo.send_email", new=send_mock), \
+         patch("app.routers.research_client.CrmActivity", new=_explode):
+        resp = await client.post("/research-client/send", json={
+            "to_email": "boom@x.com",
+            "subject": "s", "body": "b", "sender_name": "A",
+        })
+
+    # Send still reports success; CRM flags show the failure honestly.
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["message_id"] == "msg-crm-4"
+    assert body["crm_activity_logged"] is False
+    assert body["crm_lead_id"] is None

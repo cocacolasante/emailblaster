@@ -72,6 +72,7 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
   const [fromEmail, setFromEmail] = useState('');
   const [sentTo, setSentTo] = useState(null);
   const [sentAt, setSentAt] = useState(null);
+  const [crmNote, setCrmNote] = useState(null);
 
   // Connected accounts power the From-address picker.  Fetched once at
   // render — these change rarely.  Empty array on error or no accounts;
@@ -129,6 +130,16 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
     onSuccess: (data) => {
       setSentTo(data.to_email);
       setSentAt(new Date(data.sent_at));
+      // CRM auto-tracking summary for the confirmation row.
+      if (data.crm_activity_logged) {
+        setCrmNote(
+          data.crm_lead_created
+            ? 'Added to CRM as a new lead + email logged.'
+            : 'Email logged on their existing CRM record.',
+        );
+      } else {
+        setCrmNote(null);
+      }
       setStage('sent');
     },
   });
@@ -153,6 +164,11 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
         <span className="text-emerald-700 ml-2">
           at {sentAt?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
+        {crmNote && (
+          <span className="text-emerald-600 ml-2 text-xs" data-testid="crm-tracking-note">
+            · {crmNote}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => {

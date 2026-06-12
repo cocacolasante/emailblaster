@@ -1562,7 +1562,27 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-11 (later) — Opportunity record pages (Salesforce
+_Last updated: 2026-06-12 — Research-a-client sends auto-track in the
+CRM.  ``POST /research-client/send`` now finds-or-creates a CRM lead
+after the Brevo send succeeds: lookup is case-insensitive on
+``lower(Lead.email)`` (most-recently-updated row wins when the email
+spans campaigns); a miss creates a campaign-less CRM lead with
+first/last split from ``to_name``.  An outbound ``CrmActivity``
+(type=email, subject capped 500, body truncated at 1000) is logged
+against the lead AND any opportunity carrying the same email — so the
+deal timeline captures one-off touches too.  The whole block is
+best-effort: any CRM failure logs + rolls back and the send still
+returns 200 (the email already left via Brevo); the response carries
+``crm_lead_id`` / ``crm_lead_created`` / ``crm_activity_logged`` so
+the UI can be honest about what happened.  Frontend: the sent-
+confirmation row shows "Added to CRM as a new lead + email logged."
+vs "Email logged on their existing CRM record." (testid
+``crm-tracking-note``); nothing renders when tracking failed.  4 new
+backend tests (creates lead + activity, reuses existing lead
+case-insensitively with no duplicate, attaches to matching
+opportunity, CRM explosion still returns 200) + 3 new frontend._
+
+_Previously: Opportunity record pages (Salesforce
 lite).  Each opportunity now has its own page at ``/opportunities/:id``
 (Kanban cards navigate there; the old detail modal is gone).  Migration
 0026 adds:
@@ -1692,7 +1712,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **799 passing**.  Frontend tests: **287 passing**._
+_Backend tests: **803 passing**.  Frontend tests: **290 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

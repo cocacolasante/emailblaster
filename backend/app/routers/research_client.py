@@ -28,7 +28,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models import ConnectedAccount
+from app.models import (
+    ConnectedAccount,
+    CrmActivity,
+    CrmActivityDirection,
+    CrmActivityType,
+    Lead,
+    Opportunity,
+)
+from sqlalchemy import func as sa_func
 from app.schemas.research_client import (
     ResearchClientRequest,
     ResearchClientResponse,
@@ -267,8 +275,80 @@ async def send_client_email(
             detail=f"Network error talking to Brevo: {exc}",
         ) from exc
 
+    # ── CRM auto-tracking ─────────────────────────────────────────────
+    # Every one-off send becomes part of the prospect's CRM record:
+    # find-or-create a lead by email, log the email as an outbound
+    # activity (also attached to any opportunity carrying the same
+    # email, so deal timelines capture the touch).  Best-effort — the
+    # email already went out, so a CRM hiccup must never fail the
+    # request.
+    crm_lead_id: str | None = None
+    crm_lead_created = False
+    crm_activity_logged = False
+    try:
+        canonical = req.to_email.strip().lower()
+
+        # Most-recently-updated lead with this email wins when the same
+        # address exists across multiple campaigns — that's the row the
+        # user has most recently been working.
+        lead = await db.scalar(
+            select(Lead)
+            .where(sa_func.lower(Lead.email) == canonical)
+            .order_by(Lead.updated_at.desc())
+            .limit(1)
+        )
+        if lead is None:
+            first_name = None
+            last_name = None
+            if req.to_name:
+                parts = req.to_name.strip().split(None, 1)
+                first_name = parts[0] or None
+                last_name = parts[1] if len(parts) > 1 else None
+            lead = Lead(
+                campaign_id=None,
+                email=canonical,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            db.add(lead)
+            await db.flush()
+            crm_lead_created = True
+
+        # Attach to a matching opportunity too, when one exists.
+        opportunity = await db.scalar(
+            select(Opportunity)
+            .where(sa_func.lower(Opportunity.email) == canonical)
+            .order_by(Opportunity.updated_at.desc())
+            .limit(1)
+        )
+
+        db.add(CrmActivity(
+            lead_id=lead.id,
+            opportunity_id=opportunity.id if opportunity is not None else None,
+            activity_type=CrmActivityType.EMAIL,
+            subject=req.subject[:500],
+            # Body preview keeps the activity readable without storing
+            # the full email twice (the recipient has the real thing).
+            body=(req.body[:1000] + "…") if len(req.body) > 1000 else req.body,
+            direction=CrmActivityDirection.OUTBOUND,
+        ))
+        await db.commit()
+        crm_lead_id = str(lead.id)
+        crm_activity_logged = True
+    except Exception:  # noqa: BLE001
+        # Tracking is an enhancement on top of an already-succeeded
+        # send — log it, roll the session back, and return the send
+        # success anyway.
+        logger.exception(
+            "research-client send: CRM tracking failed for %s", req.to_email,
+        )
+        await db.rollback()
+
     return SendClientEmailResponse(
         message_id=str(message_id),
         sent_at=datetime.now(timezone.utc),
         to_email=req.to_email,
+        crm_lead_id=crm_lead_id,
+        crm_lead_created=crm_lead_created,
+        crm_activity_logged=crm_activity_logged,
     )
