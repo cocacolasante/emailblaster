@@ -145,4 +145,16 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
         if existing_sup is None:
             db.add(Suppression(email=canonical_email(lead.email), reason=suppression_reason))
 
+    # Circuit breaker: a fresh HARD_BOUNCE/SPAM is the cheapest moment to
+    # re-check just this campaign's health (the beat sweep is the backstop).
+    # Flush first so the row we just added counts in the window query.
+    if (
+        event_type in (EmailEventType.HARD_BOUNCE, EmailEventType.SPAM)
+        and lead.campaign_id is not None
+    ):
+        from app.services import deliverability  # local import to avoid cycles
+
+        await db.flush()
+        await deliverability.check_and_trip(db, lead.campaign_id)
+
     return True

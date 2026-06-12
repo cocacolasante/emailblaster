@@ -28,6 +28,7 @@ vi.mock('../api/campaigns.js', () => ({
   applySignature: vi.fn().mockResolvedValue({ updated: 3 }),
   updateLeadEmail: vi.fn().mockResolvedValue({}),
   getLeadDetail: vi.fn(),
+  getDeliverability: vi.fn(),
 }));
 
 // Recharts stub
@@ -73,9 +74,23 @@ function renderPage() {
   );
 }
 
+const DELIVERABILITY = {
+  window_hours: 24, sample: 40, delivered: 38,
+  hard_bounces: 1, soft_bounces: 0, spam: 0, opens: 12,
+  bounce_rate: 0.025, spam_rate: 0, open_rate: 0.31,
+  breaker: { enabled: true, min_sample: 20, bounce_threshold: 0.05, spam_threshold: 0.001 },
+  domain: {
+    domain: 'x.com', hour_used: 12, hour_cap: 100, hour_remaining: 88,
+    day_used: 40, day_cap: 500, day_remaining: 460,
+  },
+  auto_paused_at: null, auto_pause_reason: null,
+  send_time_optimization: false,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.getCampaign.mockResolvedValue(RUNNING_CAMPAIGN);
+  api.getDeliverability.mockResolvedValue(DELIVERABILITY);
 });
 
 
@@ -293,5 +308,48 @@ describe('CampaignDetail', () => {
     await waitFor(() => expect(api.updateLeadEmail).toHaveBeenCalledWith(
       'c1', 'L1', expect.objectContaining({ composed_body: 'Body here\n\nAnthony\n555-1234' }),
     ));
+  });
+});
+
+describe('Deliverability guard', () => {
+  it('renders the deliverability strip with rates + domain headroom', async () => {
+    renderPage();
+    const strip = await screen.findByTestId('deliverability-strip');
+    expect(within(strip).getByTestId('deliv-bounce-rate')).toHaveTextContent('2.5%');
+    const headroom = within(strip).getByTestId('domain-headroom');
+    expect(headroom).toHaveTextContent('x.com');
+    expect(headroom).toHaveTextContent('88/100 this hour');
+    expect(headroom).toHaveTextContent('460/500 today');
+  });
+
+  it('shows the breaker banner with the reason on an auto-paused campaign', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN,
+      status: 'paused',
+      auto_paused_at: '2026-06-12T10:00:00Z',
+      auto_pause_reason: 'Hard-bounce rate 10.0% over the last 24h (4/40 sends) crossed the 5% threshold',
+    });
+    renderPage();
+    const banner = await screen.findByTestId('breaker-banner');
+    expect(banner).toHaveTextContent(/deliverability breaker/i);
+    expect(banner).toHaveTextContent(/10\.0%/);
+    expect(banner).toHaveTextContent(/will not resume on its own/i);
+    // Manual resume stays available right above the banner.
+    expect(screen.getByTestId('pause-resume-button')).toHaveTextContent('Resume');
+  });
+
+  it('saving the send-time-optimization toggle includes it in the PATCH', async () => {
+    api.updateCampaign.mockResolvedValue({});
+    renderPage();
+    await screen.findByTestId('schedule-editor');
+    fireEvent.click(screen.getByTestId('schedule-editor-toggle'));
+    const toggle = screen.getByTestId('send-time-optimization-toggle');
+    fireEvent.click(within(toggle).getByRole('checkbox'));
+    fireEvent.click(screen.getByTestId('save-schedule-btn'));
+    await waitFor(() => {
+      expect(api.updateCampaign).toHaveBeenCalled();
+      const payload = api.updateCampaign.mock.calls[0][1];
+      expect(payload.send_time_optimization).toBe(true);
+    });
   });
 });

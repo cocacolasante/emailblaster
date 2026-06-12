@@ -47,14 +47,18 @@ async def build_digest(session: AsyncSession) -> dict[str, Any]:
     """Collect the digest's raw numbers + line items.  Read-only."""
     now = _now()
     day_ago = now - timedelta(hours=24)
-    today_end = now.replace(hour=23, minute=59, second=59)
+    # "Due today" = due within the next 24h.  A rolling horizon (not
+    # end-of-calendar-day) keeps the bucket meaningful whatever hour the
+    # digest fires — an 11pm digest with a midnight cutoff would show
+    # nothing as upcoming.
+    horizon = now + timedelta(hours=24)
 
     open_tasks = (await session.execute(
         select(CrmActivity).where(
             CrmActivity.activity_type == CrmActivityType.TASK,
             CrmActivity.completed_at.is_(None),
             CrmActivity.due_at.is_not(None),
-            CrmActivity.due_at <= today_end,
+            CrmActivity.due_at <= horizon,
         ).order_by(CrmActivity.due_at)
     )).scalars().all()
     overdue = [t for t in open_tasks if t.due_at < now]

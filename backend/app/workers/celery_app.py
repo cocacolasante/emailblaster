@@ -20,6 +20,7 @@ celery_app = Celery(
         "app.workers.social_listening",
         "app.workers.agent_sweeper",
         "app.workers.digest",
+        "app.workers.deliverability",
     ],
 )
 
@@ -82,6 +83,11 @@ celery_app.conf.beat_schedule = {
         # Nudge open opportunities idle > AGENT_STALE_OPP_DAYS.
         "task": "agent_sweeper.sweep_stale_opps",
         "schedule": 3600.0,  # hourly
+    },
+    "deliverability-health-sweep": {
+        # Bounce/spam circuit-breaker backstop over running campaigns.
+        "task": "deliverability.sweep_health",
+        "schedule": 900.0,  # every 15 min
     },
     "agent-daily-digest": {
         # One summary email a day; idempotent via the digest:<date>

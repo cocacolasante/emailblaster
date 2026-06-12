@@ -219,7 +219,13 @@ async def update_campaign(
         "schedule_time_end",
         "schedule_timezone",
     }
-    _THROUGHPUT_FIELDS = {"min_delay_seconds", "max_per_hour", "max_per_day"}
+    _THROUGHPUT_FIELDS = {
+        "min_delay_seconds", "max_per_hour", "max_per_day",
+        # Send-time optimization only affects FUTURE sends, so it's safe to
+        # toggle mid-flight (no re-enqueue needed — the next gate pass
+        # applies it).
+        "send_time_optimization",
+    }
     _status_exempt_fields = (
         {"linkedin_account_id", "connected_account_id", "signature"}
         | _SCHEDULE_FIELDS
@@ -325,6 +331,10 @@ async def resume_campaign(
         )
     c.status = CampaignStatus.RUNNING
     c.auto_paused_until = None
+    # A circuit-breaker pause requires THIS explicit human resume — clear
+    # the marker + reason so the breaker can re-trip on fresh data.
+    c.auto_paused_at = None
+    c.auto_pause_reason = None
 
     # Re-enqueue every composed lead that hasn't sent yet.  Without this,
     # leads that hit the paused / out-of-window gate during the pause window
@@ -915,3 +925,49 @@ async def retry_failed_leads(
         compose_retried=compose_retried,
         send_retried=send_retried,
     )
+
+
+@router.get("/{campaign_id}/deliverability")
+async def get_deliverability(
+    campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Deliverability strip data: window bounce/spam/open rates, the
+    sending domain's remaining hourly/daily headroom, and the breaker
+    state."""
+    import redis.asyncio as aioredis
+
+    from app.config import settings as app_settings
+    from app.services import deliverability as deliv
+    from app.workers.send import resolve_sending_domain
+
+    c = await _get_or_404(db, campaign_id)
+    stats = await deliv.deliverability_stats(db, c.id)
+
+    domain = await resolve_sending_domain(db, c)
+    domain_block: dict[str, Any] | None = None
+    if domain:
+        r = aioredis.from_url(app_settings.REDIS_URL, decode_responses=True)
+        try:
+            hour_used = int(await r.get(f"rate:domain:{domain}:hour") or 0)
+            day_used = int(await r.get(f"rate:domain:{domain}:day") or 0)
+        except Exception:  # noqa: BLE001 — Redis down ≠ 500 the strip
+            hour_used = day_used = 0
+        finally:
+            await r.aclose()
+        domain_block = {
+            "domain": domain,
+            "hour_used": hour_used,
+            "hour_cap": app_settings.DOMAIN_MAX_PER_HOUR,
+            "hour_remaining": max(0, app_settings.DOMAIN_MAX_PER_HOUR - hour_used),
+            "day_used": day_used,
+            "day_cap": app_settings.DOMAIN_MAX_PER_DAY,
+            "day_remaining": max(0, app_settings.DOMAIN_MAX_PER_DAY - day_used),
+        }
+
+    return {
+        **stats,
+        "domain": domain_block,
+        "auto_paused_at": c.auto_paused_at.isoformat() if c.auto_paused_at else None,
+        "auto_pause_reason": c.auto_pause_reason,
+        "send_time_optimization": c.send_time_optimization,
+    }

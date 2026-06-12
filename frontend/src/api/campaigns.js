@@ -175,3 +175,10 @@ export async function retryFailedLeads(id) {
   const { data } = await client.post(`/campaigns/${id}/retry-failed`);
   return data;
 }
+
+/** Deliverability strip: window bounce/spam/open rates, sending-domain
+ *  headroom, and breaker state. */
+export async function getDeliverability(id) {
+  const { data } = await client.get(`/campaigns/${id}/deliverability`);
+  return data;
+}

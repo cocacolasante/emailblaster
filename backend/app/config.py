@@ -138,6 +138,24 @@ class Settings(BaseSettings):
     LINKEDIN_DAILY_DM_CAP: int = 30             # per-account DMs / day
     LINKEDIN_MONTHLY_PAGE_INVITE_CAP: int = 250 # per-PAGE invites / month
 
+    # --- Deliverability guard ---
+    # Default for new campaigns' send-time-optimization toggle (per-campaign
+    # override lives on the campaign row).
+    SEND_TIME_OPTIMIZATION_DEFAULT: bool = False
+    # Per-SENDING-DOMAIN caps shared across every campaign that sends from
+    # that domain.  Protects domain reputation when several campaigns run
+    # at once — the per-campaign caps can't see each other.
+    DOMAIN_MAX_PER_HOUR: int = 100
+    DOMAIN_MAX_PER_DAY: int = 500
+    # Bounce/spam circuit breaker: auto-pause a campaign whose hard-bounce
+    # or spam rate crosses the threshold over the window.  MIN_SAMPLE stops
+    # one unlucky bounce in the first handful of sends from tripping it.
+    CIRCUIT_BREAKER_ENABLED: bool = True
+    CIRCUIT_BREAKER_MIN_SAMPLE: int = 20
+    CIRCUIT_BREAKER_BOUNCE_RATE: float = 0.05   # 5% hard-bounce → pause
+    CIRCUIT_BREAKER_SPAM_RATE: float = 0.001    # 0.1% spam → pause
+    CIRCUIT_BREAKER_WINDOW_HOURS: int = 24
+
     # --- Agent / notifications ---
     # Where agent alerts (positive-reply pings, task reminders, the daily
     # digest) are emailed.  Empty = notifications persist in the DB but

@@ -825,6 +825,7 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 return {"status": "misconfigured", "error": "email node missing subject_template or body_template"}
 
             gates = await _send_mod.check_send_gates(session, lead, campaign, redis_client)
+            sending_domain = gates.get("domain")
             if not gates.get("ok"):
                 reason = gates["reason"]
                 if reason == "suppressed":
@@ -870,7 +871,9 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
         )
         # Bump Brevo rate counters so follow-ups are metered alongside
         # legacy first-email sends.
-        await _send_mod.increment_rate_counters(campaign_snap, redis_client)
+        await _send_mod.increment_rate_counters(
+            campaign_snap, redis_client, domain=sending_domain,
+        )
         result = {"status": "sent", "message_id": message_id}
     finally:
         await engine.dispose()

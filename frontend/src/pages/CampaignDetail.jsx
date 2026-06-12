@@ -7,6 +7,7 @@ import {
   approveAll as approveAllCampaign,
   getCampaign,
   getCampaignActivity,
+  getDeliverability,
   getLeadDetail,
   getPreviewProgress,
   pauseCampaign,
@@ -172,6 +173,62 @@ function LinkedInAccountCard({ campaign, linkedinAccounts, onSave, saving }) {
   );
 }
 
+function DeliverabilityStrip({ campaignId }) {
+  const { data } = useQuery({
+    queryKey: ['campaign-deliverability', campaignId],
+    queryFn: () => getDeliverability(campaignId),
+    refetchInterval: 60_000,
+  });
+  if (!data) return null;
+
+  const pctFmt = (v) => `${((v || 0) * 100).toFixed(v >= 0.1 ? 0 : 1)}%`;
+  const bounceWarn = data.bounce_rate >= data.breaker.bounce_threshold;
+  const spamWarn = data.spam_rate >= data.breaker.spam_threshold;
+
+  return (
+    <div
+      data-testid="deliverability-strip"
+      className="bg-white rounded-xl border border-slate-200 shadow-sm p-6"
+    >
+      <h2 className="text-base font-semibold text-slate-900 mb-1">Deliverability</h2>
+      <p className="text-xs text-slate-400 mt-0 mb-4">
+        Last {data.window_hours}h · {data.sample} send outcomes
+        {data.breaker.enabled && ` · breaker trips at ${pctFmt(data.breaker.bounce_threshold)} bounce / ${pctFmt(data.breaker.spam_threshold)} spam`}
+      </p>
+      <div className="grid grid-cols-3 gap-4 mb-4">
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Bounce</div>
+          <div
+            data-testid="deliv-bounce-rate"
+            className={`text-2xl font-bold ${bounceWarn ? 'text-red-600' : 'text-slate-900'}`}
+          >
+            {pctFmt(data.bounce_rate)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Spam</div>
+          <div className={`text-2xl font-bold ${spamWarn ? 'text-red-600' : 'text-slate-900'}`}>
+            {pctFmt(data.spam_rate)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Open</div>
+          <div className="text-2xl font-bold text-slate-900">{pctFmt(data.open_rate)}</div>
+        </div>
+      </div>
+      {data.domain && (
+        <div data-testid="domain-headroom" className="text-xs text-slate-500 border-t border-slate-100 pt-3">
+          <span className="font-medium text-slate-700">{data.domain.domain}</span>
+          {' '}headroom: {data.domain.hour_remaining}/{data.domain.hour_cap} this hour
+          {' '}· {data.domain.day_remaining}/{data.domain.day_cap} today
+          {' '}(shared across all campaigns on this domain)
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch, launchLoading, linkedinAccounts, onSaveLinkedIn, savingLinkedIn }) {
   const total = campaign.lead_counts?.total ?? 0;
   const sent = campaign.lead_counts?.sent ?? 0;
@@ -224,6 +281,16 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
               </span>
             )}
           </div>
+          {campaign.status === 'paused' && campaign.auto_pause_reason && (
+            <div
+              data-testid="breaker-banner"
+              className="mb-4 bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg px-4 py-3"
+            >
+              <strong className="font-semibold">Auto-paused by the deliverability breaker.</strong>{' '}
+              {campaign.auto_pause_reason}. Review the lead list / copy, then
+              Resume to continue sending — it will not resume on its own.
+            </div>
+          )}
           <div className="text-sm text-slate-500 mb-2">{sent} of {total} sent</div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
             <div className="h-full bg-blue-600 rounded-full transition-all" style={{ width: `${sendProgress}%` }} />
@@ -253,6 +320,8 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
             </div>
           </div>
         </div>
+
+        <DeliverabilityStrip campaignId={campaign.id} />
       </div>
 
       {/* Right column */}
@@ -760,6 +829,7 @@ function ScheduleEditor({ campaignId, campaign }) {
     min_delay_seconds: campaign.min_delay_seconds ?? 60,
     max_per_hour: campaign.max_per_hour ?? '',
     max_per_day: campaign.max_per_day ?? '',
+    send_time_optimization: !!campaign.send_time_optimization,
   };
   const [draft, setDraft] = useState(initial);
   const [open, setOpen] = useState(false);
@@ -772,6 +842,7 @@ function ScheduleEditor({ campaignId, campaign }) {
     || Number(draft.min_delay_seconds) !== Number(initial.min_delay_seconds)
     || String(draft.max_per_hour) !== String(initial.max_per_hour)
     || String(draft.max_per_day) !== String(initial.max_per_day)
+    || draft.send_time_optimization !== initial.send_time_optimization
   );
 
   const validationError = (() => {
@@ -798,6 +869,7 @@ function ScheduleEditor({ campaignId, campaign }) {
         schedule_time_end: `${draft.schedule_time_end}:00`,
         schedule_timezone: draft.schedule_timezone,
         min_delay_seconds: Number(draft.min_delay_seconds),
+        send_time_optimization: draft.send_time_optimization,
       };
       if (draft.max_per_hour !== '' && draft.max_per_hour !== null) {
         payload.max_per_hour = Number(draft.max_per_hour);
@@ -960,6 +1032,25 @@ function ScheduleEditor({ campaignId, campaign }) {
               />
             </div>
           </div>
+
+          <label
+            className="flex items-start gap-2 border-t border-slate-200 pt-3 cursor-pointer"
+            data-testid="send-time-optimization-toggle"
+          >
+            <input
+              type="checkbox"
+              checked={draft.send_time_optimization}
+              onChange={(e) => setDraft({ ...draft, send_time_optimization: e.target.checked })}
+              className="mt-0.5 w-4 h-4"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-800">Send-time optimization</span>
+              <span className="block text-xs text-slate-400 mt-0.5">
+                Defer each email to the recipient's optimal local hour (their
+                past opens, else weekday mornings) within the send window.
+              </span>
+            </span>
+          </label>
 
           <p className="text-xs text-slate-500 m-0">
             Schedule edits on a running/paused campaign automatically re-queue

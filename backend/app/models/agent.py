@@ -50,6 +50,8 @@ class NotificationKind(str, enum.Enum):
     STALE_OPPORTUNITY = "stale_opportunity"
     DIGEST = "digest"
     AGENT_ERROR = "agent_error"
+    # Deliverability circuit breaker (migration 0028).
+    CAMPAIGN_AUTO_PAUSED = "campaign_auto_paused"
 
 
 class AgentActionType(str, enum.Enum):

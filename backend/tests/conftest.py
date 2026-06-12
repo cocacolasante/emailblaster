@@ -28,6 +28,11 @@ _force_env("ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ["SECRET_KEY"] = "test-secret"
 _force_env("FRONTEND_URL", "http://localhost:5173")
 _force_env("WEBHOOK_BASE_URL", "http://localhost:8000")
+# Force-blank UNCONDITIONALLY (docker compose injects the real .env value):
+# a configured owner address would make notification tests attempt REAL
+# Brevo sends to the operator's inbox.  Tests that need it set monkeypatch
+# notifications.settings.OWNER_NOTIFY_EMAIL explicitly.
+os.environ["OWNER_NOTIFY_EMAIL"] = ""
 
 import pytest_asyncio  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402

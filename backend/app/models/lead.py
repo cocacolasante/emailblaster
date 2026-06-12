@@ -104,6 +104,10 @@ class Lead(Base):
     # gets its own notes row.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     scheduled_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Recipient IANA timezone (e.g. "America/New_York") for send-time
+    # optimization — populated by research/enrichment when the company HQ /
+    # Apollo location is known; falls back to the campaign tz when NULL.
+    timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
     linkedin_connection_status: Mapped[LinkedInConnectionStatus] = mapped_column(
         Enum(
             LinkedInConnectionStatus,

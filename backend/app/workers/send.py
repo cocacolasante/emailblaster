@@ -26,6 +26,9 @@ from app.config import settings
 from app.models import (
     Campaign,
     CampaignStatus,
+    ConnectedAccount,
+    EmailEvent,
+    EmailEventType,
     Lead,
     SendStatus,
     Suppression,
@@ -93,12 +96,130 @@ def compute_next_send_window(
 
 
 # --------------------------------------------------------------------------
+# Send-time optimization
+# --------------------------------------------------------------------------
+
+# Default optimal window when no engagement data exists: weekday mornings.
+DEFAULT_OPTIMAL_HOURS = (9, 10, 11)
+DEFAULT_OPTIMAL_DAYS = (1, 2, 3)  # Tue-Thu (Monday=0)
+# Minimum engagement events before we trust a derived hour profile.
+_LEAD_ENGAGEMENT_MIN_EVENTS = 2
+_CAMPAIGN_ENGAGEMENT_MIN_EVENTS = 10
+_OPTIMAL_SEARCH_HOURS = 7 * 24  # give up past a week — send normally
+
+
+async def _engagement_hours(
+    session: AsyncSession,
+    tz: pytz.BaseTzInfo,
+    *,
+    lead_id: uuid.UUID | None = None,
+    campaign_id: uuid.UUID | None = None,
+) -> list[int]:
+    """Top open/click hours (in ``tz``) for one lead or a whole campaign.
+    Empty list when the sample is too thin to trust."""
+    q = select(EmailEvent.occurred_at).where(
+        EmailEvent.event_type.in_([EmailEventType.OPENED, EmailEventType.CLICKED])
+    )
+    min_events = _CAMPAIGN_ENGAGEMENT_MIN_EVENTS
+    if lead_id is not None:
+        q = q.where(EmailEvent.lead_id == lead_id)
+        min_events = _LEAD_ENGAGEMENT_MIN_EVENTS
+    elif campaign_id is not None:
+        q = q.where(EmailEvent.campaign_id == campaign_id)
+    rows = (await session.execute(q.limit(500))).scalars().all()
+    if len(rows) < min_events:
+        return []
+    counts: dict[int, int] = {}
+    for ts in rows:
+        local = ts.astimezone(tz) if ts.tzinfo else pytz.UTC.localize(ts).astimezone(tz)
+        counts[local.hour] = counts.get(local.hour, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:3]
+    return [h for h, _ in top]
+
+
+async def compute_optimal_send_eta(
+    session: AsyncSession,
+    lead: Lead,
+    campaign: Campaign,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Next datetime landing in both the recipient's optimal local hour AND
+    the campaign's send window.  ``None`` when "now" is already optimal (or
+    no qualifying slot exists within a week — send normally rather than
+    stall).  Only called when ``campaign.send_time_optimization`` is on.
+
+    Hour selection, best-first: this lead's own open/click hours →
+    campaign-wide aggregate → the 9-11am Tue-Thu default.  The Tue-Thu
+    day preference only applies on the default profile — engagement-
+    derived hours fire on any campaign-allowed day.
+    """
+    try:
+        tz = pytz.timezone(lead.timezone or campaign.schedule_timezone or "UTC")
+    except Exception:  # noqa: BLE001 — bad tz string from enrichment
+        tz = pytz.timezone(campaign.schedule_timezone or "UTC")
+
+    hours = await _engagement_hours(session, tz, lead_id=lead.id)
+    days: set[int] | None = None
+    if not hours:
+        hours = await _engagement_hours(session, tz, campaign_id=campaign.id)
+    if not hours:
+        hours = list(DEFAULT_OPTIMAL_HOURS)
+        days = set(DEFAULT_OPTIMAL_DAYS)
+    hour_set = set(hours)
+
+    now_utc = now or datetime.now(pytz.UTC)
+    if now_utc.tzinfo is None:
+        now_utc = pytz.UTC.localize(now_utc)
+    now_local = now_utc.astimezone(tz)
+
+    def _qualifies(dt_local: datetime) -> bool:
+        if dt_local.hour not in hour_set:
+            return False
+        if days is not None and dt_local.weekday() not in days:
+            return False
+        # Must also be inside the campaign's own send window.
+        return compute_next_send_window(campaign, now=dt_local) is None
+
+    if _qualifies(now_local):
+        return None
+
+    candidate = now_local.replace(minute=0, second=0, microsecond=0)
+    for _ in range(_OPTIMAL_SEARCH_HOURS):
+        candidate += timedelta(hours=1)
+        if _qualifies(candidate):
+            # Land a few minutes past the hour so it doesn't look robotic.
+            return candidate.replace(minute=7)
+    return None  # nothing qualifying within a week — don't stall the send
+
+
+# --------------------------------------------------------------------------
 # Rate limiting
 # --------------------------------------------------------------------------
 
 
+async def resolve_sending_domain(
+    session: AsyncSession, campaign: Campaign
+) -> str | None:
+    """The campaign's sending domain for per-domain throttling: the domain
+    of its ConnectedAccount.email_address, falling back to the campaign's
+    sender_email domain when no account is bound."""
+    email = None
+    if campaign.connected_account_id is not None:
+        email = await session.scalar(
+            select(ConnectedAccount.email_address).where(
+                ConnectedAccount.id == campaign.connected_account_id
+            )
+        )
+    email = email or campaign.sender_email or ""
+    if "@" not in email:
+        return None
+    return email.rsplit("@", 1)[1].strip().lower() or None
+
+
 async def check_rate_limits(
-    campaign: Campaign, redis_client: aioredis.Redis
+    campaign: Campaign,
+    redis_client: aioredis.Redis,
+    domain: str | None = None,
 ) -> dict[str, Any]:
     """Return {"ok": True} when the lead may send right now, else a dict
     describing the deferral with either retry_in (seconds) or retry_at (ISO datetime).
@@ -132,6 +253,26 @@ async def check_rate_limits(
             return {
                 "ok": False,
                 "reason": "daily_cap",
+                "retry_at": tomorrow.isoformat(),
+            }
+
+    # Per-SENDING-DOMAIN caps — shared across every campaign sending from
+    # this domain, so parallel campaigns can't jointly burn its reputation.
+    # Same read-only check pattern as the per-campaign caps; the min-gate
+    # below serializes, so they aren't raced any worse than those.
+    if domain:
+        dom_hour_raw = await redis_client.get(f"rate:domain:{domain}:hour")
+        if int(dom_hour_raw or 0) >= settings.DOMAIN_MAX_PER_HOUR:
+            return {"ok": False, "reason": "domain_hourly_cap", "retry_in": 300}
+        dom_day_raw = await redis_client.get(f"rate:domain:{domain}:day")
+        if int(dom_day_raw or 0) >= settings.DOMAIN_MAX_PER_DAY:
+            tz = pytz.timezone(campaign.schedule_timezone or "UTC")
+            tomorrow = (
+                datetime.now(tz) + timedelta(days=1)
+            ).replace(hour=0, minute=0, second=0, microsecond=0)
+            return {
+                "ok": False,
+                "reason": "domain_daily_cap",
                 "retry_at": tomorrow.isoformat(),
             }
 
@@ -174,9 +315,12 @@ def _seconds_until_local_midnight(tz_name: str | None) -> int:
 
 
 async def increment_rate_counters(
-    campaign: Campaign, redis_client: aioredis.Redis
+    campaign: Campaign,
+    redis_client: aioredis.Redis,
+    domain: str | None = None,
 ) -> None:
-    """Count a successful send against the hourly/daily caps.
+    """Count a successful send against the hourly/daily caps (campaign AND
+    sending-domain when ``domain`` is provided).
 
     The min-delay window is claimed atomically in ``check_rate_limits`` (the
     ``min_gate`` key), so it is NOT set here — this only bumps the caps.  The
@@ -191,6 +335,11 @@ async def increment_rate_counters(
     pipe.expire(f"rate:{cid}:hour", 3600, nx=True)
     pipe.incr(f"rate:{cid}:day")
     pipe.expire(f"rate:{cid}:day", day_ttl, nx=True)
+    if domain:
+        pipe.incr(f"rate:domain:{domain}:hour")
+        pipe.expire(f"rate:domain:{domain}:hour", 3600, nx=True)
+        pipe.incr(f"rate:domain:{domain}:day")
+        pipe.expire(f"rate:domain:{domain}:day", day_ttl, nx=True)
     await pipe.execute()
 
 
@@ -244,11 +393,28 @@ async def check_send_gates(
     if eta is not None:
         return {"ok": False, "reason": "scheduled", "retry_at": eta.isoformat()}
 
-    rate = await check_rate_limits(campaign, redis_client)
+    # Send-time optimization: defer to the recipient's optimal local hour.
+    # Checked AFTER paused/window (those always win) and BEFORE the rate
+    # claim (an optimization deferral must not burn a min-delay slot).  The
+    # deferred lead re-enters every gate at its ETA, so caps still apply.
+    if campaign.send_time_optimization:
+        opt_eta = await compute_optimal_send_eta(session, lead, campaign)
+        if opt_eta is not None:
+            return {
+                "ok": False,
+                "reason": "scheduled",
+                "retry_at": opt_eta.isoformat(),
+                "optimized": True,
+            }
+
+    domain = await resolve_sending_domain(session, campaign)
+    rate = await check_rate_limits(campaign, redis_client, domain=domain)
     if not rate.get("ok"):
         return {"ok": False, **rate}
 
-    return {"ok": True}
+    # Hand the resolved domain back so the caller can bump the domain
+    # counters in increment_rate_counters without re-resolving.
+    return {"ok": True, "domain": domain}
 
 
 async def send_lead_async(lead_id: str) -> dict[str, Any]:
@@ -282,6 +448,7 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
                 return {"status": "skipped_no_body"}
 
             gates = await check_send_gates(session, lead, campaign, redis_client)
+            sending_domain = gates.get("domain")
             if not gates.get("ok"):
                 reason = gates["reason"]
                 if reason == "suppressed":
@@ -357,7 +524,7 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
         # Bump rate counters AFTER the row lock is released (commit at
         # session-exit).  Counter bump errors must not roll back the
         # persisted SENT state.
-        await increment_rate_counters(campaign_snap, redis_client)
+        await increment_rate_counters(campaign_snap, redis_client, domain=sending_domain)
     finally:
         await engine.dispose()
         await redis_client.aclose()

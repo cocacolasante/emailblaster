@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.config import settings
 from app.models import CampaignStatus, ResearchMode
 
 
@@ -117,6 +118,9 @@ class CampaignCreate(BaseModel):
     max_per_hour: int | None = Field(default=None, ge=1)
     max_per_day: int | None = Field(default=None, ge=1)
     min_delay_seconds: int = Field(default=60, ge=0)
+    send_time_optimization: bool = Field(
+        default_factory=lambda: settings.SEND_TIME_OPTIMIZATION_DEFAULT
+    )
 
     _v_days = field_validator("schedule_days")(_validate_days)
     _v_tmpl = field_validator("template_subject", "template_body", "signature")(_blank_to_none)
@@ -154,6 +158,7 @@ class CampaignUpdate(BaseModel):
     max_per_hour: int | None = Field(default=None, ge=1)
     max_per_day: int | None = Field(default=None, ge=1)
     min_delay_seconds: int | None = Field(default=None, ge=0)
+    send_time_optimization: bool | None = None
 
     _v_days = field_validator("schedule_days")(_validate_days)
     _v_tmpl = field_validator("template_subject", "template_body", "signature")(_blank_to_none)
@@ -276,6 +281,11 @@ class CampaignResponse(BaseModel):
     # Set when the campaign was auto-paused at the LinkedIn cap; the time it
     # will auto-resume.  NULL for manual pauses / running campaigns.
     auto_paused_until: datetime | None
+    # Deliverability guard: send-time optimization toggle + circuit-breaker
+    # pause marker (auto_paused_at/reason; requires a human Resume).
+    send_time_optimization: bool
+    auto_paused_at: datetime | None
+    auto_pause_reason: str | None
     created_at: datetime
     updated_at: datetime
     lead_counts: LeadCounts
@@ -307,6 +317,9 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "min_delay_seconds": c.min_delay_seconds,
         "status": c.status,
         "auto_paused_until": c.auto_paused_until,
+        "send_time_optimization": c.send_time_optimization,
+        "auto_paused_at": c.auto_paused_at,
+        "auto_pause_reason": c.auto_pause_reason,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
     }

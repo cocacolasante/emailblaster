@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, Time, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, Time, func
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -97,6 +97,20 @@ class Campaign(Base):
     auto_paused_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Deliverability guard (migration 0028).
+    # send_time_optimization: defer each send to the recipient's optimal
+    # local hour (engagement-derived, else 9-11am Tue-Thu) within the
+    # campaign window.
+    send_time_optimization: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    # Set by the bounce/spam circuit breaker.  UNLIKE auto_paused_until,
+    # a breaker pause NEVER auto-resumes — a human must hit Resume (which
+    # clears both fields).  reason is the human-readable trip explanation.
+    auto_paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    auto_pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
