@@ -17,6 +17,7 @@ import {
   createCrmLead,
   updateLeadCrmStatus,
 } from '../api/crm.js';
+import { createWatch } from '../api/signals.js';
 
 const STATUS_CLASSES = {
   pending: 'bg-slate-100 text-slate-700',
@@ -529,6 +530,22 @@ function LeadCrmModal({ lead, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to convert lead'),
   });
 
+  const trackMut = useMutation({
+    // "Everything" watch on the tracked lead — the detectors use the
+    // record's email/company, so no extra fields needed.
+    mutationFn: () => createWatch({ watch_type: 'custom', lead_id: lead.id }),
+    onSuccess: () => toast.success(
+      'Tracking — job-change, funding, and hiring checks run daily. See the Signals page.',
+    ),
+    onError: (err) => {
+      if (err?.response?.status === 409) {
+        toast.success('Already tracking this lead — see the Signals page.');
+      } else {
+        toast.error(err?.response?.data?.detail || 'Failed to start tracking');
+      }
+    },
+  });
+
   const isSuppressed = view?.is_suppressed === true;
   const suppressionReason = view?.suppression_reason;
   const crmStatus = view?.crm_status || 'new';
@@ -626,6 +643,16 @@ function LeadCrmModal({ lead, onClose }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => trackMut.mutate()}
+              disabled={trackMut.isPending}
+              data-testid="lead-track-signals-btn"
+              title="Watch this lead for job changes, funding, and hiring signals (daily check)"
+              className="px-3 py-1.5 text-xs font-medium border border-violet-300 text-violet-700 hover:bg-violet-50 rounded-lg disabled:opacity-50"
+            >
+              {trackMut.isPending ? 'Tracking…' : '⚡ Track signals'}
+            </button>
             {!isConverted && (
               <button
                 type="button"

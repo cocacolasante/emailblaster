@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +51,55 @@ class WatchCreate(BaseModel):
     _v = field_validator(
         "person_name", "company", "email", "linkedin_url", "company_website",
     )(_blank_to_none)
+
+    @model_validator(mode="after")
+    def _required_fields_per_type(self) -> "WatchCreate":
+        """Each watch type can only detect with the fields its source
+        needs — fail loudly at creation instead of running silently
+        useless checks forever.
+
+        - job_change: Apollo's people/match keys on EMAIL.
+        - funding / hiring: company-level checks need a COMPANY.
+        - custom (runs every detector): at least one of email/company.
+        Watches linked to a lead/opportunity inherit those fields from
+        the record, so the free-text rules only apply to cold targets.
+        """
+        if self.lead_id is not None or self.opportunity_id is not None:
+            return self
+        if self.watch_type == SignalWatchType.JOB_CHANGE and not self.email:
+            raise ValueError(
+                "job-change watches need an email (title lookups are "
+                "matched by email) — add one, or track an existing lead"
+            )
+        if self.watch_type in (SignalWatchType.FUNDING, SignalWatchType.HIRING) \
+                and not self.company:
+            raise ValueError(
+                f"{self.watch_type.value} watches need a company name"
+            )
+        if self.watch_type == SignalWatchType.CUSTOM \
+                and not (self.email or self.company):
+            raise ValueError(
+                "custom watches need at least an email or a company"
+            )
+        return self
+
+
+class WatchBulkCreate(BaseModel):
+    """One watch per company — for pasting a list of companies to
+    monitor for funding/hiring.  (Job-change needs a per-person email,
+    so it isn't bulk-able by company.)"""
+    watch_type: SignalWatchType
+    companies: list[str] = Field(min_length=1, max_length=100)
+    frequency: SocialSearchFrequency = SocialSearchFrequency.DAILY
+
+    @model_validator(mode="after")
+    def _company_types_only(self) -> "WatchBulkCreate":
+        if self.watch_type not in (SignalWatchType.FUNDING, SignalWatchType.HIRING):
+            raise ValueError(
+                "bulk company watches support funding and hiring only "
+                "(job-change is matched per-person by email)"
+            )
+        return self
 
 
 class WatchUpdate(BaseModel):
@@ -91,8 +140,17 @@ async def create_watch(
         if await db.get(Lead, payload.lead_id) is None:
             raise HTTPException(status_code=404, detail="lead not found")
     if payload.opportunity_id is not None:
-        if await db.get(Opportunity, payload.opportunity_id) is None:
+        opp = await db.get(Opportunity, payload.opportunity_id)
+        if opp is None:
             raise HTTPException(status_code=404, detail="opportunity not found")
+        # Job-change detection matches by email — an opp without one
+        # would run a silently useless check forever.
+        if payload.watch_type == SignalWatchType.JOB_CHANGE and not opp.email:
+            raise HTTPException(
+                status_code=422,
+                detail="this opportunity has no contact email — job-change "
+                       "lookups are matched by email",
+            )
     if (
         payload.lead_id is None
         and payload.opportunity_id is None
@@ -102,6 +160,25 @@ async def create_watch(
             status_code=422,
             detail="a watch needs a lead, an opportunity, or a company/person target",
         )
+    # Duplicate guard: one active watch per (type, target).
+    dup_q = select(SignalWatch.id).where(
+        SignalWatch.watch_type == payload.watch_type,
+        SignalWatch.status == SignalWatchStatus.ACTIVE,
+    )
+    if payload.lead_id is not None:
+        dup_q = dup_q.where(SignalWatch.lead_id == payload.lead_id)
+    elif payload.opportunity_id is not None:
+        dup_q = dup_q.where(SignalWatch.opportunity_id == payload.opportunity_id)
+    elif payload.email:
+        dup_q = dup_q.where(func.lower(SignalWatch.email) == payload.email.lower())
+    else:
+        dup_q = dup_q.where(func.lower(SignalWatch.company) == (payload.company or "").lower())
+    if (await db.scalar(dup_q.limit(1))) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="already watching this target for that signal type",
+        )
+
     w = SignalWatch(
         watch_type=payload.watch_type,
         lead_id=payload.lead_id,
@@ -123,6 +200,62 @@ async def create_watch(
     await db.commit()
     await db.refresh(w)
     return _watch_dict(w)
+
+
+@router.post("/watches/bulk", status_code=201)
+async def create_watches_bulk(
+    payload: WatchBulkCreate, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """One watch per pasted company (funding/hiring).  Companies that
+    already have an active watch of this type are skipped, not errors —
+    pasting an overlapping list twice is a no-op for the overlap."""
+    # Normalise + de-dupe the pasted list, preserving order.
+    companies: list[str] = []
+    seen: set[str] = set()
+    for raw in payload.companies:
+        name = (raw or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        companies.append(name[:300])
+
+    existing = {
+        (c or "").lower()
+        for (c,) in (await db.execute(
+            select(SignalWatch.company).where(
+                SignalWatch.watch_type == payload.watch_type,
+                SignalWatch.status == SignalWatchStatus.ACTIVE,
+                SignalWatch.company.is_not(None),
+            )
+        )).all()
+    }
+
+    created: list[SignalWatch] = []
+    skipped_duplicate = 0
+    next_run = (
+        datetime.now(timezone.utc)
+        if payload.frequency != SocialSearchFrequency.MANUAL
+        else None
+    )
+    for name in companies:
+        if name.lower() in existing:
+            skipped_duplicate += 1
+            continue
+        existing.add(name.lower())
+        w = SignalWatch(
+            watch_type=payload.watch_type,
+            company=name,
+            frequency=payload.frequency,
+            next_run_at=next_run,
+        )
+        db.add(w)
+        created.append(w)
+    await db.commit()
+    return {
+        "created": len(created),
+        "skipped_duplicate": skipped_duplicate,
+        "watch_ids": [str(w.id) for w in created],
+    }
 
 
 @router.get("/watches")

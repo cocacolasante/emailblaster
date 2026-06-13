@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 vi.mock('../api/signals.js', () => ({
   listWatches: vi.fn(),
   createWatch: vi.fn(),
+  createWatchesBulk: vi.fn(),
   updateWatch: vi.fn(),
   deleteWatch: vi.fn(),
   runWatchNow: vi.fn(),
@@ -75,7 +76,7 @@ describe('Signals page', () => {
     renderPage();
     await user.click(screen.getByRole('tab', { name: 'Watches' }));
     await user.click(await screen.findByTestId('new-watch-btn'));
-    await user.selectOptions(screen.getByTestId('watch-type'), 'hiring');
+    await user.click(screen.getByTestId('watch-type-hiring'));
     await user.type(screen.getByTestId('watch-company'), 'Acme');
     await user.click(screen.getByTestId('save-watch-btn'));
     await waitFor(() => {
@@ -86,13 +87,57 @@ describe('Signals page', () => {
     });
   });
 
-  it('save disabled without a target; empty feed shows explainer', async () => {
+  it('save disabled without the per-type required field', async () => {
     api.listSignals.mockResolvedValue(paged([]));
     const user = userEvent.setup();
     renderPage();
     expect(await screen.findByTestId('signals-empty')).toBeInTheDocument();
     await user.click(screen.getByRole('tab', { name: 'Watches' }));
     await user.click(await screen.findByTestId('new-watch-btn'));
+
+    // Default type (funding) requires a company.
+    expect(screen.getByTestId('watch-type-desc')).toHaveTextContent(/COMPANY/);
     expect(screen.getByTestId('save-watch-btn')).toBeDisabled();
+
+    // Job change requires an email — company field alone doesn't enable.
+    await user.click(screen.getByTestId('watch-type-job_change'));
+    expect(screen.getByTestId('watch-type-desc')).toHaveTextContent(/EMAIL/);
+    expect(screen.getByTestId('save-watch-btn')).toBeDisabled();
+    await user.type(screen.getByTestId('watch-email'), 'jane@acme.com');
+    expect(screen.getByTestId('save-watch-btn')).toBeEnabled();
+  });
+
+  it('bulk mode creates one watch per pasted company', async () => {
+    api.createWatchesBulk.mockResolvedValue({
+      created: 3, skipped_duplicate: 1, watch_ids: ['a', 'b', 'c'],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('tab', { name: 'Watches' }));
+    await user.click(await screen.findByTestId('new-watch-btn'));
+    // funding (default) supports bulk; job-change does NOT show the toggle.
+    await user.click(screen.getByTestId('watch-type-job_change'));
+    expect(screen.queryByTestId('bulk-mode-toggle')).toBeNull();
+    await user.click(screen.getByTestId('watch-type-funding'));
+
+    await user.click(screen.getByTestId('bulk-mode-toggle'));
+    await user.type(
+      screen.getByTestId('bulk-companies-input'),
+      'Acme Corp{enter}Beta Inc{enter}Gamma LLC',
+    );
+    await user.click(screen.getByTestId('save-watch-btn'));
+    await waitFor(() => {
+      expect(api.createWatchesBulk).toHaveBeenCalled();
+      const payload = api.createWatchesBulk.mock.calls[0][0];
+      expect(payload.watch_type).toBe('funding');
+      expect(payload.companies).toEqual(['Acme Corp', 'Beta Inc', 'Gamma LLC']);
+    });
+  });
+
+  it('renders the how-it-works explainer', async () => {
+    renderPage();
+    const help = await screen.findByTestId('signals-help');
+    expect(help).toHaveTextContent(/How signals work/);
+    expect(help).toHaveTextContent(/one.*company or person/i);
   });
 });

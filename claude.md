@@ -1563,7 +1563,33 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-13 — Add-to-campaign from the Leads page.
+_Last updated: 2026-06-13 (later) — Signals section build-out.  The
+page shipped functional but unexplained; this pass makes it
+self-documenting and list-friendly:
+- **Per-type required fields enforced at creation** (422 with pointed
+  messages instead of silently-useless checks forever): job_change →
+  email (Apollo people/match keys on email; also 422 when tracking an
+  email-less opportunity), funding/hiring → company, custom → at least
+  one of email/company.  Lead/opp-linked watches inherit fields from
+  the record.
+- **Duplicate-watch 409** — one ACTIVE watch per (type, target), keyed
+  on lead_id / opportunity_id / lower(email) / lower(company).
+- **``POST /signals/watches/bulk``** — one watch per pasted company
+  (funding/hiring only; job-change is per-person by email).  Blank /
+  repeated lines dropped; companies already watched for that type are
+  skipped, not errors.  Returns {created, skipped_duplicate, watch_ids}.
+- **UI:** collapsible "How signals work" explainer (what a watch is,
+  what each type needs, what happens on detection, the
+  baseline-then-diff model); type picker buttons with per-type
+  descriptions + dynamic required fields; "Multiple companies"
+  textarea mode on funding/hiring; watch rows now show the target,
+  CRM-link badge, and the last_seen baseline (title / stage / role
+  count).  Leads modal gains "⚡ Track signals" (creates a custom
+  watch for the lead; 409 reads as already-tracking).
+5 new backend + 4 new/updated frontend tests.
+Tests: **backend 928, frontend 322**._
+
+_Previously: Add-to-campaign from the Leads page.
 ``POST /campaigns/{id}/leads/add`` bulk-adds existing leads (CRM/
 manual, lookalike-accepted, signal-staged, or another campaign's) by
 COPYING them — copy, not move, because ``leads.campaign_id`` cascades
@@ -1869,7 +1895,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **923 passing**.  Frontend tests: **319 passing**._
+_Backend tests: **928 passing**.  Frontend tests: **322 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

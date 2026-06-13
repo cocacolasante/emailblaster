@@ -333,3 +333,108 @@ async def test_watch_crud_and_signal_feed(client, db_session):
     assert resp.json()["status"] == "paused"
     resp = await client.delete(f"/signals/watches/{wid}")
     assert resp.status_code == 204
+
+
+# --------------------------------------------------------------------------
+# creation validation + dedup + bulk (Signals build-out)
+# --------------------------------------------------------------------------
+
+
+async def test_watch_required_fields_per_type(client):
+    # job_change without email → 422 with a pointed message.
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "job_change", "person_name": "Jane Doe", "company": "Acme",
+    })
+    assert resp.status_code == 422
+    assert "email" in str(resp.json()["detail"]).lower()
+
+    # funding without company → 422.
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "funding", "person_name": "Jane Doe",
+    })
+    assert resp.status_code == 422
+    assert "company" in str(resp.json()["detail"]).lower()
+
+    # custom with neither email nor company → 422.
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "custom", "person_name": "Jane Doe",
+    })
+    assert resp.status_code == 422
+
+    # job_change WITH an email → 201.
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "job_change", "person_name": "Jane Doe",
+        "email": "jane@acme.com",
+    })
+    assert resp.status_code == 201, resp.text
+
+
+async def test_watch_duplicate_target_409(client, db_session):
+    lead = await _make_lead(db_session)
+    body = {"watch_type": "job_change", "lead_id": str(lead.id)}
+    resp = await client.post("/signals/watches", json=body)
+    assert resp.status_code == 201
+    resp = await client.post("/signals/watches", json=body)
+    assert resp.status_code == 409
+
+    # Same company, same type → 409 too (case-insensitive).
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "hiring", "company": "Acme Corp",
+    })
+    assert resp.status_code == 201
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "hiring", "company": "acme corp",
+    })
+    assert resp.status_code == 409
+    # …but a DIFFERENT type on the same company is fine.
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "funding", "company": "Acme Corp",
+    })
+    assert resp.status_code == 201
+
+
+async def test_watch_job_change_on_emailless_opp_422(client, db_session):
+    from app.models import Opportunity
+
+    opp = Opportunity(name="No-mail deal", company="Acme")
+    db_session.add(opp)
+    await db_session.commit()
+    resp = await client.post("/signals/watches", json={
+        "watch_type": "job_change", "opportunity_id": str(opp.id),
+    })
+    assert resp.status_code == 422
+    assert "email" in resp.json()["detail"].lower()
+
+
+async def test_bulk_company_watches(client, db_session):
+    # Pre-existing active hiring watch on Beta — must be skipped.
+    db_session.add(SignalWatch(
+        watch_type=SignalWatchType.HIRING, company="Beta Inc",
+        frequency=SocialSearchFrequency.DAILY,
+    ))
+    await db_session.commit()
+
+    resp = await client.post("/signals/watches/bulk", json={
+        "watch_type": "hiring",
+        "companies": ["Acme Corp", "beta inc", "Gamma LLC", "  ", "Acme Corp"],
+        "frequency": "daily",
+    })
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["created"] == 2          # Acme + Gamma (Beta dup, blank + repeat dropped)
+    assert body["skipped_duplicate"] == 1
+    assert len(body["watch_ids"]) == 2
+
+    watches = (await db_session.execute(select(SignalWatch))).scalars().all()
+    companies = sorted(w.company for w in watches)
+    assert companies == ["Acme Corp", "Beta Inc", "Gamma LLC"]
+    # All scheduled for their first run.
+    new_ones = [w for w in watches if w.company != "Beta Inc"]
+    assert all(w.next_run_at is not None for w in new_ones)
+
+
+async def test_bulk_rejects_job_change(client):
+    resp = await client.post("/signals/watches/bulk", json={
+        "watch_type": "job_change", "companies": ["Acme"],
+    })
+    assert resp.status_code == 422

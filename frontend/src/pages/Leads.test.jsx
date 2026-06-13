@@ -14,6 +14,10 @@ vi.mock('../api/campaigns.js', () => ({
   unignoreLead: vi.fn(),
 }));
 
+vi.mock('../api/signals.js', () => ({
+  createWatch: vi.fn(),
+}));
+
 vi.mock('../api/crm.js', () => ({
   createCrmLead: vi.fn(),
   updateLeadCrmStatus: vi.fn(),
@@ -26,6 +30,7 @@ vi.mock('../api/crm.js', () => ({
 
 import * as api from '../api/campaigns.js';
 import * as crmApi from '../api/crm.js';
+import * as signalsApi from '../api/signals.js';
 import Leads from './Leads.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
@@ -489,5 +494,31 @@ describe('Add to campaign', () => {
     await user.click(await screen.findByTestId('select-lead-l1'));
     // The CRM modal opens on row click only — not on checkbox click.
     expect(screen.queryByTestId('lead-crm-modal')).toBeNull();
+  });
+});
+
+describe('Track signals from the lead modal', () => {
+  it('creates an everything-watch for the lead; 409 reads as already-tracking', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([{
+      id: 'l1', campaign_id: null, campaign_name: null,
+      first_name: 'Jane', last_name: 'Doe', email: 'jane@x.com',
+      company: 'Acme', send_status: 'pending', has_notes: false, notes: null,
+    }]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l1', email: 'jane@x.com', history: [], history_counts: {},
+      crm_status: 'new', is_suppressed: false,
+    });
+    signalsApi.createWatch.mockResolvedValue({ id: 'w1' });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTestId('lead-row-l1'));
+    await user.click(await screen.findByTestId('lead-track-signals-btn'));
+    await waitFor(() => {
+      expect(signalsApi.createWatch).toHaveBeenCalled();
+      const payload = signalsApi.createWatch.mock.calls[0][0];
+      expect(payload.watch_type).toBe('custom');
+      expect(payload.lead_id).toBe('l1');
+    });
   });
 });

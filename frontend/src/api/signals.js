@@ -42,3 +42,10 @@ export async function dismissSignal(id) {
   const { data } = await client.post(`/signals/${id}/dismiss`);
   return data;
 }
+
+/** One watch per company (funding/hiring) — paste a list, get
+ *  {created, skipped_duplicate, watch_ids}. */
+export async function createWatchesBulk(payload) {
+  const { data } = await client.post('/signals/watches/bulk', payload);
+  return data;
+}
