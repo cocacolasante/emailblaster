@@ -40,6 +40,13 @@ from app.models.social_listening import (
     SocialSearchSource,
     SocialSearchStatus,
 )
+from app.models.signals import (
+    ProspectSignal,
+    ProspectSignalStatus,
+    SignalWatch,
+    SignalWatchStatus,
+    SignalWatchType,
+)
 from app.models.sequence import (
     LeadSequenceState,
     LeadSequenceStatus,
@@ -108,6 +115,11 @@ __all__ = [
     "SocialOpportunityCategory",
     "SocialOpportunityAction",
     "SocialOpportunityStatus",
+    "ProspectSignal",
+    "ProspectSignalStatus",
+    "SignalWatch",
+    "SignalWatchStatus",
+    "SignalWatchType",
     "StyleCorrection",
     "Suppression",
     "SuppressionReason",

@@ -22,6 +22,7 @@ celery_app = Celery(
         "app.workers.digest",
         "app.workers.deliverability",
         "app.workers.copy_insights_refresher",
+        "app.workers.signals",
     ],
 )
 
@@ -84,6 +85,12 @@ celery_app.conf.beat_schedule = {
         # Nudge open opportunities idle > AGENT_STALE_OPP_DAYS.
         "task": "agent_sweeper.sweep_stale_opps",
         "schedule": 3600.0,  # hourly
+    },
+    "signals-runner": {
+        # Dispatcher for due prospect-signal watches (job change /
+        # funding / hiring) — sibling of social-radar-runner.
+        "task": "signals.scheduled_runner",
+        "schedule": 60.0,
     },
     "copy-insights-refresh": {
         # Per-campaign winning-angle summaries; LLM runs only for

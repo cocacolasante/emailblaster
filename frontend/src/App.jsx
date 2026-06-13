@@ -10,6 +10,7 @@ import Opportunities from './pages/Opportunities.jsx';
 import OpportunityDetail from './pages/OpportunityDetail.jsx';
 import Replies from './pages/Replies.jsx';
 import ResearchClient from './pages/ResearchClient.jsx';
+import Signals from './pages/Signals.jsx';
 import SocialRadar from './pages/SocialRadar.jsx';
 import Settings from './pages/Settings.jsx';
 import Nav from './components/Nav.jsx';
@@ -37,6 +38,7 @@ export default function App() {
               <Route path="/opportunities/:id" element={<OpportunityDetail />} />
               <Route path="/replies" element={<Replies />} />
               <Route path="/research-client" element={<ResearchClient />} />
+              <Route path="/signals" element={<Signals />} />
               <Route path="/social-radar" element={<SocialRadar />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>

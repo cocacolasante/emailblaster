@@ -52,6 +52,8 @@ class NotificationKind(str, enum.Enum):
     AGENT_ERROR = "agent_error"
     # Deliverability circuit breaker (migration 0028).
     CAMPAIGN_AUTO_PAUSED = "campaign_auto_paused"
+    # Intent/trigger prospecting (migration 0030).
+    PROSPECT_SIGNAL = "prospect_signal"
 
 
 class AgentActionType(str, enum.Enum):
