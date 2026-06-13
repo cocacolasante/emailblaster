@@ -182,6 +182,49 @@ async def test_email_sent_outside_quiet_hours(db_session, monkeypatch):
     assert notif.emailed_at is not None
 
 
+async def test_notification_uses_dedicated_from_sender(db_session, monkeypatch):
+    """Agent alerts send from OWNER_NOTIFY_FROM_* when set, independent of
+    the campaign Brevo sender."""
+    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
+    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_EMAIL", "anthony@csuitecode.com")
+    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_NAME", "Anthony Colasante")
+    monkeypatch.setattr(notifications.settings, "BREVO_SENDER_EMAIL", "support@grantmind.pro")
+    monkeypatch.setattr(notifications.settings, "BREVO_SENDER_NAME", "GrantMind Admin")
+    agent_settings = await agent_core.get_agent_settings(db_session)
+
+    send_mock = AsyncMock(return_value="msg-from")
+    with patch("app.services.notifications.brevo.send_email", new=send_mock):
+        await notifications.notify(
+            db_session, agent_settings,
+            kind=NotificationKind.TASK_DUE,
+            title="Task due", dedup_key="task_due:from-1",
+        )
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["sender_email"] == "anthony@csuitecode.com"
+    assert kwargs["sender_name"] == "Anthony Colasante"
+
+
+async def test_notification_from_sender_falls_back_to_brevo(db_session, monkeypatch):
+    """Unset OWNER_NOTIFY_FROM_* → campaign Brevo sender (back-compat)."""
+    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
+    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_EMAIL", "")
+    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_NAME", "")
+    monkeypatch.setattr(notifications.settings, "BREVO_SENDER_EMAIL", "support@grantmind.pro")
+    monkeypatch.setattr(notifications.settings, "BREVO_SENDER_NAME", "GrantMind Admin")
+    agent_settings = await agent_core.get_agent_settings(db_session)
+
+    send_mock = AsyncMock(return_value="msg-fb")
+    with patch("app.services.notifications.brevo.send_email", new=send_mock):
+        await notifications.notify(
+            db_session, agent_settings,
+            kind=NotificationKind.TASK_DUE,
+            title="Task due", dedup_key="task_due:fb-1",
+        )
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["sender_email"] == "support@grantmind.pro"
+    assert kwargs["sender_name"] == "GrantMind Admin"
+
+
 async def test_no_owner_email_persists_row_without_email(db_session, monkeypatch):
     monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "")
     agent_settings = await agent_core.get_agent_settings(db_session)

@@ -113,6 +113,11 @@ async def send_notification_email(notification: Notification) -> bool:
         return False
 
     html, text = _render_email(notification)
+    # Agent alerts send from their own configured sender, falling back to
+    # the campaign Brevo sender when unset.  (Must be a verified Brevo
+    # sender either way.)
+    from_email = settings.OWNER_NOTIFY_FROM_EMAIL or settings.BREVO_SENDER_EMAIL
+    from_name = settings.OWNER_NOTIFY_FROM_NAME or settings.BREVO_SENDER_NAME
     try:
         await brevo.send_email(
             to_email=settings.OWNER_NOTIFY_EMAIL,
@@ -120,8 +125,8 @@ async def send_notification_email(notification: Notification) -> bool:
             subject=f"[Agent] {notification.title}"[:200],
             html_body=html,
             text_body=text,
-            sender_name=settings.BREVO_SENDER_NAME,
-            sender_email=settings.BREVO_SENDER_EMAIL,
+            sender_name=from_name,
+            sender_email=from_email,
             # Synthetic header IDs — owner alerts have no campaign/lead.
             campaign_id="agent-notification",
             lead_id=str(notification.id),

@@ -162,6 +162,12 @@ class Settings(BaseSettings):
     # no email goes out.
     OWNER_NOTIFY_EMAIL: str = ""
     OWNER_NOTIFY_NAME: str = "Operator"
+    # The FROM address for agent alert emails.  Defaults (empty) fall back
+    # to the campaign Brevo sender, but agent alerts are internal mail to
+    # the operator, so they read better from your own address rather than
+    # whatever name campaigns send under.  Must be a verified Brevo sender.
+    OWNER_NOTIFY_FROM_EMAIL: str = ""
+    OWNER_NOTIFY_FROM_NAME: str = ""
     # Master kill-switch for every autonomous agent behaviour (reply
     # classification, reminders, nudges, digest).  The finer-grained
     # per-behaviour toggles live in the runtime-editable AgentSettings
