@@ -189,3 +189,12 @@ export async function getCopyInsights(id) {
   const { data } = await client.get(`/campaigns/${id}/copy-insights`);
   return data;
 }
+
+/** Bulk-add existing leads (CRM/manual/lookalike/another campaign's)
+ *  into a campaign by COPY. Returns {added, skipped_*, research_started}. */
+export async function addLeadsToCampaign(campaignId, leadIds) {
+  const { data } = await client.post(`/campaigns/${campaignId}/leads/add`, {
+    lead_ids: leadIds,
+  });
+  return data;
+}

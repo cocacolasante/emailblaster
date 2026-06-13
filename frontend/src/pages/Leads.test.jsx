@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 vi.mock('../api/campaigns.js', () => ({
+  addLeadsToCampaign: vi.fn(),
   listAllLeads: vi.fn(),
   listCampaigns: vi.fn(),
   getLeadDetail: vi.fn(),
@@ -54,8 +55,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   crmApi.listActivities.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, total_pages: 0 });
   api.listCampaigns.mockResolvedValue([
-    { id: 'c1', name: 'Q2 outreach' },
-    { id: 'c2', name: 'C-suite blast' },
+    { id: 'c1', name: 'Q2 outreach', status: 'running' },
+    { id: 'c2', name: 'C-suite blast', status: 'draft' },
+    { id: 'c3', name: 'Old one', status: 'complete' },
   ]);
 });
 
@@ -414,5 +416,78 @@ describe('Leads page', () => {
     api.listAllLeads.mockResolvedValue(leadsPayload([]));
     renderPage();
     await waitFor(() => expect(screen.getByText(/No leads\./i)).toBeInTheDocument());
+  });
+});
+
+describe('Add to campaign', () => {
+  const LEADS = [
+    {
+      id: 'l1', campaign_id: null, campaign_name: null,
+      first_name: 'Casey', last_name: 'Doe', email: 'casey@x.com',
+      company: 'FreshCo', send_status: 'pending', has_notes: false, notes: null,
+    },
+    {
+      id: 'l2', campaign_id: null, campaign_name: null,
+      first_name: 'Sam', last_name: 'Cold', email: 'sam@x.com',
+      company: 'ColdCo', send_status: 'pending', has_notes: false, notes: null,
+    },
+  ];
+
+  it('selecting leads reveals the bar; add calls the API with ids + campaign', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload(LEADS));
+    api.addLeadsToCampaign.mockResolvedValue({
+      added: 2, skipped_duplicate: 0, skipped_suppressed: 0,
+      skipped_missing: 0, research_started: true,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    // No bar until something is selected.
+    await screen.findByTestId('select-lead-l1');
+    expect(screen.queryByTestId('add-to-campaign-bar')).toBeNull();
+
+    await user.click(screen.getByTestId('select-lead-l1'));
+    await user.click(screen.getByTestId('select-lead-l2'));
+    const bar = screen.getByTestId('add-to-campaign-bar');
+    expect(bar).toHaveTextContent('2 leads selected');
+
+    // Complete campaigns are not offered as targets.
+    const select = within(bar).getByTestId('target-campaign-select');
+    expect(within(select).queryByText(/Old one/)).toBeNull();
+    // Button disabled until a campaign is picked.
+    expect(within(bar).getByTestId('add-to-campaign-btn')).toBeDisabled();
+
+    await user.selectOptions(select, 'c1');
+    await user.click(within(bar).getByTestId('add-to-campaign-btn'));
+    await waitFor(() => {
+      expect(api.addLeadsToCampaign).toHaveBeenCalled();
+      const [cid, ids] = api.addLeadsToCampaign.mock.calls[0];
+      expect(cid).toBe('c1');
+      expect(ids.sort()).toEqual(['l1', 'l2']);
+    });
+    // Selection cleared after success.
+    await waitFor(() => {
+      expect(screen.queryByTestId('add-to-campaign-bar')).toBeNull();
+    });
+  });
+
+  it('select-all checkbox selects the page', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload(LEADS));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('select-all-leads'));
+    expect(screen.getByTestId('add-to-campaign-bar')).toHaveTextContent('2 leads selected');
+    // Unchecking clears them.
+    await user.click(screen.getByTestId('select-all-leads'));
+    expect(screen.queryByTestId('add-to-campaign-bar')).toBeNull();
+  });
+
+  it('row checkbox does not open the lead modal', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload(LEADS));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('select-lead-l1'));
+    // The CRM modal opens on row click only — not on checkbox click.
+    expect(screen.queryByTestId('lead-crm-modal')).toBeNull();
   });
 });

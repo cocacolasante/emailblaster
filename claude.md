@@ -1563,7 +1563,28 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-12 (latest) — Prospecting & outreach upgrades:
+_Last updated: 2026-06-13 — Add-to-campaign from the Leads page.
+``POST /campaigns/{id}/leads/add`` bulk-adds existing leads (CRM/
+manual, lookalike-accepted, signal-staged, or another campaign's) by
+COPYING them — copy, not move, because ``leads.campaign_id`` cascades
+on campaign delete, so assigning a CRM lead would let routine campaign
+deletion destroy its CRM history.  The new row enters the target
+campaign's pipeline fresh: sequence-enrolled via the same
+``ensure_default_sequence``/``enroll_leads`` path as CSV upload, and
+``run_campaign_research`` kicks immediately for non-draft campaigns
+(research → compose → send follows the existing status gates:
+PREVIEWING waits for approve-all, PAUSED waits for resume).  Draft
+campaigns hold the rows until launch — ``confirm-upload`` researches
+every pending lead, added ones included.  Skips are counted, never
+errors: suppressed emails, emails already in the target, in-batch
+duplicates, unknown ids.  COMPLETE campaigns 409.  Frontend: checkbox
+column + select-all on the Leads table (checkbox clicks don't open the
+row modal), a bulk bar with a campaign picker (complete campaigns
+excluded) and a copy-semantics hint; success toast reports
+added/skipped counts.  6 new backend + 3 new frontend tests.
+Tests: **backend 923, frontend 319**._
+
+_Previously: Prospecting & outreach upgrades:
 four features, migrations 0028-0031, each committed separately.
 
 - **B. Deliverability guard (0028).**  (1) Per-SENDING-DOMAIN Redis
@@ -1848,7 +1869,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **917 passing**.  Frontend tests: **316 passing**._
+_Backend tests: **923 passing**.  Frontend tests: **319 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -30,6 +30,8 @@ from app.models import (
     canonical_email,
 )
 from app.schemas.lead import (
+    AddLeadsToCampaignRequest,
+    AddLeadsToCampaignResponse,
     ConfirmUploadResponse,
     IgnoreLeadResponse,
     LeadDetail,
@@ -600,4 +602,108 @@ async def confirm_upload(
         duplicates_removed=duplicates,
         samples_selected=len(sample_idx),
         auto_launched=auto_launched,
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/leads/add",
+    response_model=AddLeadsToCampaignResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_leads_to_campaign(
+    campaign_id: uuid.UUID,
+    payload: AddLeadsToCampaignRequest,
+    db: AsyncSession = Depends(get_db),
+) -> AddLeadsToCampaignResponse:
+    """Bulk-add existing leads into a campaign by COPYING them.
+
+    Copy, not move: ``leads.campaign_id`` cascades on campaign delete,
+    so moving a CRM lead in would make routine campaign deletion
+    destroy its CRM history (activities, conversion link, notes).  The
+    source lead — campaign-less or owned by another campaign — is left
+    untouched; the new row enters this campaign's pipeline fresh.
+
+    Skips (counted in the response, never an error): emails already in
+    the target campaign, suppressed emails, and unknown lead ids.
+    Non-draft campaigns kick research immediately (research → compose →
+    send follows the campaign's existing status gates: PREVIEWING waits
+    for approve-all, PAUSED waits for resume).  Draft campaigns hold
+    the rows until launch — ``confirm-upload`` researches every pending
+    lead, added ones included.
+    """
+    campaign = await _get_campaign_or_404(db, campaign_id)
+    if campaign.status == CampaignStatus.COMPLETE:
+        raise HTTPException(
+            status_code=409,
+            detail="Campaign is complete — it will never send. Pick a draft or active campaign.",
+        )
+
+    requested_ids = list(dict.fromkeys(payload.lead_ids))  # de-dupe, keep order
+    sources = list((await db.execute(
+        select(Lead).where(Lead.id.in_(requested_ids))
+    )).scalars().all())
+    skipped_missing = len(requested_ids) - len(sources)
+
+    # One round trip each for the two skip sets.
+    emails = {canonical_email(l.email) for l in sources}
+    suppressed_set: set[str] = set()
+    existing_set: set[str] = set()
+    if emails:
+        suppressed_set = {
+            r[0] for r in (await db.execute(
+                select(Suppression.email).where(Suppression.email.in_(emails))
+            )).all()
+        }
+        existing_set = {
+            canonical_email(e) for (e,) in (await db.execute(
+                select(Lead.email).where(
+                    Lead.campaign_id == campaign_id,
+                    func.lower(Lead.email).in_(emails),
+                )
+            )).all()
+        }
+
+    new_leads: list[Lead] = []
+    skipped_duplicate = 0
+    skipped_suppressed = 0
+    for src in sources:
+        email = canonical_email(src.email)
+        if email in suppressed_set:
+            skipped_suppressed += 1
+            continue
+        if email in existing_set:
+            skipped_duplicate += 1
+            continue
+        existing_set.add(email)  # de-dupe within the batch too
+        new_leads.append(Lead(
+            campaign_id=campaign_id,
+            email=email,
+            first_name=src.first_name,
+            last_name=src.last_name,
+            company=src.company,
+            job_title=src.job_title,
+            phone=src.phone,
+            linkedin_url=src.linkedin_url,
+            company_website=src.company_website,
+            timezone=src.timezone,
+        ))
+
+    if new_leads:
+        db.add_all(new_leads)
+        await db.flush()
+        await ensure_default_sequence(db, campaign)
+        await enroll_leads(db, campaign_id, [l.id for l in new_leads])
+    await db.commit()
+
+    research_started = False
+    if new_leads and campaign.status != CampaignStatus.DRAFT:
+        ingest_tasks.run_campaign_research.delay(str(campaign_id))
+        research_started = True
+
+    return AddLeadsToCampaignResponse(
+        added=len(new_leads),
+        skipped_duplicate=skipped_duplicate,
+        skipped_suppressed=skipped_suppressed,
+        skipped_missing=skipped_missing,
+        research_started=research_started,
     )

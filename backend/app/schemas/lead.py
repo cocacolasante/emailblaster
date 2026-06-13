@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import ComposeStatus, LinkedInConnectionStatus, ResearchStatus, SendStatus
 
@@ -138,3 +138,19 @@ class ConfirmUploadResponse(BaseModel):
     # True when the campaign launched straight into RUNNING (its start node
     # isn't an email, so there are no sample emails to preview/approve).
     auto_launched: bool = False
+
+
+class AddLeadsToCampaignRequest(BaseModel):
+    """Bulk-add existing leads (CRM/manual, lookalike-accepted, or leads
+    from another campaign) into a target campaign."""
+    lead_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class AddLeadsToCampaignResponse(BaseModel):
+    added: int
+    skipped_duplicate: int
+    skipped_suppressed: int
+    skipped_missing: int
+    # True when research/compose was kicked off immediately (non-draft
+    # campaigns).  Draft campaigns process added leads at launch.
+    research_started: bool = False

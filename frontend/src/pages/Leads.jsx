@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  addLeadsToCampaign,
   getLeadById,
   ignoreLead,
   listAllLeads,
@@ -55,10 +56,43 @@ export default function Leads() {
   const [hasNotes, setHasNotes] = useState(false);
   const [selected, setSelected] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [checked, setChecked] = useState(() => new Set());
+  const [targetCampaignId, setTargetCampaignId] = useState('');
+  const toast = useToast();
+  const queryClient = useQueryClient();
 
   const { data: campaigns = [] } = useQuery({
     queryKey: ['campaigns'],
     queryFn: listCampaigns,
+  });
+  // Complete campaigns will never send — not valid add targets.
+  const addableCampaigns = campaigns.filter((c) => c.status !== 'complete');
+
+  const toggleChecked = (id) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const addMutation = useMutation({
+    mutationFn: () => addLeadsToCampaign(targetCampaignId, [...checked]),
+    onSuccess: (res) => {
+      const bits = [`${res.added} added`];
+      if (res.skipped_duplicate) bits.push(`${res.skipped_duplicate} already in campaign`);
+      if (res.skipped_suppressed) bits.push(`${res.skipped_suppressed} suppressed`);
+      toast.success(
+        bits.join(' · ')
+        + (res.research_started ? ' — research started' : res.added ? ' — will process at launch' : ''),
+      );
+      setChecked(new Set());
+      setTargetCampaignId('');
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Add to campaign failed'),
   });
 
   const params = { page, page_size: 50 };
@@ -120,11 +154,75 @@ export default function Leads() {
         </label>
       </div>
 
+      {/* Bulk add-to-campaign bar */}
+      {checked.size > 0 && (
+        <div
+          data-testid="add-to-campaign-bar"
+          className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-3"
+        >
+          <span className="text-sm font-medium text-blue-900">
+            {checked.size} lead{checked.size > 1 ? 's' : ''} selected
+          </span>
+          <select
+            data-testid="target-campaign-select"
+            value={targetCampaignId}
+            onChange={(e) => setTargetCampaignId(e.target.value)}
+            className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm bg-white"
+          >
+            <option value="">Pick a campaign…</option>
+            {addableCampaigns.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.status})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            data-testid="add-to-campaign-btn"
+            onClick={() => addMutation.mutate()}
+            disabled={!targetCampaignId || addMutation.isPending}
+            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+          >
+            {addMutation.isPending ? 'Adding…' : 'Add to campaign'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setChecked(new Set())}
+            className="text-sm text-slate-500 hover:text-slate-700"
+          >
+            Clear
+          </button>
+          <span className="text-xs text-blue-700/70 basis-full">
+            Leads are copied in — the original record (and its CRM history)
+            stays put. Suppressed emails and duplicates are skipped.
+          </span>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <table className="w-full text-sm" data-testid="leads-table">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase">
+              <th className="px-3 py-3 w-8">
+                <input
+                  type="checkbox"
+                  aria-label="Select all on page"
+                  data-testid="select-all-leads"
+                  checked={
+                    (leadsPage?.items?.length ?? 0) > 0
+                    && leadsPage.items.every((l) => checked.has(l.id))
+                  }
+                  onChange={(e) => {
+                    const ids = (leadsPage?.items ?? []).map((l) => l.id);
+                    setChecked((prev) => {
+                      const next = new Set(prev);
+                      ids.forEach((id) => (e.target.checked ? next.add(id) : next.delete(id)));
+                      return next;
+                    });
+                  }}
+                />
+              </th>
               <th className="px-4 py-3 text-left">Name</th>
               <th className="px-4 py-3 text-left">Email</th>
               <th className="px-4 py-3 text-left">Company</th>
@@ -135,9 +233,9 @@ export default function Leads() {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
             ) : (leadsPage?.items?.length ?? 0) === 0 ? (
-              <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">No leads.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No leads.</td></tr>
             ) : (
               leadsPage.items.map((l) => (
                 <tr
@@ -146,6 +244,15 @@ export default function Leads() {
                   data-testid={`lead-row-${l.id}`}
                   className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
                 >
+                  <td className="px-3 py-3 w-8" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${l.email}`}
+                      data-testid={`select-lead-${l.id}`}
+                      checked={checked.has(l.id)}
+                      onChange={() => toggleChecked(l.id)}
+                    />
+                  </td>
                   <td className="px-4 py-3 text-slate-700">
                     {l.first_name || l.last_name
                       ? `${l.first_name || ''} ${l.last_name || ''}`.trim()
