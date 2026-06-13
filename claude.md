@@ -1563,7 +1563,68 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-12 (later) — CRM & inbox AI agent (6 phases,
+_Last updated: 2026-06-12 (latest) — Prospecting & outreach upgrades:
+four features, migrations 0028-0031, each committed separately.
+
+- **B. Deliverability guard (0028).**  (1) Per-SENDING-DOMAIN Redis
+  caps (``rate:domain:{domain}:hour|day``, ``DOMAIN_MAX_PER_HOUR/DAY``)
+  shared across campaigns; domain resolves from the connected account's
+  address (fallback sender_email) once in ``check_send_gates`` and
+  rides the OK dict into ``increment_rate_counters`` (legacy +
+  sequencer paths threaded).  (2) Send-time optimization (per-campaign
+  toggle, ``Lead.timezone`` new column): ``compute_optimal_send_eta``
+  defers to the recipient's optimal local hour — lead's own open/click
+  hours → campaign aggregate → 9-11am Tue-Thu default — clamped inside
+  the campaign window; nothing qualifying within a week → send normally.
+  (3) Bounce/spam circuit breaker: ``services/deliverability.py`` trips
+  at ≥5% hard-bounce or ≥0.1% spam over 24h with ≥20 outcomes; pauses
+  with ``auto_paused_at`` + ``auto_pause_reason`` + a
+  ``campaign_auto_paused`` notification; NEVER auto-resumes (manual
+  Resume clears it; distinct from the LinkedIn ``auto_paused_until``).
+  Hooks: inline in ``brevo_events.process_event`` + 15-min beat sweep.
+  UI: Deliverability card + red breaker banner + STO checkbox in
+  Schedule & pacing.
+- **A. Reply-driven copy loop (0029).**  ``ReplyOutcome`` snapshots the
+  SENT copy + verdict per classified reply (written from
+  ``process_inbound_reply``; campaign-less leads skipped).
+  ``services/copy_insights.py``: ``winning_examples`` (SQL only),
+  ``refresh_angle_summary`` (one Haiku call, cached on
+  ``campaign_copy_insights``, re-runs only after ≥3 new outcomes, LLM
+  failure serves the stale cache), ``build_winning_block`` (cache-read
+  only).  Compose prompts inject the block AFTER StyleCorrection with
+  explicit user-voice-wins framing; absent data → prompts unchanged.
+  Hourly ``copy_insights.refresh_all`` beat.  "What's working" panel on
+  campaign Overview + ``GET /campaigns/{id}/copy-insights``.
+- **C. Intent/trigger prospecting (0030).**  ``signal_watches``
+  (job_change/funding/hiring/custom on a lead/opp/cold target;
+  frequency reuses ``social_search_frequency``; ``last_seen`` JSONB is
+  the diff baseline — first sighting seeds silently) +
+  ``prospect_signals`` (UNIQUE dedup_key).  Detection: Apollo title /
+  funding-stage diffs + capped Haiku web-search (hiring + funding
+  fallback); LLM only normalises, never decides.  Worker
+  (``signals.scheduled_runner`` 60s + ``run_watch``): tracked record →
+  "Reach out" CRM task + notification; cold target WITH email →
+  campaign-less CRM lead; never auto-added to a campaign.  /signals
+  router + Signals page (Feed/Watches) + nav.
+- **D. ICP lookalike expansion (0031).**  ``icp_profiles`` (auto
+  profile from closed_won; ``insufficient_data`` below 3 wins) +
+  ``lookalike_candidates`` (fit_score/reason, UNIQUE dedup_key,
+  ``created_lead_id``).  Builder: Haiku summarises won deals into
+  criteria JSON.  Discovery: NEW ``apollo.search_people`` /
+  ``search_organizations`` helpers (search may need a paid Apollo
+  tier — 403/empty falls back to a capped Haiku web search); scoring
+  is RULE-BASED (no LLM judge); dedup forever vs leads/opps/candidates
+  by domain.  Daily beats (refresh 02:00, discover 03:00 UTC).  /icp
+  router + Lookalikes page (ICP card + ranked accept/reject table);
+  accept → exactly one campaign-less lead (409 re-accept).
+- **Gotcha fixed in passing:** the operator's real
+  ``OWNER_NOTIFY_EMAIL`` in ``.env`` reached the TEST container and
+  notification tests attempted real Brevo sends — ``conftest.py`` now
+  force-blanks it unconditionally.  Digest "due today" became a rolling
+  24h horizon (was end-of-calendar-day; flaky after 21:00 UTC).
+- Tests: 49 new backend + 13 new frontend across the four features._
+
+_Previously: CRM & inbox AI agent (6 phases,
 migration 0027).  The agent automates CRM hygiene under a hard
 autonomy boundary: it MAY log activities, create reminder TASKS,
 email the OWNER, and flag stale deals; it may NEVER convert a lead,
@@ -1787,7 +1848,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **868 passing**.  Frontend tests: **303 passing**._
+_Backend tests: **917 passing**.  Frontend tests: **316 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
