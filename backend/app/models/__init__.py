@@ -24,6 +24,13 @@ from app.models.crm import (
     OpportunityStage,
 )
 from app.models.email_event import EmailEvent, EmailEventType
+from app.models.icp import (
+    IcpProfile,
+    IcpProfileSource,
+    IcpProfileStatus,
+    LookalikeCandidate,
+    LookalikeCandidateStatus,
+)
 from app.models.lead import ComposeStatus, Lead, LinkedInConnectionStatus, ResearchStatus, SendStatus
 from app.models.linkedin_account import LinkedInAccount, LinkedInAccountStatus
 from app.models.linkedin_profile_cache import LinkedInProfileCache
@@ -86,6 +93,11 @@ __all__ = [
     "Opportunity",
     "OpportunityProduct",
     "OpportunityStage",
+    "IcpProfile",
+    "IcpProfileSource",
+    "IcpProfileStatus",
+    "LookalikeCandidate",
+    "LookalikeCandidateStatus",
     "EmailEvent",
     "EmailEventType",
     "Lead",

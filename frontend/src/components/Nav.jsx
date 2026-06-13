@@ -61,6 +61,17 @@ const ITEMS = [
     ),
   },
   {
+    to: '/lookalikes',
+    label: 'Lookalikes',
+    icon: (
+      // Two overlapping circles — "similar profiles"
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <circle cx="9" cy="12" r="6" strokeWidth={2} />
+        <circle cx="15" cy="12" r="6" strokeWidth={2} />
+      </svg>
+    ),
+  },
+  {
     to: '/social-radar',
     label: 'Social Radar',
     icon: (

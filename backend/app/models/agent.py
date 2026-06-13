@@ -54,6 +54,8 @@ class NotificationKind(str, enum.Enum):
     CAMPAIGN_AUTO_PAUSED = "campaign_auto_paused"
     # Intent/trigger prospecting (migration 0030).
     PROSPECT_SIGNAL = "prospect_signal"
+    # ICP lookalike discovery (migration 0031).
+    LOOKALIKE_BATCH = "lookalike_batch"
 
 
 class AgentActionType(str, enum.Enum):

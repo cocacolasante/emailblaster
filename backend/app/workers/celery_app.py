@@ -23,6 +23,7 @@ celery_app = Celery(
         "app.workers.deliverability",
         "app.workers.copy_insights_refresher",
         "app.workers.signals",
+        "app.workers.icp",
     ],
 )
 
@@ -102,6 +103,16 @@ celery_app.conf.beat_schedule = {
         # Bounce/spam circuit-breaker backstop over running campaigns.
         "task": "deliverability.sweep_health",
         "schedule": 900.0,  # every 15 min
+    },
+    "icp-refresh-profile": {
+        # Regenerate the auto ICP from closed-won deals.
+        "task": "icp.refresh_profile",
+        "schedule": crontab(minute=0, hour=2),  # daily, 02:00 UTC
+    },
+    "icp-discover": {
+        # Stage new lookalike candidates an hour after the refresh.
+        "task": "icp.discover",
+        "schedule": crontab(minute=0, hour=3),  # daily, 03:00 UTC
     },
     "agent-daily-digest": {
         # One summary email a day; idempotent via the digest:<date>
