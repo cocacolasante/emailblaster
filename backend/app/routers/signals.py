@@ -17,9 +17,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import update
+
 from app.config import settings
 from app.database import get_db
 from app.models import (
+    Campaign,
+    CampaignStatus,
     FundingSourceState,
     Lead,
     Opportunity,
@@ -395,6 +399,77 @@ async def dismiss_signal(
     signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
     return await _set_signal_status(db, signal_id, ProspectSignalStatus.DISMISSED)
+
+
+# ---------------------------------------------------------------------------
+# Bulk: add signals' staged leads to a campaign (→ runs the send pipeline)
+# ---------------------------------------------------------------------------
+
+
+class SignalsAddToCampaignRequest(BaseModel):
+    signal_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    campaign_id: uuid.UUID
+
+
+class SignalsAddToCampaignResponse(BaseModel):
+    added: int
+    skipped_duplicate: int
+    skipped_suppressed: int
+    skipped_no_contact: int       # selected signals with no staged lead
+    research_started: bool
+    signals_actioned: int
+
+
+@router.post("/add-to-campaign", response_model=SignalsAddToCampaignResponse)
+async def add_signals_to_campaign(
+    payload: SignalsAddToCampaignRequest, db: AsyncSession = Depends(get_db)
+) -> SignalsAddToCampaignResponse:
+    """Copy the staged leads behind the selected signals into a campaign
+    so they run the normal research → compose → send pipeline, and mark
+    those signals actioned.
+
+    This is the human-initiated step the discovery autonomy boundary
+    leaves open — the system never auto-enrolls, but the user can.
+    Signals with no contact (no staged lead) are skipped and left New.
+    """
+    from app.services import campaign_membership
+
+    campaign = await db.get(Campaign, payload.campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    if campaign.status == CampaignStatus.COMPLETE:
+        raise HTTPException(
+            status_code=409,
+            detail="Campaign is complete — it will never send. Pick a draft or active campaign.",
+        )
+
+    signals = list((await db.execute(
+        select(ProspectSignal).where(ProspectSignal.id.in_(payload.signal_ids))
+    )).scalars().all())
+    contactable = [s for s in signals if s.lead_id is not None]
+    skipped_no_contact = len(signals) - len(contactable)
+    lead_ids = [s.lead_id for s in contactable]
+
+    result = await campaign_membership.add_leads_to_campaign(db, campaign, lead_ids)
+
+    # Mark every contactable selected signal actioned (added or already-in,
+    # either way the user has handled it).
+    if contactable:
+        await db.execute(
+            update(ProspectSignal)
+            .where(ProspectSignal.id.in_([s.id for s in contactable]))
+            .values(status=ProspectSignalStatus.ACTIONED)
+        )
+        await db.commit()
+
+    return SignalsAddToCampaignResponse(
+        added=result.added,
+        skipped_duplicate=result.skipped_duplicate,
+        skipped_suppressed=result.skipped_suppressed,
+        skipped_no_contact=skipped_no_contact,
+        research_started=result.research_started,
+        signals_actioned=len(contactable),
+    )
 
 
 # ---------------------------------------------------------------------------

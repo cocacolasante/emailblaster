@@ -22,7 +22,76 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM & inbox AI agent** (2026-06-12 snapshot at
+- **Last completed:** **Bulk add signals to a campaign — emails run
+  automatically.**  The Signals feed now lets the user select any
+  number of `new` signals (per-card checkbox), pick a target campaign,
+  and copy their staged leads into it; the campaign's normal
+  research→compose→send pipeline takes over from there.  Stays inside
+  the autonomy boundary — discovery never auto-enrolls; this is the
+  explicit human "one click" action.
+  - **Shared core** `services/campaign_membership.add_leads_to_campaign`
+    — extracted from the Leads-page bulk-add so both entry points share
+    one copy+enroll+research-kick path.  COPY, not move
+    (`leads.campaign_id` cascades on campaign delete, so reassigning a
+    CRM/signal lead would let routine deletion destroy its history): a
+    fresh `Lead` row enters the pipeline, the source row is untouched.
+    De-dupes ids, skips suppressed / already-in-campaign / missing /
+    in-batch dups (all counted, none error), `ensure_default_sequence`
+    + `enroll_leads`, then for non-DRAFT campaigns kicks
+    `run_campaign_research.delay`.  Returns `AddLeadsResult`.  The
+    Leads router endpoint now delegates to it (behavior-identical).
+  - **Endpoint** `POST /signals/add-to-campaign` ({signal_ids,
+    campaign_id}) — 404 unknown campaign, 409 COMPLETE; loads the
+    signals, keeps only those with a `lead_id` (`skipped_no_contact`
+    counts the rest), copies via the shared core, then bulk-flips the
+    contactable signals to ACTIONED in one `update(...)`.  Response
+    carries the add counts + `research_started` + `signals_actioned`.
+  - **Frontend** (`pages/Signals.jsx`): per-card checkbox on `new`
+    signals (`stopPropagation` so it doesn't open the detail modal); a
+    bulk bar appears once anything is selected with a campaign picker
+    (complete campaigns filtered out) + Add button; success toast
+    summarises added/skipped and notes "emails will run automatically",
+    clears the selection, invalidates the feed.
+  - Tests: 4 backend (`test_phase43_funding_discovery.py`: copies +
+    actions, draft-campaign defers research, COMPLETE 409, unknown 404)
+    + 2 frontend (`Signals.test.jsx`: select reveals bar / excludes
+    complete / Add calls API; checkbox doesn't open modal).  Tests:
+    **backend 975, frontend 342**.
+- **Previously:** **Manual Stop button for nonprofit discovery
+  feeds.**  Diagnosed a runaway IRS BMF run that was burning Anthropic
+  tokens: the broker `visibility_timeout` is **300s** (`celery_app.py:49`)
+  but an IRS run (per-state CSV download + Haiku enrichment per org)
+  runs far longer, so Redis kept restoring the message and stacking
+  **concurrent copies** of the same task — each enriching orgs in
+  parallel.  Killed it manually (revoke+terminate + purge the funding
+  message from Redis `unacked`/`unacked_index` + worker restart), then
+  shipped a UI Stop button so it's a one-click recovery:
+  - `funding_signals.stop_funding_run(source)` — revokes + SIGKILLs
+    every active/reserved Celery task whose name is `funding.poll_<source>`
+    (across all workers, via `control.inspect`), then
+    `_purge_broker_messages` removes matching messages from the ready
+    `celery` list AND the `unacked` hash + `unacked_index` zset so a
+    long run can't be redelivered past the visibility timeout.  Safe
+    no-op (zero counts) when nothing is running.  Per-source: stopping
+    one feed never touches the other or the `send.send_lead` backlog.
+  - `POST /signals/funding/sources/{source}/stop` runs it in a
+    threadpool (Celery control + sync redis are blocking), sets
+    `last_run_status="stopped"` only when it actually killed/purged
+    something, returns the `stopped` counts.
+  - Worker now stamps `last_run_status="running"` at run start (before
+    the slow I/O commit) so the UI can show in-flight state; the
+    Discovery tab polls every 5s while any feed is `running`.
+  - Frontend: red **Stop** button on each Discovery feed card (solid
+    red while running, outline otherwise); toast reports tasks
+    terminated or "No <feed> run was in progress".
+  - Tests: 6 backend (`test_phase43_funding_discovery.py`: revoke
+    matching/terminate, idle no-op, purge-only-matching with a fake
+    redis, endpoint marks-stopped / noop-keeps-status / unknown-404)
+    + 2 frontend (`Settings.test.jsx`).  Tests: **backend 966,
+    frontend 337**.  **Follow-up worth doing:** raise
+    `visibility_timeout` well above the worst-case IRS run time so the
+    redelivery storm can't happen in the first place.
+  - Previously: **CRM & inbox AI agent** (2026-06-12 snapshot at
   the bottom of this file has full detail).  Previously: **Social Listening Radar — intent-feed for
   LinkedIn posts.**  New sidebar item with two tabs (Feed + Searches).
   The user types a plain-English topic ("frustrated with our IT
@@ -1563,7 +1632,17 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — Signal outreach: draft → pick
+_Last updated: 2026-06-15 (latest) — Bulk add signals to a campaign.
+The Signals feed lets the user select `new` signals, pick a campaign,
+and copy their staged leads in via shared
+`services/campaign_membership.add_leads_to_campaign` (COPY not move;
+de-dupe + skip suppressed/existing/missing; enroll + kick research for
+non-draft campaigns).  `POST /signals/add-to-campaign` then flips the
+contactable signals to ACTIONED.  Frontend: per-card checkbox + bulk
+bar with campaign picker.  4 new backend + 2 new frontend tests.
+Tests: **backend 975, frontend 342**.
+
+_Previously: 2026-06-15 — Signal outreach: draft → pick
 sender → send → logged (no migration).  Click a signal to open a detail
 modal and send outreach right from the queue.
 - **Shared send core** ``services/outreach.py`` — extracted the
@@ -2051,7 +2130,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **960 passing**.  Frontend tests: **335 passing**._
+_Backend tests: **975 passing**.  Frontend tests: **342 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -25,6 +25,7 @@ vi.mock('../api/signals.js', () => ({
   listFundingSources: vi.fn(),
   updateFundingSource: vi.fn(),
   runFundingSourceNow: vi.fn(),
+  stopFundingSource: vi.fn(),
 }));
 
 import * as accountsApi from '../api/connectedAccounts.js';
@@ -339,6 +340,33 @@ describe('Discovery tab', () => {
     await waitFor(() => {
       expect(signalsApi.runFundingSourceNow).toHaveBeenCalledWith('usaspending');
     });
+  });
+
+  it('Stop calls the API and reports the terminated run', async () => {
+    signalsApi.stopFundingSource.mockResolvedValue({
+      ...FUNDING_SOURCES.sources[1], last_run_status: 'stopped',
+      stopped: { terminated: ['abc'], purged_queued: 2, purged_unacked: 1 },
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await user.click(await screen.findByTestId('funding-stop-irs_bmf'));
+    await waitFor(() => {
+      expect(signalsApi.stopFundingSource).toHaveBeenCalledWith('irs_bmf');
+    });
+    expect(await screen.findByText(/run stopped/i)).toBeInTheDocument();
+  });
+
+  it('Stop on an idle feed reports nothing was running', async () => {
+    signalsApi.stopFundingSource.mockResolvedValue({
+      ...FUNDING_SOURCES.sources[0],
+      stopped: { terminated: [], purged_queued: 0, purged_unacked: 0 },
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await user.click(await screen.findByTestId('funding-stop-usaspending'));
+    expect(await screen.findByText(/No .* run was in progress/i)).toBeInTheDocument();
   });
 
   it('hides the Hunter warning when configured', async () => {

@@ -16,13 +16,18 @@ vi.mock('../api/signals.js', () => ({
   dismissSignal: vi.fn(),
   draftSignalEmail: vi.fn(),
   sendSignalEmail: vi.fn(),
+  addSignalsToCampaign: vi.fn(),
 }));
 vi.mock('../api/connectedAccounts.js', () => ({
   listAccounts: vi.fn(),
 }));
+vi.mock('../api/campaigns.js', () => ({
+  listCampaigns: vi.fn(),
+}));
 
 import * as api from '../api/signals.js';
 import * as accountsApi from '../api/connectedAccounts.js';
+import * as campaignsApi from '../api/campaigns.js';
 import Signals from './Signals.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
@@ -57,6 +62,10 @@ beforeEach(() => {
   api.listWatches.mockResolvedValue([]);
   accountsApi.listAccounts.mockResolvedValue([
     { id: 'a1', label: 'Outreach', email_address: 'me@csuitecode.com', is_default_sender: true, signature: 'Anthony' },
+  ]);
+  campaignsApi.listCampaigns.mockResolvedValue([
+    { id: 'c1', name: 'Nonprofit Q3', status: 'running' },
+    { id: 'c2', name: 'Old one', status: 'complete' },
   ]);
 });
 
@@ -234,5 +243,45 @@ describe('Signal detail → draft → send', () => {
     expect(await screen.findByTestId('signal-no-contact')).toBeInTheDocument();
     // No Draft & send button on a contactless signal card.
     expect(screen.queryByTestId('draft-signal-s2')).toBeNull();
+  });
+});
+
+describe('Signals → add to campaign (bulk)', () => {
+  it('selecting signals reveals the bar; add calls the API and excludes complete campaigns', async () => {
+    api.addSignalsToCampaign.mockResolvedValue({
+      added: 1, skipped_duplicate: 0, skipped_suppressed: 0,
+      skipped_no_contact: 0, research_started: true, signals_actioned: 1,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByTestId('select-signal-s1');
+    expect(screen.queryByTestId('signal-add-to-campaign-bar')).toBeNull();
+
+    await user.click(screen.getByTestId('select-signal-s1'));
+    const bar = screen.getByTestId('signal-add-to-campaign-bar');
+    expect(bar).toHaveTextContent('1 signal selected');
+
+    const select = within(bar).getByTestId('signal-target-campaign');
+    expect(within(select).queryByText(/Old one/)).toBeNull();   // complete excluded
+    expect(within(bar).getByTestId('signal-add-to-campaign-btn')).toBeDisabled();
+
+    await user.selectOptions(select, 'c1');
+    await user.click(within(bar).getByTestId('signal-add-to-campaign-btn'));
+    await waitFor(() => {
+      expect(api.addSignalsToCampaign).toHaveBeenCalled();
+      const payload = api.addSignalsToCampaign.mock.calls[0][0];
+      expect(payload.signal_ids).toEqual(['s1']);
+      expect(payload.campaign_id).toBe('c1');
+    });
+    // Bar clears after success.
+    await waitFor(() => expect(screen.queryByTestId('signal-add-to-campaign-bar')).toBeNull());
+  });
+
+  it('selecting a signal does not open the detail modal', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('select-signal-s1'));
+    expect(screen.queryByTestId('signal-detail-modal')).toBeNull();
   });
 });

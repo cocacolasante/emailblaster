@@ -83,3 +83,10 @@ export async function sendSignalEmail(id, payload) {
   const { data } = await client.post(`/signals/${id}/send`, payload);
   return data;
 }
+
+/** Bulk-add the staged leads behind selected signals into a campaign;
+ *  marks those signals actioned. Returns {added, skipped_*, signals_actioned}. */
+export async function addSignalsToCampaign(payload) {
+  const { data } = await client.post('/signals/add-to-campaign', payload);
+  return data;
+}

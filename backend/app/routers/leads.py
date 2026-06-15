@@ -40,6 +40,7 @@ from app.schemas.lead import (
     PaginatedLeads,
     UploadPreviewResponse,
 )
+from app.services import campaign_membership
 from app.services.csv_parser import parse_csv_content, select_sample_indices, suggest_mapping
 from app.services.sequence_service import (
     campaign_sends_legacy_first_email,
@@ -638,72 +639,13 @@ async def add_leads_to_campaign(
             detail="Campaign is complete — it will never send. Pick a draft or active campaign.",
         )
 
-    requested_ids = list(dict.fromkeys(payload.lead_ids))  # de-dupe, keep order
-    sources = list((await db.execute(
-        select(Lead).where(Lead.id.in_(requested_ids))
-    )).scalars().all())
-    skipped_missing = len(requested_ids) - len(sources)
-
-    # One round trip each for the two skip sets.
-    emails = {canonical_email(l.email) for l in sources}
-    suppressed_set: set[str] = set()
-    existing_set: set[str] = set()
-    if emails:
-        suppressed_set = {
-            r[0] for r in (await db.execute(
-                select(Suppression.email).where(Suppression.email.in_(emails))
-            )).all()
-        }
-        existing_set = {
-            canonical_email(e) for (e,) in (await db.execute(
-                select(Lead.email).where(
-                    Lead.campaign_id == campaign_id,
-                    func.lower(Lead.email).in_(emails),
-                )
-            )).all()
-        }
-
-    new_leads: list[Lead] = []
-    skipped_duplicate = 0
-    skipped_suppressed = 0
-    for src in sources:
-        email = canonical_email(src.email)
-        if email in suppressed_set:
-            skipped_suppressed += 1
-            continue
-        if email in existing_set:
-            skipped_duplicate += 1
-            continue
-        existing_set.add(email)  # de-dupe within the batch too
-        new_leads.append(Lead(
-            campaign_id=campaign_id,
-            email=email,
-            first_name=src.first_name,
-            last_name=src.last_name,
-            company=src.company,
-            job_title=src.job_title,
-            phone=src.phone,
-            linkedin_url=src.linkedin_url,
-            company_website=src.company_website,
-            timezone=src.timezone,
-        ))
-
-    if new_leads:
-        db.add_all(new_leads)
-        await db.flush()
-        await ensure_default_sequence(db, campaign)
-        await enroll_leads(db, campaign_id, [l.id for l in new_leads])
-    await db.commit()
-
-    research_started = False
-    if new_leads and campaign.status != CampaignStatus.DRAFT:
-        ingest_tasks.run_campaign_research.delay(str(campaign_id))
-        research_started = True
-
+    result = await campaign_membership.add_leads_to_campaign(
+        db, campaign, payload.lead_ids,
+    )
     return AddLeadsToCampaignResponse(
-        added=len(new_leads),
-        skipped_duplicate=skipped_duplicate,
-        skipped_suppressed=skipped_suppressed,
-        skipped_missing=skipped_missing,
-        research_started=research_started,
+        added=result.added,
+        skipped_duplicate=result.skipped_duplicate,
+        skipped_suppressed=result.skipped_suppressed,
+        skipped_missing=result.skipped_missing,
+        research_started=result.research_started,
     )

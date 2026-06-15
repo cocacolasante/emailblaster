@@ -678,3 +678,278 @@ async def test_signal_send_brevo_failure_502(client, db_session, monkeypatch):
     # Signal NOT actioned on a failed send.
     await db_session.refresh(signal)
     assert signal.status.value == "new"
+
+
+# ---------------------------------------------------------------------------
+# Manual stop — terminate an in-flight run + break the redelivery loop
+# ---------------------------------------------------------------------------
+
+
+class _FakeInspect:
+    def __init__(self, active, reserved):
+        self._active = active
+        self._reserved = reserved
+
+    def active(self):
+        return self._active
+
+    def reserved(self):
+        return self._reserved
+
+
+class _FakeControl:
+    def __init__(self, inspect):
+        self._inspect = inspect
+        self.revoked = []
+
+    def inspect(self, timeout=2.0):
+        return self._inspect
+
+    def revoke(self, tid, terminate=False, signal=None):
+        self.revoked.append((tid, terminate, signal))
+
+
+async def test_stop_funding_run_revokes_matching_and_purges(monkeypatch):
+    """Only the feed's own task ids (across active + reserved, all workers)
+    are revoked+terminated; other task names are left alone; the broker
+    purge count rides into the result."""
+    control = _FakeControl(_FakeInspect(
+        active={"w1": [
+            {"id": "abc", "name": "funding.poll_irs_bmf"},
+            {"id": "other", "name": "send.send_lead"},
+        ]},
+        reserved={"w1": [{"id": "def", "name": "funding.poll_irs_bmf"}]},
+    ))
+    monkeypatch.setattr(funding_signals.celery_app, "control", control)
+    monkeypatch.setattr(
+        funding_signals, "_purge_broker_messages",
+        lambda name: {"queue": 3, "unacked": 1},
+    )
+
+    result = funding_signals.stop_funding_run("irs_bmf")
+
+    assert result["terminated"] == ["abc", "def"]
+    assert {tid for tid, _, _ in control.revoked} == {"abc", "def"}
+    assert all(term is True for _, term, _ in control.revoked)
+    assert result["purged_queued"] == 3
+    assert result["purged_unacked"] == 1
+
+
+async def test_stop_funding_run_noop_when_idle(monkeypatch):
+    control = _FakeControl(_FakeInspect(active={}, reserved={}))
+    monkeypatch.setattr(funding_signals.celery_app, "control", control)
+    monkeypatch.setattr(
+        funding_signals, "_purge_broker_messages",
+        lambda name: {"queue": 0, "unacked": 0},
+    )
+
+    result = funding_signals.stop_funding_run("usaspending")
+    assert result["terminated"] == []
+    assert control.revoked == []
+    assert result["purged_queued"] == 0
+
+
+async def test_purge_broker_messages_removes_only_matching(monkeypatch):
+    """The redis purge drops only this feed's messages from the ready
+    queue + the unacked set (incl. its index), leaving send tasks intact."""
+    irs = b'{"headers":{"task":"funding.poll_irs_bmf"}}'
+    usa = b'{"headers":{"task":"funding.poll_usaspending"}}'
+    send = b'{"headers":{"task":"send.send_lead"}}'
+
+    class _FakeRedis:
+        def __init__(self):
+            self.lists = {"celery": [irs, send, send]}
+            self.hash = {b"tag-irs": irs, b"tag-send": send}
+            self.zset = {"tag-irs", "tag-send"}
+
+        def lrange(self, key, start, stop):
+            return list(self.lists.get(key, []))
+
+        def lrem(self, key, count, value):
+            before = len(self.lists[key])
+            self.lists[key] = [v for v in self.lists[key] if v != value]
+            return before - len(self.lists[key])
+
+        def hgetall(self, key):
+            return dict(self.hash)
+
+        def hdel(self, key, field):
+            self.hash.pop(field, None)
+
+        def zrem(self, key, member):
+            self.zset.discard(member)
+
+    fake = _FakeRedis()
+
+    class _RedisModule:
+        class Redis:
+            @staticmethod
+            def from_url(url):
+                return fake
+
+    monkeypatch.setitem(__import__("sys").modules, "redis", _RedisModule)
+
+    out = funding_signals._purge_broker_messages("funding.poll_irs_bmf")
+    assert out == {"queue": 1, "unacked": 1}
+    assert fake.lists["celery"] == [send, send]  # send tasks untouched
+    assert b"tag-irs" not in fake.hash and b"tag-send" in fake.hash
+    assert "tag-irs" not in fake.zset and "tag-send" in fake.zset
+
+
+async def test_funding_stop_endpoint_marks_stopped(client, db_session, monkeypatch):
+    monkeypatch.setattr(
+        funding_signals, "stop_funding_run",
+        lambda source: {
+            "task": f"funding.poll_{source}",
+            "terminated": ["abc"], "purged_queued": 2, "purged_unacked": 1,
+        },
+    )
+    resp = await client.post("/signals/funding/sources/irs_bmf/stop")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["last_run_status"] == "stopped"
+    assert body["stopped"]["terminated"] == ["abc"]
+
+
+async def test_funding_stop_endpoint_noop_keeps_status(client, db_session, monkeypatch):
+    db_session.add(FundingSourceState(
+        source="usaspending", enabled=True, config={"lookback_days": 7},
+        cursor={}, last_run_status="done",
+    ))
+    await db_session.commit()
+    monkeypatch.setattr(
+        funding_signals, "stop_funding_run",
+        lambda source: {
+            "task": f"funding.poll_{source}",
+            "terminated": [], "purged_queued": 0, "purged_unacked": 0,
+        },
+    )
+    resp = await client.post("/signals/funding/sources/usaspending/stop")
+    assert resp.status_code == 200, resp.text
+    # Nothing was running → status is left as-is, not forced to "stopped".
+    assert resp.json()["last_run_status"] == "done"
+
+
+async def test_funding_stop_endpoint_unknown_404(client):
+    resp = await client.post("/signals/funding/sources/nope/stop")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Bulk add signals' staged leads to a campaign
+# ---------------------------------------------------------------------------
+
+from datetime import time as _time  # noqa: E402
+from app.models import Campaign, CampaignStatus, LeadSequenceState  # noqa: E402
+
+
+async def _campaign(db_session, status=CampaignStatus.RUNNING) -> Campaign:
+    c = Campaign(
+        name="Outreach", goal="g", tone="t",
+        sender_name="S", sender_email="s@x.com", sample_count=1,
+        schedule_days=[], schedule_time_start=_time(0, 0),
+        schedule_time_end=_time(23, 59), schedule_timezone="UTC", status=status,
+    )
+    db_session.add(c)
+    await db_session.commit()
+    await db_session.refresh(c)
+    return c
+
+
+async def _signal_with_lead(db_session, email) -> tuple[ProspectSignal, Lead]:
+    lead = Lead(campaign_id=None, email=email, first_name="A", company="Org")
+    db_session.add(lead)
+    await db_session.flush()
+    sig = ProspectSignal(
+        watch_id=None, source="usaspending", signal_type="grant_awarded",
+        summary="Org won a grant", detail={}, lead_id=lead.id,
+        dedup_key=f"grant_awarded:{uuid.uuid4().hex}",
+    )
+    db_session.add(sig)
+    await db_session.commit()
+    await db_session.refresh(sig)
+    return sig, lead
+
+
+async def test_signals_add_to_campaign_copies_leads_and_actions(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+    research = MagicMock()
+    monkeypatch.setattr("app.workers.ingest.run_campaign_research.delay", research)
+    campaign = await _campaign(db_session)
+    s1, l1 = await _signal_with_lead(db_session, "a@x.com")
+    s2, l2 = await _signal_with_lead(db_session, "b@x.com")
+    # A contactless signal in the selection → skipped, stays New.
+    s3 = ProspectSignal(
+        watch_id=None, source="irs_bmf", signal_type="new_501c3",
+        summary="No contact", detail={}, lead_id=None,
+        dedup_key=f"new_501c3:{uuid.uuid4().hex}",
+    )
+    db_session.add(s3)
+    await db_session.commit()
+
+    resp = await client.post("/signals/add-to-campaign", json={
+        "signal_ids": [str(s1.id), str(s2.id), str(s3.id)],
+        "campaign_id": str(campaign.id),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["added"] == 2
+    assert body["skipped_no_contact"] == 1
+    assert body["signals_actioned"] == 2
+    assert body["research_started"] is True
+    research.assert_called_once_with(str(campaign.id))
+
+    # Two new campaign leads (copies — sources stay campaign-less).
+    campaign_leads = (await db_session.execute(
+        select(Lead).where(Lead.campaign_id == campaign.id)
+    )).scalars().all()
+    assert {cl.email for cl in campaign_leads} == {"a@x.com", "b@x.com"}
+    assert all(cl.id not in (l1.id, l2.id) for cl in campaign_leads)  # copies
+    await db_session.refresh(l1)
+    assert l1.campaign_id is None  # source untouched
+
+    # Copies are sequence-enrolled (pipeline will run).
+    for cl in campaign_leads:
+        state = await db_session.scalar(
+            select(LeadSequenceState).where(LeadSequenceState.lead_id == cl.id)
+        )
+        assert state is not None
+
+    # Contactable signals actioned; the contactless one stays New.
+    await db_session.refresh(s1); await db_session.refresh(s2); await db_session.refresh(s3)
+    assert s1.status.value == "actioned"
+    assert s2.status.value == "actioned"
+    assert s3.status.value == "new"
+
+
+async def test_signals_add_to_draft_campaign_defers_research(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+    research = MagicMock()
+    monkeypatch.setattr("app.workers.ingest.run_campaign_research.delay", research)
+    campaign = await _campaign(db_session, status=CampaignStatus.DRAFT)
+    s1, _ = await _signal_with_lead(db_session, "draft@x.com")
+
+    resp = await client.post("/signals/add-to-campaign", json={
+        "signal_ids": [str(s1.id)], "campaign_id": str(campaign.id),
+    })
+    body = resp.json()
+    assert body["added"] == 1
+    assert body["research_started"] is False
+    research.assert_not_called()
+
+
+async def test_signals_add_to_complete_campaign_409(client, db_session):
+    campaign = await _campaign(db_session, status=CampaignStatus.COMPLETE)
+    s1, _ = await _signal_with_lead(db_session, "late@x.com")
+    resp = await client.post("/signals/add-to-campaign", json={
+        "signal_ids": [str(s1.id)], "campaign_id": str(campaign.id),
+    })
+    assert resp.status_code == 409
+
+
+async def test_signals_add_unknown_campaign_404(client, db_session):
+    s1, _ = await _signal_with_lead(db_session, "x@x.com")
+    resp = await client.post("/signals/add-to-campaign", json={
+        "signal_ids": [str(s1.id)], "campaign_id": str(uuid.uuid4()),
+    })
+    assert resp.status_code == 404

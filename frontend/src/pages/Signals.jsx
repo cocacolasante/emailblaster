@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   actionSignal,
+  addSignalsToCampaign,
   createWatch,
   createWatchesBulk,
   deleteWatch,
@@ -14,6 +15,7 @@ import {
   updateWatch,
 } from '../api/signals.js';
 import { listAccounts as listConnectedAccounts } from '../api/connectedAccounts.js';
+import { listCampaigns } from '../api/campaigns.js';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { useToast } from '../components/Toast.jsx';
 
@@ -51,7 +53,7 @@ function SourceBadge({ source }) {
   );
 }
 
-function SignalCard({ signal, onOpen }) {
+function SignalCard({ signal, onOpen, checked, onToggle }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
@@ -71,9 +73,20 @@ function SignalCard({ signal, onOpen }) {
     <div
       data-testid={`signal-card-${signal.id}`}
       onClick={() => onOpen(signal)}
-      className="bg-white border border-slate-200 rounded-xl p-4 flex items-start justify-between gap-3 cursor-pointer hover:border-blue-300 hover:shadow-sm transition"
+      className="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3 cursor-pointer hover:border-blue-300 hover:shadow-sm transition"
     >
-      <div className="min-w-0">
+      {signal.status === 'new' && onToggle && (
+        <input
+          type="checkbox"
+          data-testid={`select-signal-${signal.id}`}
+          checked={!!checked}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggle(signal.id)}
+          className="mt-1 shrink-0"
+          aria-label="Select signal"
+        />
+      )}
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <TypeBadge type={signal.signal_type} />
           <SourceBadge source={signal.source} />
@@ -618,6 +631,10 @@ export default function Signals() {
   const [statusFilter, setStatusFilter] = useState('new');
   const [sourceFilter, setSourceFilter] = useState('');
   const [selected, setSelected] = useState(null);
+  const [checked, setChecked] = useState(() => new Set());
+  const [targetCampaignId, setTargetCampaignId] = useState('');
+  const toast = useToast();
+  const queryClient = useQueryClient();
 
   const { data } = useQuery({
     queryKey: ['prospect-signals', statusFilter, sourceFilter],
@@ -627,6 +644,40 @@ export default function Signals() {
     }),
   });
   const items = data?.items || [];
+
+  const { data: campaigns = [] } = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: listCampaigns,
+  });
+  const addableCampaigns = campaigns.filter((c) => c.status !== 'complete');
+
+  const toggleChecked = (id) => setChecked((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+
+  const addMutation = useMutation({
+    mutationFn: () => addSignalsToCampaign({
+      signal_ids: [...checked],
+      campaign_id: targetCampaignId,
+    }),
+    onSuccess: (res) => {
+      const bits = [`${res.added} added`];
+      if (res.skipped_duplicate) bits.push(`${res.skipped_duplicate} already in campaign`);
+      if (res.skipped_suppressed) bits.push(`${res.skipped_suppressed} suppressed`);
+      if (res.skipped_no_contact) bits.push(`${res.skipped_no_contact} without a contact`);
+      toast.success(
+        bits.join(' · ')
+        + (res.research_started ? ' — emails will run automatically' : res.added ? ' — will run at launch' : ''),
+      );
+      setChecked(new Set());
+      setTargetCampaignId('');
+      queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Add to campaign failed'),
+  });
 
   return (
     <div data-testid="signals-page" className="p-8 max-w-4xl">
@@ -703,6 +754,48 @@ export default function Signals() {
               <option value="">All</option>
             </select>
           </div>
+          {checked.size > 0 && (
+            <div
+              data-testid="signal-add-to-campaign-bar"
+              className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-3 flex flex-wrap items-center gap-3"
+            >
+              <span className="text-sm font-medium text-blue-900">
+                {checked.size} signal{checked.size > 1 ? 's' : ''} selected
+              </span>
+              <select
+                data-testid="signal-target-campaign"
+                value={targetCampaignId}
+                onChange={(e) => setTargetCampaignId(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm bg-white"
+              >
+                <option value="">Pick a campaign…</option>
+                {addableCampaigns.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                data-testid="signal-add-to-campaign-btn"
+                onClick={() => addMutation.mutate()}
+                disabled={!targetCampaignId || addMutation.isPending}
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+              >
+                {addMutation.isPending ? 'Adding…' : 'Add to campaign'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setChecked(new Set())}
+                className="text-sm text-slate-500 hover:text-slate-700"
+              >
+                Clear
+              </button>
+              <span className="text-xs text-blue-700/70 basis-full">
+                Their staged leads are copied into the campaign and run the
+                normal research → compose → send pipeline. Signals without a
+                contact are skipped.
+              </span>
+            </div>
+          )}
           {items.length === 0 && (
             <p data-testid="signals-empty" className="text-sm text-slate-400 text-center py-8">
               No signals here. Watches run on their schedule and detected
@@ -710,7 +803,15 @@ export default function Signals() {
             </p>
           )}
           <div className="space-y-2">
-            {items.map((s) => <SignalCard key={s.id} signal={s} onOpen={setSelected} />)}
+            {items.map((s) => (
+              <SignalCard
+                key={s.id}
+                signal={s}
+                onOpen={setSelected}
+                checked={checked.has(s.id)}
+                onToggle={toggleChecked}
+              />
+            ))}
           </div>
         </div>
       )}
