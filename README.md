@@ -4,6 +4,8 @@ AI-powered cold outreach platform — multi-channel (email + LinkedIn), built ar
 
 Upload a CSV → each lead gets researched (web search + optional Apollo + Hunter) → Claude composes a personalized email → reviewed in a sample preview → sent on your schedule with rate limiting + suppression + reply tracking. A visual sequence builder lets you chain email follow-ups, waits, and LinkedIn actions (view, follow, connect, DM, react, comment, page invite, InMail) behind conditional branches.
 
+Beyond sending, it's a lite sales CRM with its own pipeline, activity logging, reporting, and an inbox AI agent — plus several prospect-discovery feeds (intent signals, ICP lookalikes, and free nonprofit-funding feeds) that surface new leads into a human-reviewed queue. Nothing reaches a prospect without a human click.
+
 This README is intentionally exhaustive so it can be fed to an LLM as the single source of truth about the project.
 
 ---
@@ -16,13 +18,20 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 - **Pre-send preview** — review N sample emails, edit inline, approve/reject the batch.
 - **Reusable campaign signature** — saved on the campaign, swapped in for the AI's sign-off on every email. Bulk-applies to already-composed unsent emails with one click.
 - **Scheduled sending** — days-of-week + send window + timezone + min delay between sends + hourly cap + daily cap. All editable on a running/paused campaign; schedule edits automatically re-queue waiting leads under the new window.
+- **Deliverability guard** — per-sending-domain hourly/daily caps shared across campaigns; optional send-time optimization (defers each send to the recipient's best local hour from past opens, else weekday mornings); a bounce/spam circuit breaker that auto-pauses a campaign crossing 5% hard-bounce or 0.1% spam over 24h (with an owner alert) and never auto-resumes — a human clicks Resume.
 - **Compliance** — HMAC-signed CAN-SPAM unsubscribe link in every email; bounce / spam / unsub events auto-populate the suppression list and prevent future sends across all campaigns.
 - **Multi-step sequences** — visual DAG builder (React Flow) with email + wait + LinkedIn nodes connected by conditional edges (`replied`, `opened`, `clicked`, `bounced`, `linkedin_connection`, `days_since_entered_node`, plus `and`/`or`/`not` compounds).
 - **LinkedIn outreach** — via [Unipile](https://www.unipile.com)'s hosted-Chrome integration (real desktop browser, residential IPs). Eight action kinds: view profile, follow, connect, DM, react to post, comment on post, invite to company page, InMail.
 - **Reply tracking** — IMAP polling against your own inbox (Gmail / Outlook / Yahoo / custom). Credentials encrypted at rest with Fernet. Read-only (never marks messages seen in your mailbox).
 - **Lite-CRM Leads tab** — global cross-campaign lead view with per-lead notes (editable even after the email has sent). Searchable / filterable by campaign / send status / has-notes.
 - **CRM: leads, opportunities + activity logging** — create leads manually (no CSV), convert them to opportunities Salesforce-style (contact snapshot + stage pipeline: prospecting → qualification → proposal → negotiation → closed won/lost, amount, close date, win probability), and log calls / emails / meetings / notes / tasks against leads and deals. Kanban pipeline board with per-stage totals; each deal gets its own record page with document attachments (10MB each, stored in Postgres), products-of-interest line items (qty × price with totals), a required loss-reason flow on closed-lost, and the full activity log; tasks carry due dates with an overdue indicator; the per-lead timeline merges automated sends/opens with manually-logged CRM touches.
-- **CRM & inbox AI agent** — classifies every inbound reply (sentiment + intent, Haiku), auto-logs it as a CRM activity, creates a "Convert lead to opportunity" reminder on confident positive replies, nudges deals idle 7+ days, emails the owner (positive-reply pings, task due/overdue reminders, a daily digest), and optionally drafts suggested replies (Sonnet, never sent automatically). Hard autonomy boundary: the agent never converts leads, never messages prospects, never changes deal stages, never deletes — every autonomous action is recorded in an audit log, and everything is toggleable from Settings → Agent (plus an `AGENT_ENABLED` kill-switch).
+- **Add leads to a campaign** — bulk-select leads on the Leads page (CRM/manual, lookalike-accepted, signal-staged, or another campaign's) and copy them into a draft or running campaign. Copy, not move (the source record + its CRM history stay put); new rows enter the normal research → compose → send pipeline under the campaign's status gates. Suppressed / duplicate / unknown leads are skipped.
+- **CRM & inbox AI agent** — classifies every inbound reply (sentiment + intent, Haiku), auto-logs it as a CRM activity, creates a "Convert lead to opportunity" reminder on confident positive replies, nudges deals idle 7+ days, emails the owner (positive-reply pings, task due/overdue reminders, a daily digest), and optionally drafts suggested replies (Sonnet, never sent automatically). Hard autonomy boundary: the agent never converts leads, never messages prospects, never changes deal stages, never deletes — every autonomous action is recorded in an audit log, and everything is toggleable from Settings → Agent (plus an `AGENT_ENABLED` kill-switch). Agent alert emails send from a dedicated `OWNER_NOTIFY_FROM_*` address (falls back to the campaign Brevo sender).
+- **Reply-driven copy loop** — positive/negative reply outcomes are snapshotted against the copy that earned them; a cached Haiku pass distills the winning openers / subject patterns / CTAs / what-to-avoid per campaign and feeds them into future composes (subordinate to your own style corrections). A "What's working" panel on the campaign Overview surfaces the same insights.
+- **Intent / trigger signals** — watch a lead, deal, or cold company for job changes (Apollo title diff), funding rounds, and hiring sprees. Detected changes land in a review queue with a reach-out task + owner alert; cold targets with a findable email are staged as campaign-less CRM leads. Bulk-watch a pasted list of companies. Never auto-added to a campaign.
+- **Nonprofit funding discovery** — two free external feeds surface nonprofits worth contacting into the same signals queue: recent federal grant awards (USAspending) and newly-ruled 501(c)(3)s (IRS EO BMF). Optional Hunter lookup resolves a decision-maker contact (ED → Development Director → Grants Manager) and stages a campaign-less lead; otherwise notification-only. Opt-in per feed; off by default.
+- **ICP lookalike expansion** — derives an ideal-customer profile from your closed-won deals (≥3 needed), then discovers firmographically similar prospects (Apollo search, web-research fallback) and stages them in a ranked accept/reject queue. Accepting creates a campaign-less lead.
+- **CRM reporting** — a Reports tab with a date-range dashboard: won/lost value + counts, win rate, average deal size + sales cycle, open + probability-weighted pipeline, won-vs-lost monthly trend, pipeline-by-stage, forecast by close month, loss reasons, activity breakdown, and a conversion funnel — plus closed-won / closed-lost / open / activity detail tables with one-click CSV export.
 - **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap. Includes a **send-and-track** flow: edit and send the generated email from any connected inbox, with the send automatically logged as an outbound email activity in the CRM (creates a new CRM lead if the address isn't already tracked; attaches to a matching deal when one exists).
 - **Social Listening Radar** — type a plain-English topic ("frustrated with our IT provider"), Claude expands it to ~20 LinkedIn search phrases, Anthropic web search finds matching public posts, each post is scored 1-10 for buying intent + categorized, and a suggested comment + connection request + follow-up DM is drafted for each. All LinkedIn writes stay manual — the system never auto-posts. Per-search frequency (manual / 6h / 12h / daily / weekly) and soft cost caps per run.
 - **Analytics** — open / click / reply / bounce / spam / unsub rates, sender reputation score (0–100), research-quality breakdown (rich/partial/generic open rates), best subject lines, per-step funnel, timeline chart, per-lead activity drilldown.
@@ -73,6 +82,12 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 | `agent_sweeper.sweep_reminders` | `AGENT_REMINDER_SWEEP_INTERVAL_MINUTES` (default 30) | Owner reminders for open tasks due soon / overdue — one reminder per task ever (`reminder_sent_at` anchor) |
 | `agent_sweeper.sweep_stale_opps` | hourly | Nudge open opportunities idle > `AGENT_STALE_OPP_DAYS` (re-engage task + alert, weekly dedup) |
 | `digest.send_daily` | crontab at `AGENT_DIGEST_HOUR_UTC` (default 12 UTC) | Daily digest email: due/overdue tasks, replies by sentiment, pipeline movement, unsent-alert count |
+| `deliverability.sweep_health` | every 15min | Bounce/spam circuit-breaker backstop over running campaigns |
+| `copy_insights.refresh_all` | hourly | Refresh per-campaign winning-angle summaries (LLM only when ≥N new reply outcomes) |
+| `signals.scheduled_runner` | every 60s | Dispatcher — selects due active signal watches (job-change / funding / hiring), enqueues `signals.run_watch` for each |
+| `icp.refresh_profile` / `icp.discover` | daily, 02:00 / 03:00 UTC | Rebuild the ICP from closed-won deals, then stage new lookalike candidates |
+| `funding.poll_usaspending` | daily, 04:00 UTC | Recent nonprofit grant awards → prospect_signals (no-op unless `USASPENDING_ENABLED`) |
+| `funding.poll_irs_bmf` | monthly, 15th 05:00 UTC | New 501(c)(3) rulings → prospect_signals (no-op unless `IRS_BMF_ENABLED` + states) |
 
 ### Per-lead pipeline (legacy first-email path)
 
@@ -205,11 +220,29 @@ UNIPILE_WEBHOOK_AUTH_HEADER=X-Unipile-Auth
 
 # Agent / notifications (see Settings → Agent in the UI for runtime toggles)
 OWNER_NOTIFY_EMAIL=you@yourdomain.com   # empty = in-app alerts only, no emails
+OWNER_NOTIFY_FROM_EMAIL=               # FROM for agent alerts; empty = Brevo sender (must be a verified Brevo sender)
+OWNER_NOTIFY_FROM_NAME=
 AGENT_ENABLED=true
 ANTHROPIC_AGENT_MODEL=claude-haiku-4-5-20251001
 ANTHROPIC_AGENT_DRAFT_MODEL=claude-sonnet-4-6
 AGENT_DIGEST_HOUR_UTC=12
 AGENT_STALE_OPP_DAYS=7
+
+# Deliverability guard
+SEND_TIME_OPTIMIZATION_DEFAULT=false   # per-campaign toggle in the UI; this is the default for new campaigns
+DOMAIN_MAX_PER_HOUR=100                 # per sending-domain caps, shared across campaigns
+DOMAIN_MAX_PER_DAY=500
+CIRCUIT_BREAKER_ENABLED=true
+CIRCUIT_BREAKER_BOUNCE_RATE=0.05        # auto-pause threshold (hard bounces / 24h)
+CIRCUIT_BREAKER_SPAM_RATE=0.001
+
+# Nonprofit funding discovery (feeds the prospect-signals queue; off by default)
+USASPENDING_ENABLED=false               # recent federal grant awards (free, no auth)
+USASPENDING_LOOKBACK_DAYS=7
+IRS_BMF_ENABLED=false                   # newly-ruled 501(c)(3)s
+IRS_BMF_STATES=                         # e.g. PA,NJ,NY (or a JSON list); empty = skip
+IRS_BMF_RULING_LOOKBACK_MONTHS=2
+# (contact resolution reuses HUNTER_API_KEY; without it, funding orgs are notification-only)
 
 # LinkedIn rate caps
 LINKEDIN_DAILY_ACTION_CAP=20
@@ -230,7 +263,7 @@ docker compose up --build -d
 docker compose exec backend alembic upgrade head
 ```
 
-This brings up postgres + redis + backend + worker + beat + frontend, and applies all 27 migrations.
+This brings up postgres + redis + backend + worker + beat + frontend, and applies all 32 migrations.
 
 When it's done:
 
@@ -562,9 +595,13 @@ emailblaster/
 │   │   ├── main.py                  FastAPI app + CORS middleware + 500-handler with CORS
 │   │   ├── config.py                pydantic-settings (all env vars)
 │   │   ├── database.py              Async SQLAlchemy engine + get_db + AsyncSessionLocal
-│   │   ├── models/                  15 ORM models
+│   │   ├── models/                  ORM models (one file per domain)
 │   │   │   ├── agent.py             AgentSettings (singleton) + Notification (dedup_key) + AgentAction (audit); NotificationKind / AgentActionType / AgentActionStatus enums
-│   │   │   ├── campaign.py          Campaign + CampaignStatus + ResearchMode enums
+│   │   │   ├── campaign.py          Campaign + CampaignStatus + ResearchMode enums; deliverability cols (send_time_optimization, auto_paused_at/reason)
+│   │   │   ├── copy_feedback.py     ReplyOutcome + CampaignCopyInsights (reply-driven copy loop)
+│   │   │   ├── signals.py           SignalWatch + ProspectSignal (intent + discovery signals → review queue; ProspectSignal.source/watch_id-nullable for feed-sourced rows)
+│   │   │   ├── funding.py           FundingSourceState (per-feed cursor for USAspending / IRS BMF discovery)
+│   │   │   ├── icp.py               IcpProfile + LookalikeCandidate (ICP lookalike expansion)
 │   │   │   ├── connected_account.py Inbox credential record (Fernet-encrypted password)
 │   │   │   ├── crm.py               Opportunity + CrmActivity + CrmDocument (BYTEA) + OpportunityProduct; enums CrmLeadStatus / OpportunityStage / CrmActivityType / CrmActivityDirection / CLOSED_STAGES / STAGE_DEFAULT_PROBABILITY constants
 │   │   │   ├── email_event.py       sent / delivered / opened / clicked / replied / bounced / spam / unsub
@@ -580,6 +617,9 @@ emailblaster/
 │   │   ├── routers/
 │   │   │   ├── agent.py             GET/PATCH /agent/settings + /agent/notifications (+read) + /agent/actions + /agent/replies triage feed
 │   │   │   ├── analytics.py         GET /campaigns/{id}/analytics + activity
+│   │   │   ├── reports.py           /crm/reports/{overview,deals,activities} — date-scoped CRM reporting dashboard + detail rows
+│   │   │   ├── signals.py           /signals watches CRUD + bulk + run-now + feed (?source filter) + action/dismiss
+│   │   │   ├── icp.py               /icp profile (get/regenerate) + lookalike candidates (accept/reject)
 │   │   │   ├── campaigns.py         CRUD + pause/resume + retry-failed + signature + leads list + delete
 │   │   │   ├── connected_accounts.py Inbox CRUD + test connection
 │   │   │   ├── crm.py               /crm/leads (manual create + crm_status PATCH + convert) + /crm/opportunities (CRUD + pipeline summary) + /crm/activities (CRUD + open_tasks) + /crm/documents (upload/download/delete) + /crm/products
@@ -597,8 +637,14 @@ emailblaster/
 │   │   │   ├── brevo.py             Brevo send wrapper
 │   │   │   ├── brevo_events.py      Event-row writer + per-event dedup
 │   │   │   ├── web_research.py      Anthropic+web-search merged person+company research
-│   │   │   ├── apollo.py            Apollo.io enrichment client
-│   │   │   ├── hunter.py            Hunter.io email verification client
+│   │   │   ├── apollo.py            Apollo.io enrichment (people/match) + search_organizations/search_people (ICP lookalikes)
+│   │   │   ├── hunter.py            Hunter.io email verify + find (Email Finder / Domain Search)
+│   │   │   ├── deliverability.py    Bounce/spam circuit breaker + window stats (campaign auto-pause)
+│   │   │   ├── copy_insights.py     winning_examples + Haiku angle summary + winning_block for compose
+│   │   │   ├── signal_detection.py  job-change / funding / hiring detectors (Apollo diff + capped web-lookup)
+│   │   │   ├── icp_builder.py       Build the ICP from closed-won deals (Haiku criteria)
+│   │   │   ├── lookalike_discovery.py Apollo search + web fallback; rule-based fit scoring + dedup
+│   │   │   ├── funding_sources/     base.py (DiscoveredOrg) + usaspending.py + irs_bmf.py + enrichment.py
 │   │   │   ├── research_cache.py    lookup / upsert helpers
 │   │   │   ├── research_client.py   One-off research generator (Anthropic-only, no Unipile)
 │   │   │   ├── social_listening_topic_expander.py    Haiku expansion (1 call → 15-30 phrases)
@@ -635,10 +681,15 @@ emailblaster/
 │   │       ├── social_listening.py  4 tasks: expand_topic, run_search, qualify_post, scheduled_runner
 │   │       ├── lead_sweeper.py      Resets stale RUNNING rows to PENDING and re-enqueues
 │   │       ├── agent_sweeper.py     Task due/overdue reminders + stale-opportunity nudges (beat)
-│   │       └── digest.py            Daily digest email (crontab at AGENT_DIGEST_HOUR_UTC)
-│   ├── alembic/versions/            27 migrations (0001 initial → 0027 agent core)
+│   │       ├── digest.py            Daily digest email (crontab at AGENT_DIGEST_HOUR_UTC)
+│   │       ├── deliverability.py    Circuit-breaker health sweep (beat, 15min)
+│   │       ├── copy_insights_refresher.py  Hourly per-campaign winning-angle refresh
+│   │       ├── signals.py           scheduled_runner + run_watch (intent signals)
+│   │       ├── icp.py               icp.refresh_profile + icp.discover (daily)
+│   │       └── funding_signals.py   funding.poll_usaspending (daily) + funding.poll_irs_bmf (monthly) → prospect_signals
+│   ├── alembic/versions/            32 migrations (0001 initial → 0032 nonprofit funding discovery)
 │   ├── scripts/                     One-off remediation scripts (see below)
-│   └── tests/                       868 backend tests
+│   └── tests/                       953 backend tests
 ├── frontend/
 │   └── src/
 │       ├── pages/
@@ -648,19 +699,22 @@ emailblaster/
 │       │   ├── Preview.jsx            Sample review + approve/reject
 │       │   ├── SequenceBuilder.jsx    React-Flow DAG editor
 │       │   ├── Analytics.jsx          Full-page analytics view
-│       │   ├── Leads.jsx              Global leads — CRM status, convert, activity log, ignore
+│       │   ├── Leads.jsx              Global leads — CRM status, convert, activity log, ignore, bulk add-to-campaign
 │       │   ├── Opportunities.jsx      Kanban pipeline board (exports STAGES + fmtAmount)
 │       │   ├── OpportunityDetail.jsx  Full deal record — stage stepper, details, products, documents, activity
+│       │   ├── Reports.jsx            CRM reporting dashboard — KPIs, charts, detail tables + CSV export
 │       │   ├── Replies.jsx            Reply triage feed — sentiment badges, one-click Convert, AI draft viewer
+│       │   ├── Signals.jsx            Intent + discovery signals feed (source badge/filter) + watches tab
+│       │   ├── Lookalikes.jsx         ICP profile card + ranked lookalike candidate accept/reject
 │       │   ├── ResearchClient.jsx     One-off research + send-and-CRM-track flow
 │       │   ├── SocialRadar.jsx        Feed + Searches tabs + editor modal (Social Listening Radar)
-│       │   └── Settings.jsx           Inboxes + LinkedIn accounts + default sender
+│       │   └── Settings.jsx           Inboxes + LinkedIn accounts + default sender + Agent panel
 │       ├── components/              Nav, Toast, ErrorBoundary, EmailPreviewCard, LeadTable, LeadUpload,
 │       │                            ScheduleConfig, MetricsGrid, ConnectInboxModal, ConnectLinkedInModal,
 │       │                            SignatureEditor (inline in CampaignDetail),
 │       │                            ActivityLog (shared — lead modal + opportunity detail page),
 │       │                            NotificationBell (fixed top-right, unread badge + dropdown)
-│       └── api/                     axios wrappers per resource; crm.js covers all CRM endpoints
+│       └── api/                     axios wrappers per resource (crm.js, agent.js, reports.js, signals.js, icp.js, …)
 ├── docker-compose.yml               6 services, all bound to 127.0.0.1
 ├── scripts/dev_tunnel.py            ngrok + Unipile webhook resync (pure stdlib)
 ├── docs/
@@ -685,10 +739,10 @@ emailblaster/
 ## Running tests
 
 ```bash
-# Backend (868 tests; spins up postgres if not already running)
+# Backend (953 tests; spins up postgres if not already running)
 docker compose run --rm backend pytest
 
-# Frontend (303 tests; pure jsdom, no services needed)
+# Frontend (331 tests; pure jsdom, no services needed)
 docker compose exec frontend npm test --run
 
 # Quick: one specific file
