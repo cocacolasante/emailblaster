@@ -125,12 +125,18 @@ class ProspectSignal(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
     )
-    watch_id: Mapped[uuid.UUID] = mapped_column(
+    # NULLABLE since migration 0032: discovery signals (USAspending / IRS
+    # BMF feeds) have no SignalWatch behind them — they flow straight into
+    # this review queue.  Watch-sourced signals still set it.
+    watch_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("signal_watches.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
+    # Discovery feed tag (migration 0032): 'usaspending' | 'irs_bmf', or
+    # NULL for watch-sourced signals.
+    source: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     signal_type: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     # Structured payload: old/new title, round + amount, roles, source URL.

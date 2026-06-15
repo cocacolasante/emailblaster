@@ -29,6 +29,24 @@ function TypeBadge({ type }) {
   );
 }
 
+const SOURCE_BADGES = {
+  usaspending: { label: 'USASpending', cls: 'bg-indigo-100 text-indigo-700' },
+  irs_bmf: { label: 'IRS BMF', cls: 'bg-teal-100 text-teal-700' },
+};
+
+function SourceBadge({ source }) {
+  // No source = a watch-sourced signal.
+  const meta = SOURCE_BADGES[source] || { label: 'Watch', cls: 'bg-slate-100 text-slate-500' };
+  return (
+    <span
+      data-testid="signal-source-badge"
+      className={`px-2 py-0.5 rounded-full text-xs font-semibold ${meta.cls}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
 function SignalCard({ signal }) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -52,6 +70,7 @@ function SignalCard({ signal }) {
       <div className="min-w-0">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <TypeBadge type={signal.signal_type} />
+          <SourceBadge source={signal.source} />
           <span className="text-xs text-slate-400">
             {new Date(signal.detected_at).toLocaleString()}
           </span>
@@ -393,10 +412,14 @@ function WatchesTab() {
 export default function Signals() {
   const [tab, setTab] = useState('feed');
   const [statusFilter, setStatusFilter] = useState('new');
+  const [sourceFilter, setSourceFilter] = useState('');
 
   const { data } = useQuery({
-    queryKey: ['prospect-signals', statusFilter],
-    queryFn: () => listSignals(statusFilter ? { status: statusFilter } : {}),
+    queryKey: ['prospect-signals', statusFilter, sourceFilter],
+    queryFn: () => listSignals({
+      ...(statusFilter ? { status: statusFilter } : {}),
+      ...(sourceFilter ? { source: sourceFilter } : {}),
+    }),
   });
   const items = data?.items || [];
 
@@ -451,7 +474,18 @@ export default function Signals() {
 
       {tab === 'feed' && (
         <div>
-          <div className="flex justify-end mb-3">
+          <div className="flex justify-end gap-2 mb-3">
+            <select
+              data-testid="signal-source-filter"
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white"
+            >
+              <option value="">All sources</option>
+              <option value="watch">Watches</option>
+              <option value="usaspending">USASpending</option>
+              <option value="irs_bmf">IRS BMF</option>
+            </select>
             <select
               data-testid="signal-status-filter"
               value={statusFilter}

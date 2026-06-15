@@ -1563,7 +1563,61 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-14 — CRM Reporting tab.  New read-only
+_Last updated: 2026-06-15 — Nonprofit funding discovery (migration
+0032).  A new DISCOVERY PATH (not a subsystem) feeding the existing
+``prospect_signals`` review queue from two free external feeds — the
+sibling relationship social_listening has with signals.
+- **Migration 0032:** ``prospect_signals.watch_id`` → NULLABLE
+  (discovery signals have no watch); ``prospect_signals.source`` TEXT
+  indexed ('usaspending' | 'irs_bmf' | NULL=watch).  New
+  ``funding_source_state`` (source PK, cursor JSONB, last_run_at/status)
+  — the per-source diff baseline, like ``SignalWatch.last_seen``.
+- **Feeds** (``app/services/funding_sources/``):
+  ``usaspending.fetch_recent_awards`` POSTs the free no-auth
+  ``/api/v2/search/spending_by_award/`` (award_type_codes 02-05,
+  ``recipient_type_names=['nonprofit']``, action_date window,
+  paginate on ``page_metadata.hasNext``); dedup_key
+  ``grant_awarded:<award_id>``.  ``irs_bmf.fetch_new_501c3`` downloads
+  per-state EO BMF CSVs (``irs.gov/pub/irs-soi/eo_<st>.csv``), keeps
+  ``SUBSECTION==3 AND RULING(YYYYMM)>=since_ruling``; dedup_key
+  ``new_501c3:<ein>``.  Both never raise (feed outage → log + partial).
+  ``enrichment.resolve_contact`` finds a domain (org site else one
+  capped Haiku ``_web_lookup``) then a decision-maker email via Hunter
+  (role priority ED → Dev Director → Grants Manager), verified;
+  generic ``info@`` flagged low-priority.
+- **Hunter:** added ``find_email_hunter(domain, full_name=, role=)``
+  (Email Finder when a name is known, else Domain Search ranked toward
+  the role).  No key → None (feature opt-in; orgs become
+  notification-only).
+- **Worker** (``app/workers/funding_signals.py``):
+  ``_stage_discovery_signal`` enforces the autonomy boundary — with a
+  deliverable email it stages a **campaign-less** Lead
+  (campaign_id=None, research_data={ein,ntee,source,...}) + a
+  "Reach out" CRM TASK (reminder_sent_at=now) + ProspectSignal
+  (watch_id=NULL, source set) + ONE owner notification; no email →
+  signal + notification only.  NEVER sets campaign_id / enrolls a
+  sequence.  Per-org commit so one bad org can't roll back the batch;
+  dedup guard makes re-polls idempotent.  ``funding.poll_usaspending``
+  (daily 04:00) and ``funding.poll_irs_bmf`` (monthly, 15th 05:00,
+  after the 2nd-Tuesday refresh) advance the cursor; IRS first-run
+  guard bounds since_ruling to the lookback floor so it never blasts
+  the whole historical file.  Both no-op when their ``*_ENABLED`` flag
+  is false (default).
+- **Config:** ``USASPENDING_ENABLED`` (False), ``USASPENDING_LOOKBACK_DAYS``
+  (7), ``IRS_BMF_ENABLED`` (False), ``IRS_BMF_STATES`` (``list[str]``,
+  empty=skip — ``Annotated[..., NoDecode]`` + a before-validator so it
+  accepts both ``PA,NJ`` and ``["PA","NJ"]``), ``IRS_BMF_RULING_LOOKBACK_MONTHS``
+  (2).  Reuses HUNTER_API_KEY + ANTHROPIC_AGENT_MODEL.  Wired into the
+  backend+worker compose blocks.
+- **API/UI:** ``GET /signals`` serializer now returns ``source`` + a
+  ``?source=usaspending|irs_bmf|watch`` filter (still NO inner join on
+  signal_watches, so watch_id-NULL discovery signals appear in the
+  queue).  Signals page gains a source badge (USASpending / IRS BMF /
+  Watch) + a source filter.
+- Tests: 14 backend (``test_phase43_funding_discovery.py``) + 3
+  frontend.  Tests: **backend 953, frontend 331**.
+
+_Previously: 2026-06-14 — CRM Reporting tab.  New read-only
 reporting layer (no migration) mounted under ``/crm/reports`` +
 a Reports nav page.
 - **``GET /crm/reports/overview?start=&end=``** — date-scoped
@@ -1934,7 +1988,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **940 passing**.  Frontend tests: **328 passing**._
+_Backend tests: **953 passing**.  Frontend tests: **331 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

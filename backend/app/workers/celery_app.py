@@ -24,6 +24,7 @@ celery_app = Celery(
         "app.workers.copy_insights_refresher",
         "app.workers.signals",
         "app.workers.icp",
+        "app.workers.funding_signals",
     ],
 )
 
@@ -119,5 +120,18 @@ celery_app.conf.beat_schedule = {
         # dedup key, so a beat double-fire can't send two.
         "task": "digest.send_daily",
         "schedule": crontab(minute=0, hour=settings.AGENT_DIGEST_HOUR_UTC),
+    },
+    "funding-poll-usaspending": {
+        # Recent nonprofit grant awards → prospect_signals.  No-ops
+        # unless USASPENDING_ENABLED.
+        "task": "funding.poll_usaspending",
+        "schedule": crontab(minute=0, hour=4),  # daily, 04:00 UTC
+    },
+    "funding-poll-irs-bmf": {
+        # New 501(c)(3) rulings → prospect_signals.  No-ops unless
+        # IRS_BMF_ENABLED + states configured.  Runs the 15th, after the
+        # 2nd-Tuesday EO BMF refresh.
+        "task": "funding.poll_irs_bmf",
+        "schedule": crontab(minute=0, hour=5, day_of_month=15),
     },
 }

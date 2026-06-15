@@ -140,4 +140,33 @@ describe('Signals page', () => {
     expect(help).toHaveTextContent(/How signals work/);
     expect(help).toHaveTextContent(/one.*company or person/i);
   });
+
+  it('shows a source badge — Watch when no feed source', async () => {
+    renderPage();
+    const card = await screen.findByTestId('signal-card-s1');
+    expect(within(card).getByTestId('signal-source-badge')).toHaveTextContent('Watch');
+  });
+
+  it('shows the feed source badge for discovery signals', async () => {
+    api.listSignals.mockResolvedValue(paged([{
+      ...SIGNAL, id: 's2', source: 'usaspending',
+      signal_type: 'grant_awarded',
+      summary: 'Helping Hands won a federal grant ($50,000)',
+      watch_id: null,
+    }]));
+    renderPage();
+    const card = await screen.findByTestId('signal-card-s2');
+    expect(within(card).getByTestId('signal-source-badge')).toHaveTextContent('USASpending');
+  });
+
+  it('source filter passes the source param to the API', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId('signal-card-s1');
+    await user.selectOptions(screen.getByTestId('signal-source-filter'), 'irs_bmf');
+    await waitFor(() => {
+      const lastCall = api.listSignals.mock.calls.at(-1)[0];
+      expect(lastCall.source).toBe('irs_bmf');
+    });
+  });
 });

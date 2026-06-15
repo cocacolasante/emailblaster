@@ -314,13 +314,26 @@ async def run_watch_now(
 @router.get("")
 async def list_signals(
     status: ProspectSignalStatus | None = Query(default=None),
+    source: str | None = Query(
+        default=None,
+        description="Discovery feed filter: 'usaspending' | 'irs_bmf' | 'watch' "
+                    "(watch = signals with no feed source).",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    # NB: this queries ProspectSignal directly — NO inner join on
+    # signal_watches — so discovery signals (watch_id IS NULL) appear in
+    # the review queue alongside watch-sourced ones.
     filters = []
     if status is not None:
         filters.append(ProspectSignal.status == status)
+    if source is not None:
+        if source == "watch":
+            filters.append(ProspectSignal.source.is_(None))
+        else:
+            filters.append(ProspectSignal.source == source)
     total = (await db.execute(
         select(func.count()).select_from(ProspectSignal).where(*filters)
     )).scalar_one()
@@ -335,6 +348,7 @@ async def list_signals(
         {
             "id": s.id,
             "watch_id": s.watch_id,
+            "source": s.source,
             "signal_type": s.signal_type,
             "summary": s.summary,
             "detail": s.detail,

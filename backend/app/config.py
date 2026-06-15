@@ -1,6 +1,8 @@
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -101,6 +103,18 @@ class Settings(BaseSettings):
     APOLLO_API_KEY: str = ""
     HUNTER_API_KEY: str = ""
 
+    # --- Nonprofit funding discovery (feeds the prospect_signals queue) ---
+    # Each poll task no-ops when its *_ENABLED flag is false (default).
+    # USAspending grant-award feed (free, no auth).
+    USASPENDING_ENABLED: bool = False
+    USASPENDING_LOOKBACK_DAYS: int = 7
+    # IRS EO BMF new-501(c)(3) feed.  STATES empty = skip (e.g. ["PA","NJ"]).
+    IRS_BMF_ENABLED: bool = False
+    # NoDecode: keep pydantic-settings from JSON-parsing the env value so
+    # the validator below can accept a plain comma-separated string too.
+    IRS_BMF_STATES: Annotated[list[str], NoDecode] = []
+    IRS_BMF_RULING_LOOKBACK_MONTHS: int = 2
+
     # Encryption
     ENCRYPTION_KEY: str = ""
 
@@ -193,6 +207,25 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-change-me"
     FRONTEND_URL: str = "http://localhost:5173"
     WEBHOOK_BASE_URL: str = "http://localhost:8000"
+
+    @field_validator("IRS_BMF_STATES", mode="before")
+    @classmethod
+    def _split_states(cls, v: object) -> object:
+        """Accept a comma-separated env string (``PA,NJ,NY``) OR a JSON
+        list (``["PA","NJ"]``).  The field is annotated ``NoDecode``, so
+        the raw env string arrives here undecoded and we parse it."""
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                import json
+                try:
+                    return json.loads(s)
+                except ValueError:
+                    return []
+            return [part.strip() for part in s.split(",") if part.strip()]
+        return v
 
 
 @lru_cache

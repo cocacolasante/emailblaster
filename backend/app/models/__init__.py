@@ -54,6 +54,7 @@ from app.models.signals import (
     SignalWatchStatus,
     SignalWatchType,
 )
+from app.models.funding import FundingSourceState
 from app.models.sequence import (
     LeadSequenceState,
     LeadSequenceStatus,
@@ -127,6 +128,7 @@ __all__ = [
     "SocialOpportunityCategory",
     "SocialOpportunityAction",
     "SocialOpportunityStatus",
+    "FundingSourceState",
     "ProspectSignal",
     "ProspectSignalStatus",
     "SignalWatch",
