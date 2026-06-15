@@ -16,8 +16,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models import (
+    FundingSourceState,
     Lead,
     Opportunity,
     ProspectSignal,
@@ -29,6 +31,9 @@ from app.models import (
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
+
+# The two nonprofit-discovery feeds (config-driven, not per-target watches).
+_FUNDING_SOURCES = ("usaspending", "irs_bmf")
 
 
 def _blank_to_none(v: str | None) -> str | None:
@@ -389,3 +394,131 @@ async def dismiss_signal(
     signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
     return await _set_signal_status(db, signal_id, ProspectSignalStatus.DISMISSED)
+
+
+# ---------------------------------------------------------------------------
+# Nonprofit funding discovery feeds (Settings → Discovery)
+# ---------------------------------------------------------------------------
+
+_FUNDING_LABELS = {"usaspending": "USASpending", "irs_bmf": "IRS BMF"}
+
+
+async def _seed_funding_state(db: AsyncSession, source: str) -> FundingSourceState:
+    """Get-or-create the feed's state row, seeding enabled/config from the
+    env defaults when unset — same seeding the worker does, so opening the
+    panel and the next poll agree."""
+    # Lazy import avoids any router↔worker import cycle at module load.
+    from app.workers.funding_signals import _env_config, _env_enabled
+
+    state = await db.get(FundingSourceState, source)
+    if state is None:
+        state = FundingSourceState(source=source, cursor={})
+        db.add(state)
+    if state.enabled is None:
+        state.enabled = _env_enabled(source)
+    if state.config is None:
+        state.config = _env_config(source)
+    await db.flush()
+    return state
+
+
+def _funding_source_dict(state: FundingSourceState, signal_count: int) -> dict[str, Any]:
+    return {
+        "source": state.source,
+        "label": _FUNDING_LABELS.get(state.source, state.source),
+        "enabled": bool(state.enabled),
+        "config": state.config or {},
+        "last_run_at": state.last_run_at,
+        "last_run_status": state.last_run_status,
+        "cursor": state.cursor or {},
+        "signal_count": signal_count,
+    }
+
+
+@router.get("/funding/sources")
+async def list_funding_sources(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """The two nonprofit-discovery feeds with their live config + last-run
+    state + how many signals each has surfaced.  ``hunter_configured``
+    tells the UI whether discovered orgs can be staged as leads (vs.
+    notification-only)."""
+    out = []
+    for src in _FUNDING_SOURCES:
+        state = await _seed_funding_state(db, src)
+        count = (await db.execute(
+            select(func.count()).select_from(ProspectSignal)
+            .where(ProspectSignal.source == src)
+        )).scalar_one()
+        out.append(_funding_source_dict(state, count))
+    await db.commit()  # persist any first-time seeding
+    return {
+        "sources": out,
+        "hunter_configured": bool(settings.HUNTER_API_KEY),
+    }
+
+
+class FundingSourceUpdate(BaseModel):
+    enabled: bool | None = None
+    lookback_days: int | None = Field(default=None, ge=1, le=365)
+    ruling_lookback_months: int | None = Field(default=None, ge=1, le=24)
+    states: list[str] | None = None
+
+
+@router.patch("/funding/sources/{source}")
+async def update_funding_source(
+    source: str, payload: FundingSourceUpdate, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    if source not in _FUNDING_SOURCES:
+        raise HTTPException(status_code=404, detail="unknown funding source")
+    state = await _seed_funding_state(db, source)
+    if payload.enabled is not None:
+        state.enabled = payload.enabled
+
+    cfg = dict(state.config or {})
+    if source == "usaspending":
+        if payload.lookback_days is not None:
+            cfg["lookback_days"] = payload.lookback_days
+    else:  # irs_bmf
+        if payload.ruling_lookback_months is not None:
+            cfg["ruling_lookback_months"] = payload.ruling_lookback_months
+        if payload.states is not None:
+            # Normalise: trim, uppercase, dedupe, drop blanks.
+            seen: set[str] = set()
+            clean: list[str] = []
+            for s in payload.states:
+                st = (s or "").strip().upper()
+                if st and st not in seen:
+                    seen.add(st)
+                    clean.append(st)
+            cfg["states"] = clean
+    state.config = cfg  # reassign so SQLAlchemy flags the JSONB change
+
+    count = (await db.execute(
+        select(func.count()).select_from(ProspectSignal)
+        .where(ProspectSignal.source == source)
+    )).scalar_one()
+    await db.commit()
+    await db.refresh(state)
+    return _funding_source_dict(state, count)
+
+
+@router.post("/funding/sources/{source}/run-now")
+async def run_funding_source_now(
+    source: str, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    if source not in _FUNDING_SOURCES:
+        raise HTTPException(status_code=404, detail="unknown funding source")
+    state = await _seed_funding_state(db, source)
+    await db.commit()
+    if not state.enabled:
+        raise HTTPException(status_code=409, detail="feed is disabled — enable it first")
+    if source == "irs_bmf" and not (state.config or {}).get("states"):
+        raise HTTPException(
+            status_code=409,
+            detail="add at least one state before running the IRS feed",
+        )
+
+    from app.workers.funding_signals import poll_irs_bmf, poll_usaspending
+
+    task = poll_usaspending if source == "usaspending" else poll_irs_bmf
+    task.delay()
+    return {"enqueued": True}

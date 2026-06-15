@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Settings from './Settings.jsx';
+import { ToastProvider } from '../components/Toast.jsx';
 
 vi.mock('../api/connectedAccounts.js', () => ({
   listAccounts: vi.fn(),
@@ -20,10 +21,32 @@ vi.mock('../api/agent.js', () => ({
   getAgentSettings: vi.fn(),
   updateAgentSettings: vi.fn(),
 }));
+vi.mock('../api/signals.js', () => ({
+  listFundingSources: vi.fn(),
+  updateFundingSource: vi.fn(),
+  runFundingSourceNow: vi.fn(),
+}));
 
 import * as accountsApi from '../api/connectedAccounts.js';
 import * as settingsApi from '../api/settings.js';
 import * as agentApi from '../api/agent.js';
+import * as signalsApi from '../api/signals.js';
+
+const FUNDING_SOURCES = {
+  hunter_configured: false,
+  sources: [
+    {
+      source: 'usaspending', label: 'USASpending', enabled: true,
+      config: { lookback_days: 7 }, last_run_at: '2026-06-15T04:00:00Z',
+      last_run_status: 'done', cursor: {}, signal_count: 12,
+    },
+    {
+      source: 'irs_bmf', label: 'IRS BMF', enabled: true,
+      config: { ruling_lookback_months: 2, states: ['PA', 'NJ'] },
+      last_run_at: null, last_run_status: null, cursor: {}, signal_count: 0,
+    },
+  ],
+};
 
 const AGENT_SETTINGS = {
   auto_log_replies: true,
@@ -47,7 +70,9 @@ function renderSettings() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <Settings />
+      <ToastProvider defaultDuration={0}>
+        <Settings />
+      </ToastProvider>
     </QueryClientProvider>
   );
 }
@@ -77,6 +102,7 @@ beforeEach(() => {
     hunter: false,
   });
   agentApi.getAgentSettings.mockResolvedValue(AGENT_SETTINGS);
+  signalsApi.listFundingSources.mockResolvedValue(FUNDING_SOURCES);
 });
 
 describe('Settings page tabs', () => {
@@ -259,5 +285,70 @@ describe('Agent tab', () => {
     renderSettings();
     await user.click(screen.getByRole('tab', { name: 'Agent' }));
     expect(await screen.findByTestId('agent-killswitch-banner')).toBeInTheDocument();
+  });
+});
+
+describe('Discovery tab', () => {
+  it('renders both feed cards with config + last-run + signal counts', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+
+    expect(await screen.findByTestId('discovery-tab')).toBeInTheDocument();
+    const usa = screen.getByTestId('funding-card-usaspending');
+    expect(usa).toHaveTextContent('USASpending');
+    expect(usa).toHaveTextContent('12 signals surfaced');
+    const irs = screen.getByTestId('funding-card-irs_bmf');
+    expect(irs).toHaveTextContent('IRS BMF');
+    // IRS states prefilled from config.
+    expect(screen.getByTestId('funding-states')).toHaveValue('PA, NJ');
+    // Hunter not configured → warning banner.
+    expect(screen.getByTestId('hunter-warning')).toBeInTheDocument();
+  });
+
+  it('saving the IRS feed PATCHes enabled + states + ruling months', async () => {
+    signalsApi.updateFundingSource.mockResolvedValue({
+      ...FUNDING_SOURCES.sources[1], config: { ruling_lookback_months: 2, states: ['PA', 'NJ', 'NY'] },
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await screen.findByTestId('funding-card-irs_bmf');
+
+    const states = screen.getByTestId('funding-states');
+    await user.clear(states);
+    await user.type(states, 'PA, NJ, NY');
+    await user.click(screen.getByTestId('funding-save-irs_bmf'));
+
+    await waitFor(() => {
+      expect(signalsApi.updateFundingSource).toHaveBeenCalled();
+      const [src, payload] = signalsApi.updateFundingSource.mock.calls[0];
+      expect(src).toBe('irs_bmf');
+      expect(payload.states).toEqual(['PA', 'NJ', 'NY']);
+      expect(payload.enabled).toBe(true);
+      expect(payload.ruling_lookback_months).toBe(2);
+    });
+  });
+
+  it('Run now calls the API for an enabled feed', async () => {
+    signalsApi.runFundingSourceNow.mockResolvedValue({ enqueued: true });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await user.click(await screen.findByTestId('funding-run-usaspending'));
+    await waitFor(() => {
+      expect(signalsApi.runFundingSourceNow).toHaveBeenCalledWith('usaspending');
+    });
+  });
+
+  it('hides the Hunter warning when configured', async () => {
+    signalsApi.listFundingSources.mockResolvedValue({
+      ...FUNDING_SOURCES, hunter_configured: true,
+    });
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await screen.findByTestId('discovery-tab');
+    expect(screen.queryByTestId('hunter-warning')).toBeNull();
   });
 });

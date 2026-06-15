@@ -1563,7 +1563,37 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 — Nonprofit funding discovery (migration
+_Last updated: 2026-06-15 (later) — Settings → Discovery panel
+(migration 0033).  Moved the nonprofit-feed toggles/config off
+env-only into the DB so they're editable in-app.
+- **Migration 0033** adds ``funding_source_state.enabled`` (bool, NULL
+  = unseeded) + ``config`` (JSONB: ``{lookback_days}`` for usaspending,
+  ``{ruling_lookback_months, states}`` for irs_bmf).  The env vars
+  (``USASPENDING_ENABLED`` etc.) are now the FIRST-RUN SEED: the worker
+  + API ``_get_or_create_state`` / ``_seed_funding_state`` populate
+  these columns from env when NULL, then the DB row is authoritative
+  (mirrors the AgentSettings env-seeds-DB pattern).  The poll tasks now
+  gate on ``state.enabled`` and read lookback/states from
+  ``state.config``, NOT directly from ``settings`` — but existing tests
+  still pass because each test patches ``settings.*`` before the row is
+  created fresh in its truncated DB, so the seed picks up the patched
+  value.
+- **API** (in ``routers/signals.py``): ``GET /signals/funding/sources``
+  (both feeds: enabled, config, last_run, cursor, per-source
+  signal_count, + top-level ``hunter_configured``), ``PATCH
+  /signals/funding/sources/{source}`` (enabled + lookback/states/ruling;
+  states normalised upper+dedupe), ``POST .../run-now`` (enqueues the
+  poll task; 409 if disabled, or IRS with no states).
+- **Frontend** Settings gains a **Discovery** tab: a card per feed with
+  an enable toggle, config inputs (USAspending lookback days; IRS states
+  + ruling-lookback months), last-run status, signals-surfaced count, a
+  Save and a Run-now button, plus a Hunter-not-configured warning
+  (discovered orgs are notification-only without a key).  Settings tests
+  now wrap in ``ToastProvider`` (the Discovery tab uses ``useToast``).
+- Tests: 7 new backend + 4 new frontend.  Tests: **backend 960,
+  frontend 335**.
+
+_Previously: 2026-06-15 — Nonprofit funding discovery (migration
 0032).  A new DISCOVERY PATH (not a subsystem) feeding the existing
 ``prospect_signals`` review queue from two free external feeds — the
 sibling relationship social_listening has with signals.
@@ -1988,7 +2018,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **953 passing**.  Frontend tests: **331 passing**._
+_Backend tests: **960 passing**.  Frontend tests: **335 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

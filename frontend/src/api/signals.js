@@ -49,3 +49,20 @@ export async function createWatchesBulk(payload) {
   const { data } = await client.post('/signals/watches/bulk', payload);
   return data;
 }
+
+// ---------- Nonprofit funding discovery feeds (Settings → Discovery) ----------
+
+export async function listFundingSources() {
+  const { data } = await client.get('/signals/funding/sources');
+  return data;
+}
+
+export async function updateFundingSource(source, payload) {
+  const { data } = await client.patch(`/signals/funding/sources/${source}`, payload);
+  return data;
+}
+
+export async function runFundingSourceNow(source) {
+  const { data } = await client.post(`/signals/funding/sources/${source}/run-now`);
+  return data;
+}

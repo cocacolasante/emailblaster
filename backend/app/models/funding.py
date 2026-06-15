@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Text
+from sqlalchemy import Boolean, DateTime, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,13 @@ class FundingSourceState(Base):
 
     # 'usaspending' | 'irs_bmf'
     source: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Runtime on/off, editable from Settings → Discovery (migration 0033).
+    # NULL = not yet seeded; the worker/API seed it from the env default.
+    enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Runtime config (migration 0033), seeded from env when NULL:
+    #   usaspending: {"lookback_days": 7}
+    #   irs_bmf:     {"ruling_lookback_months": 2, "states": ["PA", "NJ"]}
+    config: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     # Per-source high-water mark, e.g.
     #   usaspending: {"last_action_date": "2026-06-14"}
     #   irs_bmf:     {"last_file_month": "202606"}

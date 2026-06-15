@@ -13,8 +13,14 @@ import {
 } from '../api/linkedinAccounts.js';
 import { getApiStatus } from '../api/settings.js';
 import { getAgentSettings, updateAgentSettings } from '../api/agent.js';
+import {
+  listFundingSources,
+  runFundingSourceNow,
+  updateFundingSource,
+} from '../api/signals.js';
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import ConnectLinkedInModal from '../components/ConnectLinkedInModal.jsx';
+import { useToast } from '../components/Toast.jsx';
 
 const STATUS_LABEL = {
   untested: 'Untested',
@@ -514,6 +520,185 @@ function AgentTab() {
 }
 
 
+function fmtRunTime(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? 'never' : d.toLocaleString();
+}
+
+function FundingSourceCard({ source, hunterConfigured }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const isIrs = source.source === 'irs_bmf';
+  const cfg = source.config || {};
+
+  const [enabled, setEnabled] = useState(source.enabled);
+  const [lookbackDays, setLookbackDays] = useState(cfg.lookback_days ?? 7);
+  const [rulingMonths, setRulingMonths] = useState(cfg.ruling_lookback_months ?? 2);
+  const [states, setStates] = useState((cfg.states || []).join(', '));
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['funding-sources'] });
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const payload = { enabled };
+      if (isIrs) {
+        payload.ruling_lookback_months = Number(rulingMonths);
+        payload.states = states.split(',').map((s) => s.trim()).filter(Boolean);
+      } else {
+        payload.lookback_days = Number(lookbackDays);
+      }
+      return updateFundingSource(source.source, payload);
+    },
+    onSuccess: () => { invalidate(); toast.success(`${source.label} saved`); },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Save failed'),
+  });
+
+  const runMut = useMutation({
+    mutationFn: () => runFundingSourceNow(source.source),
+    onSuccess: () => toast.success(`${source.label} check queued — results appear in Signals shortly`),
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Run failed'),
+  });
+
+  return (
+    <div
+      data-testid={`funding-card-${source.source}`}
+      className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4"
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div>
+          <h3 className="text-base font-semibold text-slate-900 m-0">{source.label}</h3>
+          <p className="text-xs text-slate-500 m-0 mt-0.5">
+            {isIrs
+              ? 'Newly-ruled 501(c)(3) organizations (IRS EO BMF, per state).'
+              : 'Recent federal grant awards to nonprofits (USAspending).'}
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer shrink-0">
+          <input
+            type="checkbox"
+            data-testid={`funding-enabled-${source.source}`}
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+          />
+          Enabled
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-4 mb-3">
+        {isIrs ? (
+          <>
+            <label className="text-xs text-slate-600">
+              States (comma-separated)
+              <input
+                type="text"
+                data-testid="funding-states"
+                value={states}
+                onChange={(e) => setStates(e.target.value)}
+                placeholder="PA, NJ, NY"
+                className="mt-1 block w-56 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+              />
+            </label>
+            <label className="text-xs text-slate-600">
+              Ruling lookback (months)
+              <input
+                type="number" min={1} max={24}
+                data-testid="funding-ruling-months"
+                value={rulingMonths}
+                onChange={(e) => setRulingMonths(e.target.value)}
+                className="mt-1 block w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+              />
+            </label>
+          </>
+        ) : (
+          <label className="text-xs text-slate-600">
+            Lookback (days)
+            <input
+              type="number" min={1} max={365}
+              data-testid="funding-lookback-days"
+              value={lookbackDays}
+              onChange={(e) => setLookbackDays(e.target.value)}
+              className="mt-1 block w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+            />
+          </label>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-slate-100 pt-3">
+        <div className="text-xs text-slate-500">
+          Last run: <span className="font-medium text-slate-700">{fmtRunTime(source.last_run_at)}</span>
+          {source.last_run_status && ` (${source.last_run_status})`}
+          {' · '}{source.signal_count} signal{source.signal_count === 1 ? '' : 's'} surfaced
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            data-testid={`funding-save-${source.source}`}
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending}
+            className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+          >
+            {saveMut.isPending ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            data-testid={`funding-run-${source.source}`}
+            onClick={() => runMut.mutate()}
+            disabled={runMut.isPending || !source.enabled}
+            title={source.enabled ? 'Poll this feed now' : 'Enable + save first'}
+            className="px-3 py-1.5 text-sm border border-slate-300 text-slate-700 hover:bg-slate-50 rounded-lg disabled:opacity-50"
+          >
+            Run now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiscoveryTab() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['funding-sources'],
+    queryFn: listFundingSources,
+  });
+
+  if (isLoading) return <p className="text-sm text-slate-500">Loading discovery feeds…</p>;
+  if (error) return <p className="text-sm text-red-600">Failed to load discovery feeds</p>;
+
+  return (
+    <div data-testid="discovery-tab">
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Discovery feeds</h2>
+      <p className="text-sm text-slate-500 mt-0 mb-5">
+        Free external feeds that surface nonprofits worth contacting into your{' '}
+        <strong>Signals</strong> queue. Detected orgs become reviewable signals —
+        with a contact found, a campaign-less CRM lead + reach-out task are staged.
+        Nothing is ever emailed or added to a campaign automatically.
+      </p>
+
+      {!data.hunter_configured && (
+        <div
+          data-testid="hunter-warning"
+          className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3"
+        >
+          No Hunter API key configured — discovered orgs surface as
+          notification-only signals (no contact email, so no lead/task is staged).
+          Add <code>HUNTER_API_KEY</code> to resolve decision-maker contacts.
+        </div>
+      )}
+
+      {data.sources.map((src) => (
+        <FundingSourceCard key={src.source} source={src} hunterConfigured={data.hunter_configured} />
+      ))}
+
+      <p className="text-xs text-slate-400 mt-2">
+        Feeds also poll automatically — USAspending daily, IRS monthly. "Run now"
+        triggers an immediate poll. Results land on the Signals page (filter by source).
+      </p>
+    </div>
+  );
+}
+
+
 export default function Settings() {
   const [tab, setTab] = useState('inboxes');
 
@@ -559,6 +744,18 @@ export default function Settings() {
         </button>
         <button
           role="tab"
+          aria-selected={tab === 'discovery'}
+          onClick={() => setTab('discovery')}
+          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
+            tab === 'discovery'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          Discovery
+        </button>
+        <button
+          role="tab"
           aria-selected={tab === 'api'}
           onClick={() => setTab('api')}
           className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
@@ -573,6 +770,7 @@ export default function Settings() {
       {tab === 'inboxes' && <ConnectedInboxesTab />}
       {tab === 'linkedin' && <LinkedInAccountsTab />}
       {tab === 'agent' && <AgentTab />}
+      {tab === 'discovery' && <DiscoveryTab />}
       {tab === 'api' && <ApiStatusTab />}
     </div>
   );

@@ -423,3 +423,115 @@ async def test_signals_list_exposes_source_and_filters(client, db_session):
     body = (await client.get("/signals?source=watch")).json()
     assert body["total"] == 1
     assert body["items"][0]["source"] is None
+
+
+# ---------------------------------------------------------------------------
+# Settings → Discovery: DB-backed config + API
+# ---------------------------------------------------------------------------
+
+
+async def test_funding_sources_list_seeds_from_env(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_LOOKBACK_DAYS", 7)
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_STATES", ["PA", "NJ"])
+    # router reads settings.HUNTER_API_KEY for the hunter_configured flag
+    from app.routers import signals as signals_router
+    monkeypatch.setattr(signals_router.settings, "HUNTER_API_KEY", "")
+
+    resp = await client.get("/signals/funding/sources")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["hunter_configured"] is False
+    by_src = {s["source"]: s for s in body["sources"]}
+    assert set(by_src) == {"usaspending", "irs_bmf"}
+    assert by_src["usaspending"]["enabled"] is True
+    assert by_src["usaspending"]["label"] == "USASpending"
+    assert by_src["usaspending"]["config"]["lookback_days"] == 7
+    assert by_src["irs_bmf"]["config"]["states"] == ["PA", "NJ"]
+    assert by_src["usaspending"]["signal_count"] == 0
+
+    # Seeding persisted the rows.
+    state = await db_session.get(FundingSourceState, "usaspending")
+    assert state is not None and state.enabled is True
+
+
+async def test_funding_source_patch_updates_config(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", False)
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_STATES", [])
+
+    resp = await client.patch("/signals/funding/sources/irs_bmf", json={
+        "enabled": True,
+        "ruling_lookback_months": 3,
+        "states": ["pa", " NJ ", "ny", "pa"],   # normalise + dedupe
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["config"]["ruling_lookback_months"] == 3
+    assert body["config"]["states"] == ["PA", "NJ", "NY"]
+
+    state = await db_session.get(FundingSourceState, "irs_bmf")
+    await db_session.refresh(state)
+    assert state.enabled is True
+    assert state.config["states"] == ["PA", "NJ", "NY"]
+
+
+async def test_funding_source_patch_unknown_404(client):
+    resp = await client.patch("/signals/funding/sources/nope", json={"enabled": True})
+    assert resp.status_code == 404
+
+
+async def test_funding_run_now_enqueues_when_enabled(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
+    called = {}
+    # Patch the lazily-imported celery task's .delay so no broker is hit.
+    monkeypatch.setattr(
+        funding_signals.poll_usaspending, "delay",
+        lambda: called.setdefault("delay", True),
+    )
+
+    resp = await client.post("/signals/funding/sources/usaspending/run-now")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"enqueued": True}
+    assert called.get("delay") is True
+
+
+async def test_funding_run_now_409_when_disabled(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", False)
+    resp = await client.post("/signals/funding/sources/usaspending/run-now")
+    assert resp.status_code == 409
+    assert "disabled" in resp.json()["detail"]
+
+
+async def test_funding_run_now_409_irs_without_states(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_STATES", [])
+    resp = await client.post("/signals/funding/sources/irs_bmf/run-now")
+    assert resp.status_code == 409
+    assert "state" in resp.json()["detail"].lower()
+
+
+async def test_worker_honors_db_config_over_env(db_session, monkeypatch):
+    """A UI-set DB row wins over env: env says disabled, DB says enabled
+    with its own lookback → the poll runs with the DB lookback."""
+    # Env default disabled — but a pre-existing DB row (UI-enabled) wins.
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", False)
+    db_session.add(FundingSourceState(
+        source="usaspending", enabled=True,
+        config={"lookback_days": 14}, cursor={},
+    ))
+    await db_session.commit()
+
+    captured = {}
+
+    async def _fake_fetch(since, until, *, limit=100):
+        captured["since"] = since
+        captured["until"] = until
+        return []
+
+    monkeypatch.setattr(funding_signals.usaspending, "fetch_recent_awards", _fake_fetch)
+    result = await _poll_usaspending_async()
+    assert result.get("fetched") == 0          # ran (not skipped)
+    # 14-day lookback from the DB config, not the env default 7.
+    assert (captured["until"] - captured["since"]).days == 14

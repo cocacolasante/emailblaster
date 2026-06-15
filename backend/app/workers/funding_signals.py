@@ -52,12 +52,36 @@ def _yyyymm(d: date, minus_months: int = 0) -> str:
     return f"{total // 12:04d}{total % 12 + 1:02d}"
 
 
+def _env_enabled(source: str) -> bool:
+    return (
+        settings.USASPENDING_ENABLED if source == USASPENDING_SOURCE
+        else settings.IRS_BMF_ENABLED
+    )
+
+
+def _env_config(source: str) -> dict[str, Any]:
+    if source == USASPENDING_SOURCE:
+        return {"lookback_days": settings.USASPENDING_LOOKBACK_DAYS}
+    return {
+        "ruling_lookback_months": settings.IRS_BMF_RULING_LOOKBACK_MONTHS,
+        "states": list(settings.IRS_BMF_STATES),
+    }
+
+
 async def _get_or_create_state(session: AsyncSession, source: str) -> FundingSourceState:
+    """Fetch the per-source state, seeding ``enabled``/``config`` from the
+    env defaults when unset (first run, or NULL after the 0033 migration).
+    The env vars are the SEED; the DB row is authoritative afterward, so
+    the Settings → Discovery panel can override them live."""
     state = await session.get(FundingSourceState, source)
     if state is None:
         state = FundingSourceState(source=source, cursor={})
         session.add(state)
-        await session.flush()
+    if state.enabled is None:
+        state.enabled = _env_enabled(source)
+    if state.config is None:
+        state.config = _env_config(source)
+    await session.flush()
     return state
 
 
@@ -183,19 +207,24 @@ async def _stage_all(
 
 
 async def _poll_usaspending_async() -> dict[str, Any]:
-    if not settings.USASPENDING_ENABLED:
-        return {"skipped": "disabled"}
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:
                 state = await _get_or_create_state(session, USASPENDING_SOURCE)
+                if not state.enabled:
+                    await session.commit()
+                    return {"skipped": "disabled"}
+                cfg = state.config or {}
                 cur = dict(state.cursor or {})
                 today = _now().date()
                 if cur.get("last_action_date"):
                     since = date.fromisoformat(cur["last_action_date"])
                 else:
-                    since = today - timedelta(days=settings.USASPENDING_LOOKBACK_DAYS)
+                    lookback = int(
+                        cfg.get("lookback_days") or settings.USASPENDING_LOOKBACK_DAYS
+                    )
+                    since = today - timedelta(days=lookback)
                 await session.commit()  # release the state row before slow I/O
 
                 orgs = await usaspending.fetch_recent_awards(since, today, limit=100)
@@ -229,25 +258,30 @@ def poll_usaspending() -> dict[str, Any]:
 
 
 async def _poll_irs_bmf_async() -> dict[str, Any]:
-    if not settings.IRS_BMF_ENABLED or not settings.IRS_BMF_STATES:
-        return {"skipped": "disabled"}
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:
                 state = await _get_or_create_state(session, IRS_BMF_SOURCE)
+                cfg = state.config or {}
+                states = list(cfg.get("states") or [])
+                if not state.enabled or not states:
+                    await session.commit()
+                    return {"skipped": "disabled"}
                 cur = dict(state.cursor or {})
                 today = _now().date()
-                floor = _yyyymm(today, settings.IRS_BMF_RULING_LOOKBACK_MONTHS)
+                lookback_months = int(
+                    cfg.get("ruling_lookback_months")
+                    or settings.IRS_BMF_RULING_LOOKBACK_MONTHS
+                )
+                floor = _yyyymm(today, lookback_months)
                 last = cur.get("last_file_month")
                 # FIRST RUN GUARD: with no cursor, bound to the lookback so
                 # we never blast the entire historical file.
                 since_ruling = floor if last is None else max(last, floor)
                 await session.commit()
 
-                orgs = await irs_bmf.fetch_new_501c3(
-                    settings.IRS_BMF_STATES, since_ruling,
-                )
+                orgs = await irs_bmf.fetch_new_501c3(states, since_ruling)
                 counts = await _stage_all(session, IRS_BMF_SOURCE, orgs)
 
                 state = await _get_or_create_state(session, IRS_BMF_SOURCE)
