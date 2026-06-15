@@ -68,6 +68,14 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     promote/backoff/exhaust/direct-mail) + 6 updated in phase43 for the
     ContactResult shape + gating.  Migration up/down verified.
     Tests: **backend 1025**.
+  - **Follow-up: per-run enrichment cap.**  A 30-day USAspending window
+    returns ~2000 orgs; with per-org enrichment an uncapped poll would
+    fire thousands of Haiku/Hunter calls + a notification per resolved org
+    in one shot.  New `FUNDING_DISCOVERY_MAX_PER_RUN` (default 100):
+    `_stage_all` stops after enriching that many NEW (non-deduped) orgs and
+    logs how many were left.  Dedup means each daily run advances through
+    the backlog, so the cap bounds cost without dropping anyone.  Result
+    dict gains `capped`.  1 test.  Tests: **backend 1026**.
 - **Previously:** **Fixed the discovery Stop button (redelivery storm
   + cooperative stop).**  User reported Stop didn't stop a USAspending run
   — it kept "pulling."  Root cause: `task_acks_late=True` +
@@ -2438,7 +2446,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1025 passing**.  Frontend tests: **350 passing**._
+_Backend tests: **1026 passing**.  Frontend tests: **350 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

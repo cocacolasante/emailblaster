@@ -341,3 +341,31 @@ async def test_retry_direct_mail_when_flag_on(db_session, monkeypatch):
     assert task is not None
     assert task.subject.startswith("Direct mail —")
     assert "Erie" in task.body
+
+
+# ---------------------------------------------------------------------------
+# Per-run enrichment cap (bounds a big USASpending window)
+# ---------------------------------------------------------------------------
+
+
+async def test_stage_all_caps_enrichment_per_run(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "FUNDING_DISCOVERY_MAX_PER_RUN", 2)
+    calls = {"n": 0}
+
+    async def _resolve(org):
+        calls["n"] += 1
+        return ContactResult(
+            status="resolved", domain="helpinghands.org",
+            email="ed@helpinghands.org", first_name="Dana", via="website",
+        )
+
+    monkeypatch.setattr(funding_signals.enrichment, "resolve_contact", _resolve)
+    monkeypatch.setattr(funding_signals, "_funding_redis", lambda: None)  # no stop flag
+
+    orgs = [_org(dedup_key=f"grant_awarded:CAP{i}", signal_type="grant_awarded")
+            for i in range(5)]
+    out = await funding_signals._stage_all(db_session, "usaspending", orgs)
+
+    assert out["capped"] is True
+    assert out["staged"] == 2            # only 2 of 5 enriched this run
+    assert calls["n"] == 2               # resolve_contact NOT called for the rest

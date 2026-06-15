@@ -120,6 +120,12 @@ class Settings(BaseSettings):
     IRS_BMF_RULING_LOOKBACK_MONTHS: int = 2
 
     # --- Contact enrichment + deferred-enrichment queue ---
+    # Max NEW (non-deduped) orgs a single discovery poll will enrich.  A
+    # 30-day USAspending window returns ~2000 orgs; per-org contact
+    # enrichment (web-search + scrape + Hunter) makes an uncapped run
+    # expensive + slow.  Dedup means each daily run advances through the
+    # backlog, so the cap bounds cost per run without dropping anyone.
+    FUNDING_DISCOVERY_MAX_PER_RUN: int = 100
     # Max pages the website scraper fetches per org (homepage + a fixed set
     # of contact/about/staff paths).
     FUNDING_SCRAPE_MAX_PAGES: int = 6

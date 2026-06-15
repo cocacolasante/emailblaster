@@ -403,11 +403,23 @@ async def _stage_all(
     Polls the cooperative stop flag before each org so a Stop press aborts
     the run promptly (mid-batch) without waiting for the remaining ~100
     enrichment calls to finish."""
-    staged = leads = tasks = queued = 0
+    staged = leads = tasks = queued = processed = 0
+    cap = int(settings.FUNDING_DISCOVERY_MAX_PER_RUN)
     stop_client = _funding_redis()
-    for org in orgs:
+    capped = False
+    for i, org in enumerate(orgs):
         if _stop_requested(stop_client, src):
             logger.info("funding stage for %s aborted by stop request", src)
+            break
+        # Bound per-run enrichment cost: stop once we've ENRICHED `cap`
+        # new orgs.  Dedup-skipped orgs (already a signal/queued) are cheap
+        # and don't count, so each daily run advances through the backlog.
+        if cap > 0 and processed >= cap:
+            capped = True
+            logger.info(
+                "funding stage for %s hit per-run cap (%s); %s orgs left for next run",
+                src, cap, len(orgs) - i,
+            )
             break
         try:
             r = await _stage_discovery_signal(session, src, org)
@@ -416,12 +428,16 @@ async def _stage_all(
             leads += int(r["lead_created"])
             tasks += int(r["task"])
             queued += int(r.get("queued", False))
+            # Only orgs that actually ran enrichment (staged OR queued)
+            # count against the cap; dedup no-ops are free.
+            if r["staged"] or r.get("queued"):
+                processed += 1
         except Exception:  # noqa: BLE001 — one org must not abort the run
             await session.rollback()
             logger.exception("funding stage failed for %s", org.dedup_key)
     return {
         "staged": staged, "leads_created": leads,
-        "tasks_created": tasks, "queued": queued,
+        "tasks_created": tasks, "queued": queued, "capped": capped,
     }
 
 
