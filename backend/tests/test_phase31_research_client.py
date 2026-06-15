@@ -1294,8 +1294,10 @@ async def test_send_succeeds_even_when_crm_tracking_fails(client, monkeypatch):
     def _explode(*a, **k):
         raise RuntimeError("CRM write blew up")
 
+    # CRM tracking moved into the shared services/outreach core — patch
+    # CrmActivity there to force the tracking failure.
     with patch("app.routers.research_client.brevo.send_email", new=send_mock), \
-         patch("app.routers.research_client.CrmActivity", new=_explode):
+         patch("app.services.outreach.CrmActivity", new=_explode):
         resp = await client.post("/research-client/send", json={
             "to_email": "boom@x.com",
             "subject": "s", "body": "b", "sender_name": "A",

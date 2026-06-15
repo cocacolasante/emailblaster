@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -397,6 +398,141 @@ async def dismiss_signal(
 
 
 # ---------------------------------------------------------------------------
+# Draft + send outreach for a signal (→ logs a CRM lead + activity)
+# ---------------------------------------------------------------------------
+
+
+class SignalDraftRequest(BaseModel):
+    goal: str | None = Field(default=None, max_length=2000)
+    tone: str | None = Field(default=None, max_length=120)
+
+
+class SignalDraftResponse(BaseModel):
+    to_email: str
+    to_name: str | None
+    subject: str
+    body: str
+
+
+class SignalSendRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=998)
+    body: str = Field(min_length=1, max_length=50_000)
+    to_email: str | None = None          # defaults to the linked lead's email
+    sender_email: str | None = None      # defaults to the workspace default sender
+    sender_name: str | None = Field(default=None, max_length=120)
+
+
+class SignalSendResponse(BaseModel):
+    message_id: str
+    crm_lead_id: str | None = None
+    crm_lead_created: bool = False
+    crm_activity_logged: bool = False
+    signal_status: str
+
+
+async def _signal_with_lead(db: AsyncSession, signal_id: uuid.UUID):
+    """Fetch the signal + its linked lead, 404/409ing when there's no
+    contactable lead to draft/send to."""
+    signal = await db.get(ProspectSignal, signal_id)
+    if signal is None:
+        raise HTTPException(status_code=404, detail="signal not found")
+    if signal.lead_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="no contact on this signal — nothing to email (a contact "
+                   "email wasn't found for this org)",
+        )
+    lead = await db.get(Lead, signal.lead_id)
+    if lead is None or not lead.email:
+        raise HTTPException(
+            status_code=409,
+            detail="the linked lead has no email — can't draft or send",
+        )
+    return signal, lead
+
+
+@router.post("/{signal_id}/draft", response_model=SignalDraftResponse)
+async def draft_signal_email(
+    signal_id: uuid.UUID,
+    payload: SignalDraftRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SignalDraftResponse:
+    """Compose an outreach email for a signal, prefilled from the org +
+    contact.  Does not send — returns an editable draft."""
+    from app.services import signal_outreach
+
+    signal, lead = await _signal_with_lead(db, signal_id)
+    detail = signal.detail or {}
+    org_name = lead.company or detail.get("company") or detail.get("org_name") or "your organization"
+    try:
+        composed = await signal_outreach.compose_signal_email(
+            signal_type=signal.signal_type,
+            summary=signal.summary,
+            detail=detail,
+            org_name=org_name,
+            contact_first_name=lead.first_name,
+            goal=payload.goal,
+            tone=payload.tone,
+            sender_name=settings.BREVO_SENDER_NAME,
+        )
+    except signal_outreach.SignalComposeError as exc:
+        raise HTTPException(status_code=502, detail=f"couldn't draft: {exc}") from exc
+
+    name = " ".join(x for x in [lead.first_name, lead.last_name] if x) or None
+    return SignalDraftResponse(
+        to_email=lead.email, to_name=name,
+        subject=composed["subject"], body=composed["body"],
+    )
+
+
+@router.post("/{signal_id}/send", response_model=SignalSendResponse)
+async def send_signal_email(
+    signal_id: uuid.UUID,
+    payload: SignalSendRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SignalSendResponse:
+    """Send the (possibly edited) outreach via the chosen inbox, log it
+    against the signal's staged lead as an outbound email activity, and
+    mark the signal actioned."""
+    from app.services import outreach
+
+    signal, lead = await _signal_with_lead(db, signal_id)
+    to_email = (payload.to_email or lead.email).strip().lower()
+    to_name = " ".join(x for x in [lead.first_name, lead.last_name] if x) or None
+    sender_name = payload.sender_name or settings.BREVO_SENDER_NAME
+
+    try:
+        result = await outreach.send_and_track(
+            db,
+            to_email=to_email,
+            to_name=to_name,
+            subject=payload.subject,
+            body=payload.body,
+            sender_name=sender_name,
+            sender_email=payload.sender_email,
+            lead=lead,                        # log against the staged lead
+            campaign_tag="signal-outreach",
+        )
+    except outreach.OutreachSendError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    # Flip the signal to actioned (separate commit — send_and_track already
+    # committed/rolled back the CRM work; re-fetch since it may be expired).
+    signal = await db.get(ProspectSignal, signal_id)
+    if signal is not None and signal.status != ProspectSignalStatus.ACTIONED:
+        signal.status = ProspectSignalStatus.ACTIONED
+        await db.commit()
+
+    return SignalSendResponse(
+        message_id=result.message_id,
+        crm_lead_id=result.crm_lead_id,
+        crm_lead_created=result.crm_lead_created,
+        crm_activity_logged=result.crm_activity_logged,
+        signal_status=ProspectSignalStatus.ACTIONED.value,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Nonprofit funding discovery feeds (Settings → Discovery)
 # ---------------------------------------------------------------------------
 
@@ -522,3 +658,34 @@ async def run_funding_source_now(
     task = poll_usaspending if source == "usaspending" else poll_irs_bmf
     task.delay()
     return {"enqueued": True}
+
+
+@router.post("/funding/sources/{source}/stop")
+async def stop_funding_source(
+    source: str, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Hard-stop an in-flight run: terminate the running Celery task(s) for
+    this feed and purge any queued / redelivered copies from the broker so
+    a long run can't loop past the visibility timeout and keep burning
+    Anthropic enrichment tokens.  No-op (zero counts) when nothing runs."""
+    if source not in _FUNDING_SOURCES:
+        raise HTTPException(status_code=404, detail="unknown funding source")
+
+    from app.workers.funding_signals import stop_funding_run
+
+    result = await run_in_threadpool(stop_funding_run, source)
+    stopped_anything = bool(
+        result["terminated"] or result["purged_queued"] or result["purged_unacked"]
+    )
+
+    state = await _seed_funding_state(db, source)
+    if stopped_anything:
+        state.last_run_status = "stopped"
+        state.last_run_at = datetime.now(timezone.utc)
+    count = (await db.execute(
+        select(func.count()).select_from(ProspectSignal)
+        .where(ProspectSignal.source == source)
+    )).scalar_one()
+    await db.commit()
+    await db.refresh(state)
+    return {**_funding_source_dict(state, count), "stopped": result}

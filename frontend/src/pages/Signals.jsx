@@ -6,11 +6,15 @@ import {
   createWatchesBulk,
   deleteWatch,
   dismissSignal,
+  draftSignalEmail,
   listSignals,
   listWatches,
   runWatchNow,
+  sendSignalEmail,
   updateWatch,
 } from '../api/signals.js';
+import { listAccounts as listConnectedAccounts } from '../api/connectedAccounts.js';
+import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { useToast } from '../components/Toast.jsx';
 
 const TYPE_BADGES = {
@@ -47,7 +51,7 @@ function SourceBadge({ source }) {
   );
 }
 
-function SignalCard({ signal }) {
+function SignalCard({ signal, onOpen }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
@@ -60,12 +64,14 @@ function SignalCard({ signal }) {
     mutationFn: () => dismissSignal(signal.id),
     onSuccess: () => { invalidate(); toast.success('Dismissed'); },
   });
+  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
 
   const detail = signal.detail || {};
   return (
     <div
       data-testid={`signal-card-${signal.id}`}
-      className="bg-white border border-slate-200 rounded-xl p-4 flex items-start justify-between gap-3"
+      onClick={() => onOpen(signal)}
+      className="bg-white border border-slate-200 rounded-xl p-4 flex items-start justify-between gap-3 cursor-pointer hover:border-blue-300 hover:shadow-sm transition"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -86,7 +92,11 @@ function SignalCard({ signal }) {
           {detail.source_url && (
             <>
               {' · '}
-              <a href={detail.source_url} target="_blank" rel="noreferrer" className="text-blue-600">
+              <a
+                href={detail.source_url} target="_blank" rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-blue-600"
+              >
                 source ↗
               </a>
             </>
@@ -95,24 +105,218 @@ function SignalCard({ signal }) {
       </div>
       {signal.status === 'new' && (
         <div className="flex gap-2 shrink-0">
+          {signal.lead_id && (
+            <button
+              type="button"
+              data-testid={`draft-signal-${signal.id}`}
+              onClick={stop(() => onOpen(signal))}
+              className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Draft &amp; send
+            </button>
+          )}
           <button
             type="button"
             data-testid={`action-signal-${signal.id}`}
-            onClick={() => actionMut.mutate()}
-            className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            onClick={stop(() => actionMut.mutate())}
+            className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
           >
             Actioned
           </button>
           <button
             type="button"
             data-testid={`dismiss-signal-${signal.id}`}
-            onClick={() => dismissMut.mutate()}
+            onClick={stop(() => dismissMut.mutate())}
             className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
           >
             Dismiss
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+
+function SignalDetailModal({ signal, onClose }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [stage, setStage] = useState('idle');   // idle | editing | sent
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [toEmail, setToEmail] = useState('');
+  const [fromEmail, setFromEmail] = useState('');   // '' = workspace default
+  const [crmNote, setCrmNote] = useState(null);
+
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['connected-accounts'],
+    queryFn: listConnectedAccounts,
+  });
+  const resolvedAccount = fromEmail
+    ? accounts.find((a) => a.email_address === fromEmail)
+    : accounts.find((a) => a.is_default_sender);
+  const signaturePreview = (resolvedAccount?.signature || '').trim();
+
+  const detail = signal.detail || {};
+
+  const draftMut = useMutation({
+    mutationFn: () => draftSignalEmail(signal.id, {}),
+    onSuccess: (d) => {
+      setToEmail(d.to_email);
+      setSubject(d.subject);
+      setBody(d.body);
+      setStage('editing');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Draft failed'),
+  });
+
+  const sendMut = useMutation({
+    mutationFn: () => sendSignalEmail(signal.id, {
+      subject,
+      body,
+      ...(fromEmail ? { sender_email: fromEmail } : {}),
+    }),
+    onSuccess: (d) => {
+      setStage('sent');
+      if (d.crm_activity_logged) {
+        setCrmNote(
+          d.crm_lead_created
+            ? 'Logged as a new CRM lead + outbound email activity.'
+            : 'Logged as an outbound email activity on the lead.',
+        );
+      }
+      queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+      toast.success('Sent — signal marked actioned');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Send failed'),
+  });
+
+  return (
+    <div
+      data-testid="signal-detail-modal"
+      className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4 overflow-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-xl max-w-2xl w-full mt-10 p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <TypeBadge type={signal.signal_type} />
+              <SourceBadge source={signal.source} />
+            </div>
+            <h2 className="text-lg font-semibold text-slate-900 m-0">{signal.summary}</h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 text-xl leading-none"
+            aria-label="Close"
+          >×</button>
+        </div>
+
+        {/* Signal detail */}
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm mb-4">
+          {Object.entries(detail).filter(([k]) => k !== '_cost_usd').map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-slate-500 capitalize">{k.replace(/_/g, ' ')}</dt>
+              <dd className="text-slate-800 m-0 truncate">
+                {Array.isArray(v) ? v.join(', ') : String(v ?? '—')}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        {!signal.lead_id ? (
+          <p data-testid="signal-no-contact" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            No contact email was found for this org, so there's no one to email
+            yet (notification-only). Mark it actioned or dismiss it.
+          </p>
+        ) : stage === 'sent' ? (
+          <div data-testid="signal-send-success" className="text-sm">
+            <p className="text-emerald-700 font-medium m-0">Sent to {toEmail}.</p>
+            {crmNote && (
+              <p data-testid="signal-crm-note" className="text-slate-500 mt-1 m-0">{crmNote}</p>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="mt-3 px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50"
+            >
+              Done
+            </button>
+          </div>
+        ) : stage === 'idle' ? (
+          <button
+            type="button"
+            data-testid="signal-draft-btn"
+            onClick={() => draftMut.mutate()}
+            disabled={draftMut.isPending}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+          >
+            {draftMut.isPending ? 'Drafting…' : '✦ Draft email'}
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-sm text-slate-600" data-testid="signal-to">
+              To: <span className="font-medium text-slate-800">{toEmail}</span>
+            </div>
+            <label className="block text-sm">
+              <span className="text-slate-600">Send from</span>
+              <select
+                data-testid="signal-from-picker"
+                value={fromEmail}
+                onChange={(e) => setFromEmail(e.target.value)}
+                className="mt-1 block w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm bg-white"
+              >
+                <option value="">Workspace default sender</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.email_address}>
+                    {a.label} ({a.email_address})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <input
+              type="text"
+              data-testid="signal-subject"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="block w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-medium"
+            />
+            <textarea
+              data-testid="signal-body"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={9}
+              className="block w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+            />
+            {signaturePreview && (
+              <div className="text-xs text-slate-400">
+                <span className="block mb-1">Signature appended:</span>
+                <div
+                  data-testid="signal-signature-preview"
+                  className="border border-slate-200 rounded-lg p-2 text-slate-600"
+                  dangerouslySetInnerHTML={{ __html: signatureToPreviewHtml(signaturePreview) }}
+                />
+              </div>
+            )}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                data-testid="signal-send-btn"
+                onClick={() => sendMut.mutate()}
+                disabled={sendMut.isPending || !subject.trim() || !body.trim()}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+              >
+                {sendMut.isPending ? 'Sending…' : 'Send email'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -413,6 +617,7 @@ export default function Signals() {
   const [tab, setTab] = useState('feed');
   const [statusFilter, setStatusFilter] = useState('new');
   const [sourceFilter, setSourceFilter] = useState('');
+  const [selected, setSelected] = useState(null);
 
   const { data } = useQuery({
     queryKey: ['prospect-signals', statusFilter, sourceFilter],
@@ -505,11 +710,14 @@ export default function Signals() {
             </p>
           )}
           <div className="space-y-2">
-            {items.map((s) => <SignalCard key={s.id} signal={s} />)}
+            {items.map((s) => <SignalCard key={s.id} signal={s} onOpen={setSelected} />)}
           </div>
         </div>
       )}
       {tab === 'watches' && <WatchesTab />}
+      {selected && (
+        <SignalDetailModal signal={selected} onClose={() => setSelected(null)} />
+      )}
     </div>
   );
 }

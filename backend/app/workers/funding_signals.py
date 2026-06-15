@@ -46,6 +46,78 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ---------------------------------------------------------------------------
+# Manual stop — hard-kill an in-flight run + break the redelivery loop
+# ---------------------------------------------------------------------------
+
+
+def _purge_broker_messages(task_name: str) -> dict[str, int]:
+    """Remove every queued + unacked broker message for ``task_name``.
+
+    The IRS feed can run far longer than the broker ``visibility_timeout``
+    (300s); when it does, Redis restores the message and another worker
+    picks it up, stacking concurrent copies that each burn Anthropic
+    enrichment tokens.  Terminating the running task isn't enough on its
+    own — the unacked copy would just be redelivered.  This clears both
+    the ready queue and the in-flight ``unacked`` set so it stays dead.
+    """
+    needle = task_name.encode()
+    queue = unacked = 0
+    try:
+        import redis  # redis-py sync client (already a dependency)
+
+        r = redis.Redis.from_url(celery_app.conf.broker_url)
+        for raw in r.lrange("celery", 0, -1):
+            if needle in raw:
+                queue += r.lrem("celery", 0, raw)
+        for field, val in r.hgetall("unacked").items():
+            if needle in val:
+                r.hdel("unacked", field)
+                r.zrem(
+                    "unacked_index",
+                    field.decode() if isinstance(field, bytes) else field,
+                )
+                unacked += 1
+    except Exception:  # noqa: BLE001 — best-effort; never raise out of a stop
+        logger.exception("funding stop: broker purge failed for %s", task_name)
+    return {"queue": queue, "unacked": unacked}
+
+
+def stop_funding_run(source: str) -> dict[str, Any]:
+    """Hard-stop any in-flight run of one feed.
+
+    Revokes + SIGKILLs every active/reserved Celery task for the feed's
+    task name across all workers, then purges queued + redelivered copies
+    from the broker so the run can't be restored past the visibility
+    timeout.  Safe no-op when nothing is running (zero counts).
+    """
+    task_name = f"funding.poll_{source}"
+    ids: set[str] = set()
+    try:
+        insp = celery_app.control.inspect(timeout=2.0)
+        for snapshot in (insp.active(), insp.reserved()):
+            for worker_tasks in (snapshot or {}).values():
+                for t in worker_tasks:
+                    if t.get("name") == task_name and t.get("id"):
+                        ids.add(t["id"])
+    except Exception:  # noqa: BLE001
+        logger.exception("funding stop: inspect failed for %s", source)
+
+    for tid in ids:
+        try:
+            celery_app.control.revoke(tid, terminate=True, signal="SIGKILL")
+        except Exception:  # noqa: BLE001
+            logger.exception("funding stop: revoke failed for %s", tid)
+
+    purged = _purge_broker_messages(task_name)
+    return {
+        "task": task_name,
+        "terminated": sorted(ids),
+        "purged_queued": purged["queue"],
+        "purged_unacked": purged["unacked"],
+    }
+
+
 def _yyyymm(d: date, minus_months: int = 0) -> str:
     """``d`` shifted back ``minus_months`` calendar months, as YYYYMM."""
     total = d.year * 12 + (d.month - 1) - minus_months
@@ -225,6 +297,8 @@ async def _poll_usaspending_async() -> dict[str, Any]:
                         cfg.get("lookback_days") or settings.USASPENDING_LOOKBACK_DAYS
                     )
                     since = today - timedelta(days=lookback)
+                state.last_run_at = _now()
+                state.last_run_status = "running"
                 await session.commit()  # release the state row before slow I/O
 
                 orgs = await usaspending.fetch_recent_awards(since, today, limit=100)
@@ -279,6 +353,8 @@ async def _poll_irs_bmf_async() -> dict[str, Any]:
                 # FIRST RUN GUARD: with no cursor, bound to the lookback so
                 # we never blast the entire historical file.
                 since_ruling = floor if last is None else max(last, floor)
+                state.last_run_at = _now()
+                state.last_run_status = "running"
                 await session.commit()
 
                 orgs = await irs_bmf.fetch_new_501c3(states, since_ruling)

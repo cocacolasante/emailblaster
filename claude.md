@@ -1563,7 +1563,40 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (later) — Settings → Discovery panel
+_Last updated: 2026-06-15 (latest) — Signal outreach: draft → pick
+sender → send → logged (no migration).  Click a signal to open a detail
+modal and send outreach right from the queue.
+- **Shared send core** ``services/outreach.py`` — extracted the
+  Research-a-client send+CRM-track logic into ``send_and_track`` (sender
+  resolution: explicit > workspace default sender > Brevo sender; applies
+  that account's signature via ``render_email_with_signature``; Brevo
+  send; best-effort CRM find-or-create lead + outbound EMAIL activity +
+  opportunity attach).  Raises ``OutreachSendError`` (router → 502).
+  Takes an optional pre-resolved ``lead`` so signal sends log against the
+  STAGED lead instead of find-or-create.  ``research_client/send`` now
+  delegates to it (behavior preserved; its CRM-failure test repointed to
+  patch ``app.services.outreach.CrmActivity``).
+- **Signal composer** ``services/signal_outreach.compose_signal_email``
+  — one Sonnet call (``ANTHROPIC_MODEL``) with a signal-tailored prompt
+  that opens on the specific trigger (the grant / the new 501(c)(3) /
+  the change); strips em dashes + truncates to char_limit; no signature
+  (the send path appends it).
+- **Endpoints** (``routers/signals.py``): ``POST /signals/{id}/draft``
+  (compose from the signal + its linked lead; 409 when the signal has no
+  contactable lead) and ``POST /signals/{id}/send`` (send via
+  ``outreach.send_and_track`` against the staged lead, then flip the
+  signal to ACTIONED; 502 on Brevo failure leaves it NEW).
+- **Frontend** (``pages/Signals.jsx``): cards are now clickable → a
+  ``SignalDetailModal`` showing the signal detail + a Draft button →
+  editable subject/body + a send-from picker (connected accounts,
+  workspace default) + signature preview → Send → success + CRM note;
+  cards with a lead also get a "Draft & send" button.  Contact-less
+  signals show a notification-only note.  The Actioned/Dismiss buttons
+  ``stopPropagation`` so they don't open the modal.
+- Tests: 5 new backend + 3 new frontend (+ 1 research_client patch
+  repoint).  Tests: **backend 965, frontend 338**.
+
+_Previously: 2026-06-15 — Settings → Discovery panel
 (migration 0033).  Moved the nonprofit-feed toggles/config off
 env-only into the DB so they're editable in-app.
 - **Migration 0033** adds ``funding_source_state.enabled`` (bool, NULL

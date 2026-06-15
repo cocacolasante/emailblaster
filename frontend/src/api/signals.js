@@ -66,3 +66,20 @@ export async function runFundingSourceNow(source) {
   const { data } = await client.post(`/signals/funding/sources/${source}/run-now`);
   return data;
 }
+
+export async function stopFundingSource(source) {
+  const { data } = await client.post(`/signals/funding/sources/${source}/stop`);
+  return data;
+}
+
+// ---------- Signal outreach: draft → send (logs CRM lead + activity) ----------
+
+export async function draftSignalEmail(id, payload = {}) {
+  const { data } = await client.post(`/signals/${id}/draft`, payload);
+  return data;
+}
+
+export async function sendSignalEmail(id, payload) {
+  const { data } = await client.post(`/signals/${id}/send`, payload);
+  return data;
+}

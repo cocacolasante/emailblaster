@@ -14,9 +14,15 @@ vi.mock('../api/signals.js', () => ({
   listSignals: vi.fn(),
   actionSignal: vi.fn(),
   dismissSignal: vi.fn(),
+  draftSignalEmail: vi.fn(),
+  sendSignalEmail: vi.fn(),
+}));
+vi.mock('../api/connectedAccounts.js', () => ({
+  listAccounts: vi.fn(),
 }));
 
 import * as api from '../api/signals.js';
+import * as accountsApi from '../api/connectedAccounts.js';
 import Signals from './Signals.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
@@ -49,6 +55,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.listSignals.mockResolvedValue(paged([SIGNAL]));
   api.listWatches.mockResolvedValue([]);
+  accountsApi.listAccounts.mockResolvedValue([
+    { id: 'a1', label: 'Outreach', email_address: 'me@csuitecode.com', is_default_sender: true, signature: 'Anthony' },
+  ]);
 });
 
 describe('Signals page', () => {
@@ -168,5 +177,62 @@ describe('Signals page', () => {
       const lastCall = api.listSignals.mock.calls.at(-1)[0];
       expect(lastCall.source).toBe('irs_bmf');
     });
+  });
+});
+
+describe('Signal detail → draft → send', () => {
+  it('clicking a card opens the detail modal', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s1'));
+    expect(await screen.findByTestId('signal-detail-modal')).toBeInTheDocument();
+  });
+
+  it('draft → send: composes, picks sender, sends, logs', async () => {
+    api.draftSignalEmail.mockResolvedValue({
+      to_email: 'jane@acme.com', to_name: 'Jane Doe',
+      subject: 'Congrats on the new role', body: 'Hi Jane, quick call?',
+    });
+    api.sendSignalEmail.mockResolvedValue({
+      message_id: 'm1', crm_lead_id: 'l1', crm_lead_created: false,
+      crm_activity_logged: true, signal_status: 'actioned',
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTestId('draft-signal-s1'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+
+    await user.click(within(modal).getByTestId('signal-draft-btn'));
+    await waitFor(() => {
+      expect(api.draftSignalEmail).toHaveBeenCalledWith('s1', {});
+    });
+    // Draft prefilled the editor.
+    expect(within(modal).getByTestId('signal-subject')).toHaveValue('Congrats on the new role');
+    expect(within(modal).getByTestId('signal-to')).toHaveTextContent('jane@acme.com');
+
+    // Pick a sender, then send.
+    await user.selectOptions(within(modal).getByTestId('signal-from-picker'), 'me@csuitecode.com');
+    await user.click(within(modal).getByTestId('signal-send-btn'));
+    await waitFor(() => {
+      expect(api.sendSignalEmail).toHaveBeenCalled();
+      const [id, payload] = api.sendSignalEmail.mock.calls[0];
+      expect(id).toBe('s1');
+      expect(payload.sender_email).toBe('me@csuitecode.com');
+      expect(payload.subject).toBe('Congrats on the new role');
+    });
+    // Success + CRM note.
+    expect(await screen.findByTestId('signal-send-success')).toBeInTheDocument();
+    expect(screen.getByTestId('signal-crm-note')).toHaveTextContent(/outbound email activity/i);
+  });
+
+  it('shows notification-only note when the signal has no lead', async () => {
+    api.listSignals.mockResolvedValue(paged([{ ...SIGNAL, id: 's2', lead_id: null }]));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s2'));
+    expect(await screen.findByTestId('signal-no-contact')).toBeInTheDocument();
+    // No Draft & send button on a contactless signal card.
+    expect(screen.queryByTestId('draft-signal-s2')).toBeNull();
   });
 });

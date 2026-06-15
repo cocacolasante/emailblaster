@@ -535,3 +535,146 @@ async def test_worker_honors_db_config_over_env(db_session, monkeypatch):
     assert result.get("fetched") == 0          # ran (not skipped)
     # 14-day lookback from the DB config, not the env default 7.
     assert (captured["until"] - captured["since"]).days == 14
+
+
+# ---------------------------------------------------------------------------
+# Signal outreach: draft → send → logged as lead + activity
+# ---------------------------------------------------------------------------
+
+from app.models import CrmActivityDirection as _Dir  # noqa: E402
+
+
+async def _signal_with_staged_lead(db_session, *, email="ed@helpinghands.org"):
+    lead = Lead(
+        campaign_id=None, email=email, first_name="Dana", last_name="Reed",
+        company="Helping Hands", company_website="https://helpinghands.org",
+    )
+    db_session.add(lead)
+    await db_session.flush()
+    signal = ProspectSignal(
+        watch_id=None, source="usaspending", signal_type="grant_awarded",
+        summary="Helping Hands won a federal grant ($50,000) from HHS",
+        detail={"amount": 50000, "agency": "HHS", "award_id": "X1"},
+        dedup_key=f"grant_awarded:{uuid.uuid4().hex}", lead_id=lead.id,
+    )
+    db_session.add(signal)
+    await db_session.commit()
+    await db_session.refresh(signal)
+    return signal, lead
+
+
+async def test_signal_draft_composes_from_signal_and_lead(client, db_session, monkeypatch):
+    signal, lead = await _signal_with_staged_lead(db_session)
+    monkeypatch.setattr(
+        "app.services.signal_outreach.compose_signal_email",
+        AsyncMock(return_value={
+            "subject": "Congrats on the HHS grant",
+            "body": "Hi Dana, congratulations on the grant. Quick call?",
+        }),
+    )
+    resp = await client.post(f"/signals/{signal.id}/draft", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["to_email"] == "ed@helpinghands.org"
+    assert body["to_name"] == "Dana Reed"
+    assert body["subject"] == "Congrats on the HHS grant"
+    assert "congratulations" in body["body"].lower()
+
+
+async def test_signal_draft_409_without_contact(client, db_session):
+    signal = ProspectSignal(
+        watch_id=None, source="irs_bmf", signal_type="new_501c3",
+        summary="New 501(c)(3): Tiny Org", detail={},
+        dedup_key=f"new_501c3:{uuid.uuid4().hex}", lead_id=None,
+    )
+    db_session.add(signal)
+    await db_session.commit()
+    resp = await client.post(f"/signals/{signal.id}/draft", json={})
+    assert resp.status_code == 409
+    assert "nothing to email" in resp.json()["detail"]
+
+
+async def test_signal_send_logs_activity_and_actions_signal(client, db_session, monkeypatch):
+    signal, lead = await _signal_with_staged_lead(db_session)
+    # No real Brevo call — stub the shared send core's brevo.send_email.
+    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    monkeypatch.setattr(
+        "app.services.outreach.brevo.send_email",
+        AsyncMock(return_value="msg-sig-1"),
+    )
+
+    resp = await client.post(f"/signals/{signal.id}/send", json={
+        "subject": "Congrats on the HHS grant",
+        "body": "Hi Dana, congratulations. Quick call next week?",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["message_id"] == "msg-sig-1"
+    assert body["crm_activity_logged"] is True
+    assert body["crm_lead_created"] is False        # logged on the staged lead
+    assert body["crm_lead_id"] == str(lead.id)
+    assert body["signal_status"] == "actioned"
+
+    # Outbound EMAIL activity on the staged lead.
+    act = await db_session.scalar(
+        select(CrmActivity).where(
+            CrmActivity.lead_id == lead.id,
+            CrmActivity.activity_type == CrmActivityType.EMAIL,
+        )
+    )
+    assert act is not None
+    assert act.direction is _Dir.OUTBOUND
+    assert act.subject == "Congrats on the HHS grant"
+
+    # Signal flipped to actioned.
+    await db_session.refresh(signal)
+    assert signal.status.value == "actioned"
+
+
+async def test_signal_send_passes_chosen_sender(client, db_session, monkeypatch):
+    from app.models import ConnectedAccount
+    from app.services import encryption
+
+    signal, lead = await _signal_with_staged_lead(db_session, email="ed2@hh.org")
+    acc = ConnectedAccount(
+        label="Outreach", email_address="me@csuitecode.com",
+        imap_host="h", username="me@csuitecode.com",
+        password_encrypted=encryption.encrypt("pw"),
+        signature="Anthony\nCSuite",
+    )
+    db_session.add(acc)
+    await db_session.commit()
+
+    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    send_mock = AsyncMock(return_value="msg-sig-2")
+    monkeypatch.setattr("app.services.outreach.brevo.send_email", send_mock)
+
+    resp = await client.post(f"/signals/{signal.id}/send", json={
+        "subject": "Hi", "body": "Body here",
+        "sender_email": "me@csuitecode.com", "sender_name": "Anthony",
+    })
+    assert resp.status_code == 200, resp.text
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["sender_email"] == "me@csuitecode.com"
+    assert kwargs["sender_name"] == "Anthony"
+    # The chosen account's signature was rendered into the HTML body.
+    assert "CSuite" in kwargs["html_body"]
+
+
+async def test_signal_send_brevo_failure_502(client, db_session, monkeypatch):
+    import httpx as _httpx
+
+    signal, lead = await _signal_with_staged_lead(db_session, email="ed3@hh.org")
+    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+
+    def _raise(*a, **k):
+        raise _httpx.HTTPError("boom")
+
+    monkeypatch.setattr("app.services.outreach.brevo.send_email", AsyncMock(side_effect=_httpx.HTTPError("boom")))
+    resp = await client.post(f"/signals/{signal.id}/send", json={
+        "subject": "Hi", "body": "Body",
+    })
+    assert resp.status_code == 502
+    # Signal NOT actioned on a failed send.
+    await db_session.refresh(signal)
+    assert signal.status.value == "new"

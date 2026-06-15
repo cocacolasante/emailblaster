@@ -16,6 +16,7 @@ import { getAgentSettings, updateAgentSettings } from '../api/agent.js';
 import {
   listFundingSources,
   runFundingSourceNow,
+  stopFundingSource,
   updateFundingSource,
 } from '../api/signals.js';
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
@@ -560,6 +561,23 @@ function FundingSourceCard({ source, hunterConfigured }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Run failed'),
   });
 
+  const stopMut = useMutation({
+    mutationFn: () => stopFundingSource(source.source),
+    onSuccess: (data) => {
+      invalidate();
+      const s = data?.stopped || {};
+      const killed = (s.terminated?.length || 0) + (s.purged_queued || 0) + (s.purged_unacked || 0);
+      toast.success(
+        killed
+          ? `${source.label} run stopped (${s.terminated?.length || 0} task${(s.terminated?.length || 0) === 1 ? '' : 's'} terminated)`
+          : `No ${source.label} run was in progress`,
+      );
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Stop failed'),
+  });
+
+  const isRunning = source.last_run_status === 'running';
+
   return (
     <div
       data-testid={`funding-card-${source.source}`}
@@ -650,6 +668,20 @@ function FundingSourceCard({ source, hunterConfigured }) {
           >
             Run now
           </button>
+          <button
+            type="button"
+            data-testid={`funding-stop-${source.source}`}
+            onClick={() => stopMut.mutate()}
+            disabled={stopMut.isPending}
+            title="Terminate an in-flight run and stop token spend"
+            className={`px-3 py-1.5 text-sm rounded-lg disabled:opacity-50 ${
+              isRunning
+                ? 'bg-red-600 hover:bg-red-700 text-white'
+                : 'border border-red-300 text-red-700 hover:bg-red-50'
+            }`}
+          >
+            {stopMut.isPending ? 'Stopping…' : 'Stop'}
+          </button>
         </div>
       </div>
     </div>
@@ -660,6 +692,11 @@ function DiscoveryTab() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['funding-sources'],
     queryFn: listFundingSources,
+    // Poll while a feed is mid-run so the status + Stop button stay live.
+    refetchInterval: (query) =>
+      (query.state.data?.sources || []).some((s) => s.last_run_status === 'running')
+        ? 5000
+        : false,
   });
 
   if (isLoading) return <p className="text-sm text-slate-500">Loading discovery feeds…</p>;

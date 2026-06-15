@@ -44,8 +44,7 @@ from app.schemas.research_client import (
     SendClientEmailRequest,
     SendClientEmailResponse,
 )
-from app.services import brevo, compose_client, research_cache, research_client
-from app.services.signature import render_email_with_signature
+from app.services import brevo, compose_client, outreach, research_cache, research_client
 
 logger = logging.getLogger(__name__)
 
@@ -183,172 +182,26 @@ async def send_client_email(
     so the frontend toast surfaces something actionable instead of a
     generic 500.
     """
-    if not settings.BREVO_API_KEY:
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "BREVO_API_KEY is not configured.  Add it to .env and "
-                "recreate the backend container."
-            ),
-        )
-
-    # From-address priority: explicit request override > DB default
-    # sender (a ConnectedAccount the user marked as the workspace
-    # default in Settings) > settings.BREVO_SENDER_EMAIL.  The DB lookup
-    # returns the full row so we can both pick the email_address AND
-    # apply that account's signature below.
-    sender_email: str | None = req.sender_email
-    sender_account: ConnectedAccount | None = None
-    if sender_email:
-        # Explicit override — see if it matches a ConnectedAccount so we
-        # can still apply that account's signature.  Unmatched override
-        # = no signature (the user picked an address we don't know
-        # about).
-        sender_account = await db.scalar(
-            select(ConnectedAccount)
-            .where(ConnectedAccount.email_address == sender_email)
-            .limit(1)
-        )
-    else:
-        sender_account = await db.scalar(
-            select(ConnectedAccount)
-            .where(ConnectedAccount.is_default_sender.is_(True))
-            .limit(1)
-        )
-        sender_email = (
-            sender_account.email_address if sender_account is not None
-            else settings.BREVO_SENDER_EMAIL
-        )
-
-    # Apply the chosen inbox's signature via the shared renderer — same
-    # helper the bulk campaign send path uses, so HTML signatures
-    # (toolbar-inserted <a>/<img> tags) render identically on both.
-    # Idempotent: a body that already carries the signature (raw or
-    # plain-text form) doesn't get it appended a second time.
-    html_body, text_body = render_email_with_signature(
-        req.body,
-        sender_account.signature if sender_account else None,
-    )
-
-    # Synthetic identifiers so Brevo's event log can correlate replies +
-    # opens to this one-off send if we ever wire that up.
-    synthetic_lead_id = str(uuid.uuid4())
-
+    # Send + CRM-track via the shared core (also used by signal outreach).
     try:
-        message_id = await brevo.send_email(
+        result = await outreach.send_and_track(
+            db,
             to_email=str(req.to_email),
             to_name=req.to_name,
             subject=req.subject,
-            html_body=html_body,
-            text_body=text_body,
+            body=req.body,
             sender_name=req.sender_name,
-            sender_email=str(sender_email),
-            campaign_id="research-client",
-            lead_id=synthetic_lead_id,
+            sender_email=req.sender_email,
+            campaign_tag="research-client",
         )
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "research-client send: Brevo %s on send to %s — %s",
-            exc.response.status_code, req.to_email, exc.response.text[:200],
-        )
-        # Surface Brevo's status + a short reason so the UI toast tells
-        # the user what's wrong (auth, validation, etc.) instead of a
-        # generic failure.
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"Brevo rejected the send (HTTP {exc.response.status_code}). "
-                "Check BREVO_API_KEY validity and the sender email is "
-                "verified on your Brevo account."
-            ),
-        ) from exc
-    except RuntimeError as exc:
-        # send_email raises RuntimeError on missing API key (already
-        # caught above) and on a successful 2xx with no messageId — the
-        # latter is treated as a soft Brevo bug.
-        logger.warning("research-client send: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except httpx.HTTPError as exc:
-        logger.warning("research-client send: network error to Brevo: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Network error talking to Brevo: {exc}",
-        ) from exc
-
-    # ── CRM auto-tracking ─────────────────────────────────────────────
-    # Every one-off send becomes part of the prospect's CRM record:
-    # find-or-create a lead by email, log the email as an outbound
-    # activity (also attached to any opportunity carrying the same
-    # email, so deal timelines capture the touch).  Best-effort — the
-    # email already went out, so a CRM hiccup must never fail the
-    # request.
-    crm_lead_id: str | None = None
-    crm_lead_created = False
-    crm_activity_logged = False
-    try:
-        canonical = req.to_email.strip().lower()
-
-        # Most-recently-updated lead with this email wins when the same
-        # address exists across multiple campaigns — that's the row the
-        # user has most recently been working.
-        lead = await db.scalar(
-            select(Lead)
-            .where(sa_func.lower(Lead.email) == canonical)
-            .order_by(Lead.updated_at.desc())
-            .limit(1)
-        )
-        if lead is None:
-            first_name = None
-            last_name = None
-            if req.to_name:
-                parts = req.to_name.strip().split(None, 1)
-                first_name = parts[0] or None
-                last_name = parts[1] if len(parts) > 1 else None
-            lead = Lead(
-                campaign_id=None,
-                email=canonical,
-                first_name=first_name,
-                last_name=last_name,
-            )
-            db.add(lead)
-            await db.flush()
-            crm_lead_created = True
-
-        # Attach to a matching opportunity too, when one exists.
-        opportunity = await db.scalar(
-            select(Opportunity)
-            .where(sa_func.lower(Opportunity.email) == canonical)
-            .order_by(Opportunity.updated_at.desc())
-            .limit(1)
-        )
-
-        db.add(CrmActivity(
-            lead_id=lead.id,
-            opportunity_id=opportunity.id if opportunity is not None else None,
-            activity_type=CrmActivityType.EMAIL,
-            subject=req.subject[:500],
-            # Body preview keeps the activity readable without storing
-            # the full email twice (the recipient has the real thing).
-            body=(req.body[:1000] + "…") if len(req.body) > 1000 else req.body,
-            direction=CrmActivityDirection.OUTBOUND,
-        ))
-        await db.commit()
-        crm_lead_id = str(lead.id)
-        crm_activity_logged = True
-    except Exception:  # noqa: BLE001
-        # Tracking is an enhancement on top of an already-succeeded
-        # send — log it, roll the session back, and return the send
-        # success anyway.
-        logger.exception(
-            "research-client send: CRM tracking failed for %s", req.to_email,
-        )
-        await db.rollback()
+    except outreach.OutreachSendError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     return SendClientEmailResponse(
-        message_id=str(message_id),
+        message_id=result.message_id,
         sent_at=datetime.now(timezone.utc),
         to_email=req.to_email,
-        crm_lead_id=crm_lead_id,
-        crm_lead_created=crm_lead_created,
-        crm_activity_logged=crm_activity_logged,
+        crm_lead_id=result.crm_lead_id,
+        crm_lead_created=result.crm_lead_created,
+        crm_activity_logged=result.crm_activity_logged,
     )
