@@ -55,6 +55,7 @@ from app.models import (
 )
 from app.services import brevo
 from app.services.email_template import render_html, render_text
+from app.services.signature import apply_signature, resolve_campaign_signature
 from app.services.linkedin import get_provider as get_linkedin_provider
 from app.services.linkedin.base import (
     AccountRestricted,
@@ -63,7 +64,7 @@ from app.services.linkedin.base import (
 )
 from app.services.sequence_conditions import ConditionContext, evaluate
 from app.workers.celery_app import celery_app
-from app.workers.compose import generate_linkedin_dm_text
+from app.workers.compose import generate_followup_reply, generate_linkedin_dm_text
 
 logger = logging.getLogger(__name__)
 
@@ -576,6 +577,18 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _reply_subject(original_subject: str) -> str:
+    """A reply subject: the original prefixed with ``Re:`` (idempotent — an
+    already-``Re:``-prefixed subject is returned unchanged so threads don't
+    accumulate ``Re: Re:``)."""
+    subj = (original_subject or "").strip()
+    if not subj:
+        return "Re:"
+    if subj.lower().startswith("re:"):
+        return subj
+    return f"Re: {subj}"
+
+
 def _substitute(template: str, lead: Lead) -> str:
     """Lightweight {{first_name}} / {{last_name}} / {{company}} / {{job_title}}
     substitution. Missing variables resolve to the empty string.
@@ -819,10 +832,29 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 }
 
             cfg = node.config or {}
-            subject_tpl = cfg.get("subject_template") or ""
-            body_tpl = cfg.get("body_template") or ""
-            if not subject_tpl or not body_tpl:
-                return {"status": "misconfigured", "error": "email node missing subject_template or body_template"}
+            is_reply = node.kind == SequenceNodeKind.EMAIL_REPLY
+
+            # Resolve subject + threading up front so a misconfigured node
+            # bails before consuming a send gate.
+            in_reply_to: str | None = None
+            if is_reply:
+                # Reply in-thread to the lead's original campaign email.
+                in_reply_to = lead.brevo_message_id
+                if not in_reply_to:
+                    return {
+                        "status": "skipped",
+                        "error": "no previous email to reply to (original email not sent)",
+                    }
+                subject = _reply_subject(lead.composed_subject or "")
+                ai_compose = bool(cfg.get("ai_compose"))
+                if not ai_compose and not (cfg.get("body_template") or "").strip():
+                    return {"status": "misconfigured", "error": "reply node needs body_template or ai_compose"}
+            else:
+                subject_tpl = cfg.get("subject_template") or ""
+                if not subject_tpl or not (cfg.get("body_template") or ""):
+                    return {"status": "misconfigured", "error": "email node missing subject_template or body_template"}
+                subject = _substitute(subject_tpl, lead)
+                ai_compose = False
 
             gates = await _send_mod.check_send_gates(session, lead, campaign, redis_client)
             sending_domain = gates.get("domain")
@@ -842,22 +874,53 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                     deferred["retry_in"] = gates["retry_in"]
                 return deferred
 
-            subject = _substitute(subject_tpl, lead)
-            body = _substitute(body_tpl, lead)
+            # Snapshot everything the (possibly slow) AI call + send needs so
+            # the session can close first.
+            manual_body = _substitute(cfg.get("body_template") or "", lead)
             ctx = {
                 "to_email": lead.email,
                 "to_name": " ".join(filter(None, [lead.first_name, lead.last_name])) or None,
                 "subject": subject,
-                "body": body,
                 "sender_name": campaign.sender_name,
                 "sender_email": campaign.sender_email,
                 "campaign_id": str(campaign.id),
                 "lead_id": str(lead.id),
+                "in_reply_to": in_reply_to,
+                "is_reply": is_reply,
+                "ai_compose": ai_compose,
+                "ai_prompt": cfg.get("ai_prompt") or "",
+                "manual_body": manual_body,
+                "goal": campaign.goal,
+                "tone": campaign.tone,
+                "first_name": lead.first_name or "",
+                "last_name": lead.last_name or "",
+                "company": lead.company or "",
+                "job_title": lead.job_title or "",
+                "research_data": lead.research_data or {},
+                "original_subject": lead.composed_subject or "",
+                "original_body": lead.composed_body or "",
+                "signature": await resolve_campaign_signature(session, campaign) if ai_compose else None,
             }
             campaign_snap = campaign
 
-        html_body = render_html(ctx["body"])
-        text_body = render_text(ctx["body"])
+        # Compose the body (AI reply uses the lead's EXISTING research — no
+        # new research is triggered here).
+        if ctx["is_reply"] and ctx["ai_compose"]:
+            body = await generate_followup_reply(
+                goal=ctx["goal"], tone=ctx["tone"], sender_name=ctx["sender_name"],
+                first_name=ctx["first_name"], last_name=ctx["last_name"],
+                company=ctx["company"], job_title=ctx["job_title"],
+                research_data=ctx["research_data"],
+                original_subject=ctx["original_subject"],
+                original_body=ctx["original_body"],
+                idea=ctx["ai_prompt"],
+            )
+            body = apply_signature(body, ctx["signature"])
+        else:
+            body = ctx["manual_body"]
+
+        html_body = render_html(body)
+        text_body = render_text(body)
         message_id = await brevo.send_email(
             to_email=ctx["to_email"],
             to_name=ctx["to_name"],
@@ -868,6 +931,7 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
             sender_email=ctx["sender_email"],
             campaign_id=ctx["campaign_id"],
             lead_id=ctx["lead_id"],
+            in_reply_to=ctx["in_reply_to"],
         )
         # Bump Brevo rate counters so follow-ups are metered alongside
         # legacy first-email sends.
@@ -1279,7 +1343,7 @@ async def _has_downstream_email(session: AsyncSession, node: SequenceNode) -> bo
         nxt = await session.get(SequenceNode, nid)
         if nxt is None or nxt.deleted_at is not None:
             continue
-        if nxt.kind == SequenceNodeKind.EMAIL:
+        if nxt.kind in (SequenceNodeKind.EMAIL, SequenceNodeKind.EMAIL_REPLY):
             return True
         stack.extend(adj.get(nid, []))
     return False
@@ -1587,9 +1651,10 @@ async def _advance_sequences_async() -> dict[str, int]:
                             state.next_run_at = now + timedelta(minutes=5)
                         continue
 
-                # Follow-up email node: dispatch unless already sent during
-                # this visit (parked, waiting for an edge condition).
-                if node.kind == SequenceNodeKind.EMAIL:
+                # Follow-up email node (new thread OR in-thread reply):
+                # dispatch unless already sent during this visit (parked,
+                # waiting for an edge condition).
+                if node.kind in (SequenceNodeKind.EMAIL, SequenceNodeKind.EMAIL_REPLY):
                     if await _already_executed_this_visit(session, state, node.id):
                         await _advance_cursor(session, state, node)
                         counts["reevaluated_parked"] = counts.get("reevaluated_parked", 0) + 1

@@ -110,3 +110,41 @@ async def test_raises_when_response_missing_message_id(monkeypatch):
                 sender_name="S", sender_email="s@x.com",
                 campaign_id="c", lead_id="l",
             )
+
+
+def test_wrap_message_id_normalises_brackets():
+    assert brevo._wrap_message_id("abc@host") == "<abc@host>"
+    assert brevo._wrap_message_id("<abc@host>") == "<abc@host>"
+    assert brevo._wrap_message_id("  abc@host ") == "<abc@host>"
+    assert brevo._wrap_message_id("") is None
+    assert brevo._wrap_message_id(None) is None
+
+
+async def test_in_reply_to_sets_threading_headers(monkeypatch):
+    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+    cls, post = _client(_response(200, {"messageId": "msg-9"}))
+    with patch.object(brevo.httpx, "AsyncClient", cls):
+        await brevo.send_email(
+            to_email="lead@x.com", to_name=None,
+            subject="Re: Hello", html_body="<p>h</p>", text_body="h",
+            sender_name="S", sender_email="s@x.com",
+            campaign_id="c", lead_id="l", in_reply_to="orig-id@host",
+        )
+    headers = post.call_args.kwargs["json"]["headers"]
+    assert headers["In-Reply-To"] == "<orig-id@host>"
+    assert headers["References"] == "<orig-id@host>"
+
+
+async def test_no_threading_headers_without_in_reply_to(monkeypatch):
+    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+    cls, post = _client(_response(200, {"messageId": "m"}))
+    with patch.object(brevo.httpx, "AsyncClient", cls):
+        await brevo.send_email(
+            to_email="lead@x.com", to_name=None,
+            subject="s", html_body="<p>h</p>", text_body="h",
+            sender_name="S", sender_email="s@x.com",
+            campaign_id="c", lead_id="l",
+        )
+    headers = post.call_args.kwargs["json"]["headers"]
+    assert "In-Reply-To" not in headers
+    assert "References" not in headers

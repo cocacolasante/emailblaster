@@ -95,6 +95,7 @@ describe('SequenceBuilder', () => {
     });
 
     expect(screen.getByText('Email')).toBeInTheDocument();
+    expect(screen.getByText('Reply')).toBeInTheDocument();
     expect(screen.getByText('Wait')).toBeInTheDocument();
     expect(screen.getByText('LI: View profile')).toBeInTheDocument();
     expect(screen.getByText('LI: Connect')).toBeInTheDocument();

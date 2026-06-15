@@ -264,6 +264,84 @@ def _build_linkedin_dm_prompt(
     )
 
 
+def _build_reply_prompt(
+    *, goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str, job_title: str,
+    research_data: dict[str, Any], original_subject: str, original_body: str,
+    idea: str,
+) -> str:
+    """Prompt for an in-thread follow-up REPLY to a prior cold email.
+
+    Reuses the lead's existing research (no new research is done) and is
+    steered by the user's generalized ``idea`` of what the reply should say.
+    """
+    quality = (research_data or {}).get("quality", "low")
+    idea_line = (
+        f"What this follow-up should focus on: {idea}\n" if (idea or "").strip()
+        else "Follow-up angle: gently re-surface the original ask without repeating it verbatim.\n"
+    )
+    research_block = ""
+    if quality != "low":
+        person_news = "; ".join(research_data.get("person_news") or []) or "(none)"
+        company_news = "; ".join(research_data.get("company_news") or []) or "(none)"
+        research_block = (
+            f"Recent person news: {person_news}\n"
+            f"Recent company news: {company_news}\n"
+        )
+    return (
+        "You are writing a SHORT follow-up REPLY in an existing email thread "
+        "for a cold outreach campaign.  The recipient never replied to the "
+        "first email; this is a nudge in the SAME thread (it will be sent as "
+        "a reply, so do NOT restate the original pitch in full and do NOT add "
+        "a subject line).\n"
+        f"Campaign goal: {goal}\n"
+        f"Tone: {tone}\n"
+        f"Sender: {sender_name}\n"
+        f"{idea_line}\n"
+        "Recipient:\n"
+        f"Name: {first_name} {last_name}"
+        + (f", {job_title} at {company}" if job_title else f" at {company}") + "\n"
+        f"{research_block}\n"
+        "The original email you are replying to:\n"
+        f"Subject: {original_subject}\n"
+        f"---\n{original_body}\n---\n\n"
+        "Write a brief, natural follow-up reply under 90 words. Open like a "
+        "reply (e.g. a quick check-in), reference the original ask lightly, "
+        "and give one clear next step. No sycophancy, no hollow flattery, do "
+        "not mention doing research.\n\n"
+        f"{_STYLE_RULES}\n\n"
+        'Respond ONLY with JSON: {"body": "..."}'
+    )
+
+
+async def generate_followup_reply(
+    *, goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str, job_title: str,
+    research_data: dict[str, Any], original_subject: str, original_body: str,
+    idea: str = "",
+) -> str:
+    """Compose an in-thread follow-up reply via Anthropic; retry once on
+    parse failure.  Does NOT trigger research — reuses ``research_data``."""
+    system_prompt = _build_reply_prompt(
+        goal=goal, tone=tone, sender_name=sender_name,
+        first_name=first_name, last_name=last_name, company=company,
+        job_title=job_title, research_data=research_data,
+        original_subject=original_subject, original_body=original_body, idea=idea,
+    )
+    user_msg = "Write the follow-up reply now. Respond ONLY with the JSON object."
+    text = await _call_anthropic(system_prompt, user_msg)
+    parsed = _parse_json(text)
+    if isinstance(parsed, dict) and isinstance(parsed.get("body"), str) and parsed["body"].strip():
+        return _strip_long_dashes(parsed["body"].strip())
+
+    stricter = system_prompt + '\n\nCRITICAL: Respond ONLY with {"body": "..."}. No markdown, no preamble.'
+    text = await _call_anthropic(stricter, user_msg)
+    parsed = _parse_json(text)
+    if isinstance(parsed, dict) and isinstance(parsed.get("body"), str) and parsed["body"].strip():
+        return _strip_long_dashes(parsed["body"].strip())
+    raise ValueError("Anthropic returned unparseable response for follow-up reply after retry")
+
+
 async def generate_linkedin_dm_text(
     goal: str, tone: str, sender_name: str,
     first_name: str, last_name: str, company: str, job_title: str,

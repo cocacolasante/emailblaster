@@ -19,6 +19,23 @@ _TIMEOUT_SECONDS = 30.0
 _EVENTS_PAGE_LIMIT = 5000
 
 
+def _wrap_message_id(message_id: str | None) -> str | None:
+    """Normalise a Message-ID into angle-bracket form for threading headers.
+
+    Brevo returns ``messageId`` sometimes already wrapped (``<...@host>``)
+    and sometimes bare; ``In-Reply-To`` / ``References`` want the wrapped
+    form.  Returns None for an empty/whitespace id.
+    """
+    mid = (message_id or "").strip()
+    if not mid:
+        return None
+    if not mid.startswith("<"):
+        mid = f"<{mid}"
+    if not mid.endswith(">"):
+        mid = f"{mid}>"
+    return mid
+
+
 async def send_email(
     *,
     to_email: str,
@@ -30,8 +47,14 @@ async def send_email(
     sender_email: str,
     campaign_id: str,
     lead_id: str,
+    in_reply_to: str | None = None,
 ) -> str:
     """Send a transactional email via Brevo. Returns the Brevo messageId.
+
+    When ``in_reply_to`` is the RFC Message-ID of a previously-sent email,
+    the ``In-Reply-To`` + ``References`` headers are set so the recipient's
+    mail client threads this message as a reply to that email rather than
+    showing it as a new thread.
 
     Raises httpx.HTTPStatusError on non-2xx response, or RuntimeError when
     BREVO_API_KEY is not configured.
@@ -43,16 +66,23 @@ async def send_email(
     if to_name:
         recipient["name"] = to_name
 
+    headers: dict[str, Any] = {
+        "X-Campaign-ID": str(campaign_id),
+        "X-Lead-ID": str(lead_id),
+    }
+    ref = _wrap_message_id(in_reply_to)
+    if ref:
+        # RFC 5322 threading: clients group by References (root id) + subject.
+        headers["In-Reply-To"] = ref
+        headers["References"] = ref
+
     payload: dict[str, Any] = {
         "sender": {"name": sender_name, "email": sender_email},
         "to": [recipient],
         "subject": subject,
         "htmlContent": html_body,
         "textContent": text_body,
-        "headers": {
-            "X-Campaign-ID": str(campaign_id),
-            "X-Lead-ID": str(lead_id),
-        },
+        "headers": headers,
     }
 
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:

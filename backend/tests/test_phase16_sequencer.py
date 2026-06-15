@@ -387,3 +387,122 @@ async def test_followup_step_halts_on_suppression(db_session, monkeypatch):
     assert state.status == LeadSequenceStatus.HALTED
     assert "suppression" in (state.halt_reason or "").lower()
     assert state.next_run_at is None
+
+
+# --------------------------------------------------------------------------
+# Reply-in-thread node (email_reply)
+# --------------------------------------------------------------------------
+
+
+async def _make_reply_node(db_session, campaign, **cfg):
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db_session.add(seq)
+    await db_session.flush()
+    node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL_REPLY,
+        config=cfg, is_entry=False,
+    )
+    db_session.add(node)
+    await db_session.commit()
+    await db_session.refresh(node)
+    return node
+
+
+async def _reply_lead(db_session, campaign, *, message_id="<orig@mail>", subject="Quick question"):
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    lead.brevo_message_id = message_id
+    lead.composed_subject = subject
+    lead.composed_body = "Original pitch body."
+    await db_session.commit()
+    await db_session.refresh(lead)
+    return lead
+
+
+async def test_email_reply_manual_threads_to_original(db_session, monkeypatch):
+    campaign = await _make_campaign(db_session)
+    node = await _make_reply_node(db_session, campaign, body_template="Just following up, {{first_name}}.")
+    lead = await _reply_lead(db_session, campaign)
+
+    captured = {}
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return "<reply@mail>"
+    monkeypatch.setattr(sequencer.brevo, "send_email", fake_send)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "sent"
+    assert captured["subject"] == "Re: Quick question"
+    assert captured["in_reply_to"] == "<orig@mail>"
+    assert "Just following up, L." in captured["html_body"]
+
+
+async def test_email_reply_does_not_double_prefix_re(db_session, monkeypatch):
+    campaign = await _make_campaign(db_session)
+    node = await _make_reply_node(db_session, campaign, body_template="Ping")
+    lead = await _reply_lead(db_session, campaign, subject="Re: Already a reply")
+
+    captured = {}
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return "<r@mail>"
+    monkeypatch.setattr(sequencer.brevo, "send_email", fake_send)
+
+    await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert captured["subject"] == "Re: Already a reply"
+
+
+async def test_email_reply_ai_uses_composer_and_threads(db_session, monkeypatch):
+    campaign = await _make_campaign(db_session)
+    node = await _make_reply_node(
+        db_session, campaign, ai_compose=True, ai_prompt="mention the Q3 deadline",
+    )
+    lead = await _reply_lead(db_session, campaign)
+
+    seen = {}
+    async def fake_reply(**kwargs):
+        seen.update(kwargs)
+        return "AI-written nudge."
+    monkeypatch.setattr(sequencer, "generate_followup_reply", fake_reply)
+
+    captured = {}
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return "<reply@mail>"
+    monkeypatch.setattr(sequencer.brevo, "send_email", fake_send)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "sent"
+    assert seen["idea"] == "mention the Q3 deadline"
+    assert seen["original_subject"] == "Quick question"
+    assert "AI-written nudge." in captured["html_body"]
+    assert captured["in_reply_to"] == "<orig@mail>"
+
+
+async def test_email_reply_skips_when_no_prior_email(db_session, monkeypatch):
+    campaign = await _make_campaign(db_session)
+    node = await _make_reply_node(db_session, campaign, body_template="Ping")
+    lead = await _make_lead(db_session, campaign)
+    lead.brevo_message_id = None          # no original email was sent
+    await db_session.commit()
+
+    async def explode(**kwargs):
+        raise AssertionError("must not send a reply with no prior email")
+    monkeypatch.setattr(sequencer.brevo, "send_email", explode)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "skipped"
+    assert "no previous email" in result["error"]
+
+
+async def test_email_reply_manual_without_body_is_misconfigured(db_session, monkeypatch):
+    campaign = await _make_campaign(db_session)
+    node = await _make_reply_node(db_session, campaign)   # no body_template, no ai_compose
+    lead = await _reply_lead(db_session, campaign)
+
+    async def explode(**kwargs):
+        raise AssertionError("must not send a misconfigured reply")
+    monkeypatch.setattr(sequencer.brevo, "send_email", explode)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(node.id))
+    assert result["status"] == "misconfigured"

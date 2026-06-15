@@ -201,6 +201,7 @@ async def campaign_sends_legacy_first_email(
 # imports + tests; treat it as PUBLISHABLE_KINDS_CURRENT.
 PUBLISHABLE_KINDS_M1 = {
     SequenceNodeKind.EMAIL,
+    SequenceNodeKind.EMAIL_REPLY,
     SequenceNodeKind.WAIT,
     SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
     SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
@@ -277,6 +278,16 @@ def validate_graph(
             if not cfg.get("subject_template") or not cfg.get("body_template"):
                 errors.append(
                     f"{label}: follow-up email needs subject_template + body_template"
+                )
+        elif kind_enum == SequenceNodeKind.EMAIL_REPLY:
+            if n.get("is_entry"):
+                errors.append(
+                    f"{label}: a reply node can't be the entry node "
+                    "(there's no previous email to reply to)"
+                )
+            if not cfg.get("ai_compose") and not (cfg.get("body_template") or "").strip():
+                errors.append(
+                    f"{label}: reply node needs body_template (or enable ai_compose)"
                 )
         elif kind_enum == SequenceNodeKind.LINKEDIN_CONNECT:
             if not cfg.get("no_note"):

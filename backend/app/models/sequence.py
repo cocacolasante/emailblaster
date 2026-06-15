@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 
 class SequenceNodeKind(str, enum.Enum):
     EMAIL = "email"
+    # Reply in-thread to the lead's original campaign email instead of
+    # starting a new thread.  Body is AI-written (guided by a prompt) or a
+    # manual template.  Never a valid entry node — it needs a prior email.
+    EMAIL_REPLY = "email_reply"
     WAIT = "wait"
     # LinkedIn kinds are reserved here so existing rows / API clients can use
     # them, but publish() rejects sequences containing them in M1. M2 lights

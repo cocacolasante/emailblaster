@@ -22,7 +22,38 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Editable campaign goal — rewrites unsent emails
+- **Last completed:** **"Reply to previous email" sequence node
+  (AI-written or manual).**  A new builder node (`email_reply`, migration
+  0035) that replies IN-THREAD to the lead's original campaign email
+  instead of starting a new thread.  The body is either AI-written
+  (guided by a generalized prompt the user types) or a manual template.
+  - **Threading**: `brevo.send_email` gained `in_reply_to` → sets
+    `In-Reply-To` + `References` headers (normalised to `<...>` via
+    `_wrap_message_id`) so the recipient's client threads it as a reply.
+    The node threads to `lead.brevo_message_id` (the original email's
+    RFC Message-ID) with subject `Re: {lead.composed_subject}`
+    (`_reply_subject`, idempotent — no `Re: Re:`).  Skips with "no
+    previous email to reply to" when the original was never sent.
+  - **AI vs manual**: node `config` = `{ai_compose, ai_prompt,
+    body_template}`.  AI mode calls new
+    `compose.generate_followup_reply(...)` (Sonnet) — reuses the lead's
+    EXISTING `research_data`, so **no new research runs** — steered by
+    `ai_prompt` (the generalized idea) + the original email for context,
+    then applies the campaign's effective signature.  Manual mode
+    substitutes `body_template`.
+  - **Sequencer**: `_send_email_step_async` handles both EMAIL and
+    EMAIL_REPLY (snapshots context, composes outside the session, sends
+    with `in_reply_to`); the beat dispatch + `_has_downstream_email`
+    treat the two kinds together.  `EMAIL_REPLY` added to
+    `PUBLISHABLE_KINDS_M1`; `validate_graph` rejects it as an entry node
+    and requires body-or-ai.
+  - **Builder**: "Reply" palette item + node editor (AI toggle → prompt
+    textarea, else reply-body textarea) + indigo node dot.
+  - Tests: 12 backend (5 reply-worker in `test_phase16_sequencer.py`,
+    3 threading in `test_phase9_brevo.py`, 4 publish-validation in new
+    `test_phase44_email_reply.py`) + 1 frontend palette assertion.
+    Tests: **backend 1005, frontend 350**.
+- **Previously:** **Editable campaign goal — rewrites unsent emails
   (no new research).**  The Overview tab now has a Goal editor.  Saving a
   new goal on a non-complete campaign re-composes every already-composed,
   not-yet-sent email so the new goal takes effect immediately; sent
@@ -1750,7 +1781,17 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — Editable campaign goal that rewrites
+_Last updated: 2026-06-15 (latest) — "Reply to previous email" sequence
+node.  A new `email_reply` builder node (migration 0035) replies in-thread
+to the lead's original campaign email (In-Reply-To/References via
+`brevo.send_email(in_reply_to=...)`, subject `Re: …`) instead of a new
+thread.  Body is AI-written (`compose.generate_followup_reply`, steered by
+a user prompt, reusing existing research — NO new research) or a manual
+template.  `validate_graph` rejects it as entry + requires body-or-ai;
+builder gains a "Reply" node with an AI-toggle/prompt editor.  12 new
+backend + 1 frontend test.  Tests: **backend 1005, frontend 350**.
+
+_Previously: 2026-06-15 — Editable campaign goal that rewrites
 unsent emails.  The Overview Goal editor lets you change the goal on a
 running/paused campaign; saving re-composes every composed, not-yet-sent
 email (reusing existing research — NO new research) so the new goal takes
@@ -2281,7 +2322,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **993 passing**.  Frontend tests: **350 passing**._
+_Backend tests: **1005 passing**.  Frontend tests: **350 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -36,6 +36,7 @@ import {
 // Both are tracked in CLAUDE.md "Next up".
 const PALETTE = [
   { kind: 'email', label: 'Email', hint: 'Send a templated email.' },
+  { kind: 'email_reply', label: 'Reply', hint: 'Reply in-thread to the lead’s original campaign email (not a new thread). AI-written or manual.' },
   { kind: 'wait', label: 'Wait', hint: 'Pause N minutes / hours / days before the next step.' },
   { kind: 'linkedin_view_profile', label: 'LI: View profile', hint: 'Ghost-view the lead’s profile (low-touch warm-up).' },
   { kind: 'linkedin_follow_profile', label: 'LI: Follow profile', hint: 'Follow the lead. They get a notification.' },
@@ -156,6 +157,11 @@ function defaultsForKind(kind) {
         },
         title: 'Comment on post',
       };
+    case 'email_reply':
+      return {
+        config: { ai_compose: true, ai_prompt: '', body_template: '' },
+        title: 'Reply in thread',
+      };
     case 'email':
     default:
       return { config: {}, title: 'New email' };
@@ -194,6 +200,7 @@ const HANDLE_STYLE = {
 
 const KIND_COLORS = {
   email: 'bg-blue-500',
+  email_reply: 'bg-indigo-500',
   wait: 'bg-amber-400',
   linkedin_view_profile: 'bg-sky-500',
   linkedin_follow_profile: 'bg-sky-500',
@@ -365,6 +372,61 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
                 </p>
               </div>
             </>
+          )}
+        </>
+      )}
+
+      {node.data.kind === 'email_reply' && (
+        <>
+          <div className="p-3 bg-blue-50 rounded text-xs text-blue-700">
+            Replies in-thread to the lead’s original campaign email (same
+            subject, threaded — not a new conversation). Only fires once the
+            first email has been sent.
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              data-testid="reply-ai-toggle"
+              checked={!!cfg.ai_compose}
+              onChange={(e) => setCfg({ ai_compose: e.target.checked })}
+            />
+            Let the AI write the reply
+          </label>
+          {cfg.ai_compose ? (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                What should the follow-up say? (optional)
+              </label>
+              <textarea
+                data-testid="reply-ai-prompt"
+                value={cfg.ai_prompt || ''}
+                onChange={(e) => setCfg({ ai_prompt: e.target.value })}
+                rows={3}
+                placeholder="e.g. Mention the free trial ends Friday and offer a 15-min call"
+                className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded"
+              />
+              <p className="mt-1 text-[11px] text-slate-500">
+                A generalized idea — the AI writes a short reply around it,
+                reusing the lead’s existing research (no new research is done).
+                Leave blank for a generic nudge.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Reply body</label>
+              <textarea
+                data-testid="reply-body-template"
+                value={cfg.body_template || ''}
+                onChange={(e) => setCfg({ body_template: e.target.value })}
+                rows={6}
+                placeholder={'Hi {{first_name}},\n\nJust floating this back to the top of your inbox...'}
+                className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded font-mono"
+              />
+              <p className="mt-1 text-[11px] text-slate-500">
+                Variables: <code>{'{{first_name}}'}</code>, <code>{'{{last_name}}'}</code>,{' '}
+                <code>{'{{company}}'}</code>, <code>{'{{job_title}}'}</code>.
+              </p>
+            </div>
           )}
         </>
       )}
