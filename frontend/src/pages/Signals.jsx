@@ -8,6 +8,7 @@ import {
   deleteWatch,
   dismissSignal,
   draftSignalEmail,
+  enrichSignalContact,
   listSignals,
   listWatches,
   runWatchNow,
@@ -66,6 +67,22 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
     mutationFn: () => dismissSignal(signal.id),
     onSuccess: () => { invalidate(); toast.success('Dismissed'); },
   });
+  const enrichMut = useMutation({
+    mutationFn: () => enrichSignalContact(signal.id),
+    onSuccess: (d) => {
+      if (d.found) {
+        invalidate();
+        toast.success(
+          d.email
+            ? `Found ${d.generic ? 'a general inbox' : 'a contact'}: ${d.email}`
+            : 'Contact found',
+        );
+      } else {
+        toast.info('No contact email could be found for this org.');
+      }
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Lookup failed'),
+  });
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
 
   const detail = signal.detail || {};
@@ -118,7 +135,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
       </div>
       {signal.status === 'new' && (
         <div className="flex gap-2 shrink-0">
-          {signal.lead_id && (
+          {signal.lead_id ? (
             <button
               type="button"
               data-testid={`draft-signal-${signal.id}`}
@@ -126,6 +143,16 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
               className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             >
               Draft &amp; send
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid={`enrich-signal-${signal.id}`}
+              disabled={enrichMut.isPending}
+              onClick={stop(() => enrichMut.mutate())}
+              className="text-sm px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+            >
+              {enrichMut.isPending ? 'Searching…' : 'Find contact'}
             </button>
           )}
           <button
@@ -160,6 +187,8 @@ function SignalDetailModal({ signal, onClose }) {
   const [toEmail, setToEmail] = useState('');
   const [fromEmail, setFromEmail] = useState('');   // '' = workspace default
   const [crmNote, setCrmNote] = useState(null);
+  const [enrichedLeadId, setEnrichedLeadId] = useState(null);
+  const hasContact = !!(signal.lead_id || enrichedLeadId);
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['connected-accounts'],
@@ -204,6 +233,24 @@ function SignalDetailModal({ signal, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Send failed'),
   });
 
+  const enrichMut = useMutation({
+    mutationFn: () => enrichSignalContact(signal.id),
+    onSuccess: (d) => {
+      if (d.found && d.lead_id) {
+        setEnrichedLeadId(d.lead_id);
+        queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+        toast.success(
+          d.email
+            ? `Found ${d.generic ? 'a general inbox' : 'a contact'}: ${d.email}`
+            : 'Contact found',
+        );
+      } else {
+        toast.info('No contact email could be found for this org.');
+      }
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Lookup failed'),
+  });
+
   return (
     <div
       data-testid="signal-detail-modal"
@@ -242,11 +289,22 @@ function SignalDetailModal({ signal, onClose }) {
           ))}
         </dl>
 
-        {!signal.lead_id ? (
-          <p data-testid="signal-no-contact" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-            No contact email was found for this org, so there's no one to email
-            yet (notification-only). Mark it actioned or dismiss it.
-          </p>
+        {!hasContact ? (
+          <div data-testid="signal-no-contact" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <p className="m-0">
+              No contact email was found for this org yet (notification-only).
+              Try a light contact lookup, or mark it actioned / dismiss it.
+            </p>
+            <button
+              type="button"
+              data-testid="signal-enrich-btn"
+              disabled={enrichMut.isPending}
+              onClick={() => enrichMut.mutate()}
+              className="mt-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 disabled:opacity-50"
+            >
+              {enrichMut.isPending ? 'Searching…' : '🔎 Find contact'}
+            </button>
+          </div>
         ) : stage === 'sent' ? (
           <div data-testid="signal-send-success" className="text-sm">
             <p className="text-emerald-700 font-medium m-0">Sent to {toEmail}.</p>

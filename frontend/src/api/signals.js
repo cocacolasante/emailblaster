@@ -43,6 +43,13 @@ export async function dismissSignal(id) {
   return data;
 }
 
+/** Light contact lookup (Hunter-first). On a hit, stages + links a
+ *  campaign-less lead so the signal becomes contactable. */
+export async function enrichSignalContact(id) {
+  const { data } = await client.post(`/signals/${id}/enrich`);
+  return data;
+}
+
 /** One watch per company (funding/hiring) — paste a list, get
  *  {created, skipped_duplicate, watch_ids}. */
 export async function createWatchesBulk(payload) {

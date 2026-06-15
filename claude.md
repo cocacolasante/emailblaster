@@ -22,7 +22,44 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Bulk add signals to a campaign — emails run
+- **Last completed:** **"Find contact" — on-demand light contact
+  enrichment for notification-only signals.**  Discovery signals whose
+  org had no resolvable contact at discovery time land in the queue
+  notification-only (no `lead_id`).  A per-signal "Find contact" button
+  retries the SAME low-cost resolver on demand and, on a hit, stages +
+  links a campaign-less Lead so the existing Draft / Send /
+  Add-to-campaign flows light up.
+  - **Lowest-cost path reused** — `funding_sources.enrichment.resolve_contact`
+    is Hunter-first (free/cheap per-call) and uses at most ONE Haiku
+    web-lookup, and only when no domain is already known.  No new
+    Anthropic calls beyond that one optional lookup.
+  - **Service** `services/signal_enrichment.enrich_signal_contact(db,
+    signal)` — rebuilds a `DiscoveredOrg` from the signal (org name from
+    `detail.org_name`, else parsed from the IRS / USAspending summary;
+    state/ein/ntee/website from `detail`), runs `resolve_contact`, then
+    find-or-creates a campaign-less Lead by canonical email and sets
+    `signal.lead_id`.  Idempotent: a signal that already has a
+    contactable lead returns that contact with `already_had_contact=True`
+    and spends nothing (the resolver isn't called).  Stays inside the
+    autonomy boundary — never sets `campaign_id` / enrolls a sequence.
+  - **Worker change** — `_stage_discovery_signal` now persists
+    `org_name` / `website` / `state` / `ein` / `ntee_code` into the
+    signal `detail` so later enrichment rebuilds the org without
+    re-parsing the summary (existing rows fall back to summary parsing).
+  - **Endpoint** `POST /signals/{id}/enrich` → `SignalEnrichResponse`
+    (found, email, names, title, generic, lead_id, lead_created,
+    already_had_contact); 404 unknown.
+  - **Frontend** (`pages/Signals.jsx`): contactless `new` signal cards
+    show a "Find contact" button in place of "Draft & send"; the detail
+    modal's no-contact panel gains a "🔎 Find contact" button that, on a
+    hit, flips the panel to the draft flow.  Toast reports the found
+    email (or "a general inbox" for generic mailboxes), or "no contact
+    could be found".
+  - Tests: 6 backend (`test_phase43_funding_discovery.py`: finds +
+    links, summary-parse org name, no-contact, already-has-contact skips
+    lookup, reuses existing lead by email, 404) + 2 frontend
+    (`Signals.test.jsx`).  Tests: **backend 981, frontend 344**.
+- **Previously:** **Bulk add signals to a campaign — emails run
   automatically.**  The Signals feed now lets the user select any
   number of `new` signals (per-card checkbox), pick a target campaign,
   and copy their staged leads into it; the campaign's normal
@@ -1632,7 +1669,16 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — Bulk add signals to a campaign.
+_Last updated: 2026-06-15 (latest) — "Find contact" light enrichment.
+A per-signal button retries the low-cost `enrichment.resolve_contact`
+(Hunter-first; at most one Haiku web-lookup) on notification-only
+signals; on a hit it stages + links a campaign-less Lead so the
+Draft / Send / Add-to-campaign flows light up.  `POST /signals/{id}/enrich`
++ `services/signal_enrichment`; the funding worker now persists
+org_name/website/state/ein/ntee into signal `detail`.  6 new backend +
+2 new frontend tests.  Tests: **backend 981, frontend 344**.
+
+_Previously: 2026-06-15 — Bulk add signals to a campaign.
 The Signals feed lets the user select `new` signals, pick a campaign,
 and copy their staged leads in via shared
 `services/campaign_membership.add_leads_to_campaign` (COPY not move;
@@ -2130,7 +2176,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **975 passing**.  Frontend tests: **342 passing**._
+_Backend tests: **981 passing**.  Frontend tests: **344 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

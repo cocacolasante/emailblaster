@@ -17,6 +17,7 @@ vi.mock('../api/signals.js', () => ({
   draftSignalEmail: vi.fn(),
   sendSignalEmail: vi.fn(),
   addSignalsToCampaign: vi.fn(),
+  enrichSignalContact: vi.fn(),
 }));
 vi.mock('../api/connectedAccounts.js', () => ({
   listAccounts: vi.fn(),
@@ -283,5 +284,46 @@ describe('Signals → add to campaign (bulk)', () => {
     renderPage();
     await user.click(await screen.findByTestId('select-signal-s1'));
     expect(screen.queryByTestId('signal-detail-modal')).toBeNull();
+  });
+});
+
+describe('Signals → find contact (enrichment)', () => {
+  const NO_CONTACT = { ...SIGNAL, id: 's2', lead_id: null };
+
+  it('card shows Find contact instead of Draft & send; click calls the API', async () => {
+    api.listSignals.mockResolvedValue(paged([NO_CONTACT]));
+    api.enrichSignalContact.mockResolvedValue({
+      found: true, email: 'ed@helpinghands.org', generic: false,
+      lead_id: 'l9', lead_created: true, already_had_contact: false,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByTestId('signal-card-s2');
+    expect(screen.queryByTestId('draft-signal-s2')).toBeNull();
+    await user.click(screen.getByTestId('enrich-signal-s2'));
+    await waitFor(() => {
+      expect(api.enrichSignalContact).toHaveBeenCalledWith('s2');
+    });
+  });
+
+  it('modal Find contact button resolves a contact and reveals the draft flow', async () => {
+    api.listSignals.mockResolvedValue(paged([NO_CONTACT]));
+    api.enrichSignalContact.mockResolvedValue({
+      found: true, email: 'ed@helpinghands.org', generic: false,
+      lead_id: 'l9', lead_created: true, already_had_contact: false,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTestId('signal-card-s2'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    await user.click(within(modal).getByTestId('signal-enrich-btn'));
+    await waitFor(() => {
+      expect(api.enrichSignalContact).toHaveBeenCalledWith('s2');
+    });
+    // Contact found → draft button now available, no-contact panel gone.
+    expect(await within(modal).findByTestId('signal-draft-btn')).toBeInTheDocument();
+    expect(within(modal).queryByTestId('signal-no-contact')).toBeNull();
   });
 });

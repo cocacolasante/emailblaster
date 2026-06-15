@@ -953,3 +953,123 @@ async def test_signals_add_unknown_campaign_404(client, db_session):
         "signal_ids": [str(s1.id)], "campaign_id": str(uuid.uuid4()),
     })
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# On-demand contact enrichment ("Find contact")
+# ---------------------------------------------------------------------------
+
+async def _notification_only_signal(db_session, *, detail=None, summary=None):
+    signal = ProspectSignal(
+        watch_id=None, source="usaspending", signal_type="grant_awarded",
+        summary=summary or "Helping Hands won a federal grant ($50,000) from HHS",
+        detail=detail if detail is not None else {
+            "amount": 50000, "org_name": "Helping Hands",
+            "website": "https://helpinghands.org",
+        },
+        dedup_key=f"grant_awarded:{uuid.uuid4().hex}", lead_id=None,
+    )
+    db_session.add(signal)
+    await db_session.commit()
+    await db_session.refresh(signal)
+    return signal
+
+
+async def test_signal_enrich_finds_contact_and_links_lead(client, db_session, monkeypatch):
+    signal = await _notification_only_signal(db_session)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact",
+        AsyncMock(return_value={
+            "email": "ED@HelpingHands.org", "first_name": "Dana",
+            "last_name": "Reed", "title": "Executive Director", "generic": False,
+        }),
+    )
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["found"] is True
+    assert body["lead_created"] is True
+    assert body["already_had_contact"] is False
+    assert body["email"] == "ed@helpinghands.org"   # canonicalised
+    assert body["lead_id"]
+
+    await db_session.refresh(signal)
+    assert signal.lead_id is not None
+    lead = await db_session.get(Lead, signal.lead_id)
+    assert lead.campaign_id is None                  # autonomy boundary
+    assert lead.email == "ed@helpinghands.org"
+    assert lead.company == "Helping Hands"
+
+
+async def test_signal_enrich_parses_org_name_from_summary(client, db_session, monkeypatch):
+    # No org_name in detail — must be parsed from the IRS-style summary.
+    signal = await _notification_only_signal(
+        db_session, detail={}, summary="New 501(c)(3): Tiny Org (PA) — IRS ruling 202405",
+    )
+    captured = {}
+
+    async def _resolve(org):
+        captured["org_name"] = org.org_name
+        return {"email": "info@tinyorg.org", "generic": True}
+
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact", _resolve,
+    )
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    assert captured["org_name"] == "Tiny Org"
+    assert resp.json()["generic"] is True
+
+
+async def test_signal_enrich_no_contact_found(client, db_session, monkeypatch):
+    signal = await _notification_only_signal(db_session)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact",
+        AsyncMock(return_value=None),
+    )
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["found"] is False
+    await db_session.refresh(signal)
+    assert signal.lead_id is None                    # still notification-only
+
+
+async def test_signal_enrich_already_has_contact_skips_lookup(client, db_session, monkeypatch):
+    signal, lead = await _signal_with_staged_lead(db_session)
+    resolver = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact", resolver,
+    )
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["found"] is True
+    assert body["already_had_contact"] is True
+    assert body["lead_id"] == str(lead.id)
+    resolver.assert_not_awaited()                    # no API spend
+
+
+async def test_signal_enrich_reuses_existing_lead_by_email(client, db_session, monkeypatch):
+    existing = Lead(campaign_id=None, email="ed@helpinghands.org", first_name="Dana")
+    db_session.add(existing)
+    await db_session.flush()
+    signal = await _notification_only_signal(db_session)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact",
+        AsyncMock(return_value={"email": "ed@helpinghands.org", "first_name": "Dana"}),
+    )
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["found"] is True
+    assert body["lead_created"] is False
+    assert body["lead_id"] == str(existing.id)
+    n = await db_session.scalar(
+        select(func.count()).select_from(Lead).where(Lead.email == "ed@helpinghands.org")
+    )
+    assert n == 1                                    # no duplicate
+
+
+async def test_signal_enrich_unknown_404(client):
+    resp = await client.post(f"/signals/{uuid.uuid4()}/enrich")
+    assert resp.status_code == 404

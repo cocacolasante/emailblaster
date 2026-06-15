@@ -402,6 +402,50 @@ async def dismiss_signal(
 
 
 # ---------------------------------------------------------------------------
+# On-demand contact enrichment ("Find contact")
+# ---------------------------------------------------------------------------
+
+
+class SignalEnrichResponse(BaseModel):
+    found: bool
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    title: str | None = None
+    generic: bool = False
+    lead_id: uuid.UUID | None = None
+    lead_created: bool = False
+    already_had_contact: bool = False
+
+
+@router.post("/{signal_id}/enrich", response_model=SignalEnrichResponse)
+async def enrich_signal(
+    signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> SignalEnrichResponse:
+    """Light, low-cost contact lookup: Hunter-first, at most one Haiku
+    web-lookup for the domain.  On a hit, stages + links a campaign-less
+    Lead so the signal becomes contactable."""
+    from app.services import signal_enrichment
+
+    signal = await db.get(ProspectSignal, signal_id)
+    if signal is None:
+        raise HTTPException(status_code=404, detail="signal not found")
+
+    result = await signal_enrichment.enrich_signal_contact(db, signal)
+    return SignalEnrichResponse(
+        found=result.found,
+        email=result.email,
+        first_name=result.first_name,
+        last_name=result.last_name,
+        title=result.title,
+        generic=result.generic,
+        lead_id=result.lead_id,
+        lead_created=result.lead_created,
+        already_had_contact=result.already_had_contact,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Bulk: add signals' staged leads to a campaign (→ runs the send pipeline)
 # ---------------------------------------------------------------------------
 

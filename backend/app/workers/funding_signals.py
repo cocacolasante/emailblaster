@@ -229,7 +229,17 @@ async def _stage_discovery_signal(
         source=src,
         signal_type=org.signal_type,
         summary=org.summary,
-        detail=org.detail,
+        # Persist the org identity alongside the feed payload so a later
+        # on-demand "Find contact" enrichment can rebuild the org without
+        # re-parsing the summary.
+        detail={
+            **(org.detail or {}),
+            "org_name": org.org_name,
+            "website": org.website,
+            "state": org.state,
+            "ein": org.ein,
+            "ntee_code": org.ntee_code,
+        },
         dedup_key=org.dedup_key,
         lead_id=lead_id,
     )
