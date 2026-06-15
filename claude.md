@@ -76,6 +76,17 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     logs how many were left.  Dedup means each daily run advances through
     the backlog, so the cap bounds cost without dropping anyone.  Result
     dict gains `capped`.  1 test.  Tests: **backend 1026**.
+  - **Follow-up: cap lowered 100 → 25 (rate-limit safety).**  A live
+    USAspending run at cap=100 (a) **drained the Anthropic credit balance**
+    mid-run — every domain-discovery web_search 400'd with "credit balance
+    is too low", so all 100 orgs got `no_domain` → queued (correct graceful
+    degradation; nothing lost — the daily retry re-resolves once credits
+    return), and (b) tripped Hunter's free-tier `429 Too Many Requests`.
+    Each org costs ~1 Anthropic web-search + 1-3 Hunter calls, so 100/run is
+    too aggressive for free tiers.  Dropped `FUNDING_DISCOVERY_MAX_PER_RUN`
+    + `FUNDING_ENRICHMENT_BATCH` defaults to 25.  Resolution itself verified
+    working (live re-test resolved `info@pedaids.org` for Elizabeth Glaser
+    via website scrape).  Raise on paid Anthropic + Hunter tiers.
 - **Previously:** **Fixed the discovery Stop button (redelivery storm
   + cooperative stop).**  User reported Stop didn't stop a USAspending run
   — it kept "pulling."  Root cause: `task_acks_late=True` +

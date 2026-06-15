@@ -122,10 +122,13 @@ class Settings(BaseSettings):
     # --- Contact enrichment + deferred-enrichment queue ---
     # Max NEW (non-deduped) orgs a single discovery poll will enrich.  A
     # 30-day USAspending window returns ~2000 orgs; per-org contact
-    # enrichment (web-search + scrape + Hunter) makes an uncapped run
-    # expensive + slow.  Dedup means each daily run advances through the
-    # backlog, so the cap bounds cost per run without dropping anyone.
-    FUNDING_DISCOVERY_MAX_PER_RUN: int = 100
+    # enrichment makes EACH org spend ~1 Anthropic web-search + scrape + 1-3
+    # Hunter calls.  Kept conservative (25) so one run can't drain Anthropic
+    # credits or trip Hunter's free-tier rate limit (429) in a burst — both
+    # observed at 100.  Dedup means each daily run advances through the
+    # backlog, so the cap bounds per-run cost without dropping anyone; raise
+    # it if you're on paid Anthropic + Hunter tiers.
+    FUNDING_DISCOVERY_MAX_PER_RUN: int = 25
     # Max pages the website scraper fetches per org (homepage + a fixed set
     # of contact/about/staff paths).
     FUNDING_SCRAPE_MAX_PAGES: int = 6
@@ -133,8 +136,9 @@ class Settings(BaseSettings):
     FUNDING_ENRICHMENT_RETRY_DAYS: list[int] = [7, 30, 60]
     # Give up (mark exhausted) after this many attempts.
     FUNDING_ENRICHMENT_MAX_ATTEMPTS: int = 3
-    # Rows processed per daily retry sweep.
-    FUNDING_ENRICHMENT_BATCH: int = 50
+    # Rows processed per daily retry sweep.  Same rate-limit reasoning as
+    # FUNDING_DISCOVERY_MAX_PER_RUN — each row re-runs the full enrichment.
+    FUNDING_ENRICHMENT_BATCH: int = 25
     # When True, an exhausted org with a mailing address gets a "Direct mail"
     # CRM task (no email, no campaign enrollment) instead of being dropped.
     FUNDING_DIRECT_MAIL_FALLBACK: bool = False
