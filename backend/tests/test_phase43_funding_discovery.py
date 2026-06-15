@@ -18,6 +18,8 @@ from sqlalchemy import func, select
 from app.models import (
     CrmActivity,
     CrmActivityType,
+    FundingEnrichmentQueue,
+    FundingEnrichmentStatus,
     FundingSourceState,
     Lead,
     LeadSequenceState,
@@ -26,7 +28,18 @@ from app.models import (
 )
 from app.services.funding_sources import irs_bmf, usaspending
 from app.services.funding_sources.base import DiscoveredOrg
+from app.services.funding_sources.enrichment import ContactResult
 from app.workers import funding_signals
+
+
+def _resolved(email="ed@helpinghands.org", **kw) -> ContactResult:
+    return ContactResult(
+        status="resolved", domain="helpinghands.org", email=email,
+        first_name=kw.get("first_name", "Dana"),
+        last_name=kw.get("last_name", "Reed"),
+        title=kw.get("title", "Executive Director"),
+        via=kw.get("via", "website"),
+    )
 from app.workers.funding_signals import (
     _poll_irs_bmf_async,
     _poll_usaspending_async,
@@ -208,16 +221,12 @@ async def test_staging_with_email_creates_lead_signal_task_notification(
 ):
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
-        AsyncMock(return_value={
-            "email": "ed@helpinghands.org",
-            "first_name": "Dana", "last_name": "Reed",
-            "title": "Executive Director", "generic": False,
-        }),
+        AsyncMock(return_value=_resolved()),
     )
     org = _org()
     result = await _stage_discovery_signal(db_session, "usaspending", org)
     await db_session.commit()
-    assert result == {"staged": True, "lead_created": True, "task": True}
+    assert result == {"staged": True, "lead_created": True, "task": True, "queued": False}
 
     # Campaign-less Lead.
     lead = await db_session.scalar(
@@ -267,34 +276,55 @@ async def test_staging_with_email_creates_lead_signal_task_notification(
     assert enrollments == []
 
 
-async def test_staging_without_email_is_notification_only(db_session, monkeypatch):
+async def test_staging_without_contact_is_gated_to_queue(db_session, monkeypatch):
+    """No contact → the org is GATED out of the review queue: no
+    ProspectSignal / Lead / task / notification, just a pending
+    FundingEnrichmentQueue row the retry worker owns."""
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=ContactResult(status="no_domain")),
     )
     org = _org(dedup="new_501c3:77", signal_type="new_501c3",
-               summary="New 501(c)(3): Tiny Org (PA)")
+               summary="New 501(c)(3): Tiny Org (PA)",
+               website=None, ein="77",
+               mailing_address={"street": "1 Main", "city": "Erie", "state": "PA", "zip": "16501"})
     result = await _stage_discovery_signal(db_session, "irs_bmf", org)
     await db_session.commit()
-    assert result == {"staged": True, "lead_created": False, "task": False}
+    assert result == {"staged": False, "lead_created": False, "task": False, "queued": True}
 
-    # Signal + notification exist; no Lead, no task.
-    signal = await db_session.scalar(
-        select(ProspectSignal).where(ProspectSignal.dedup_key == org.dedup_key)
-    )
-    assert signal is not None
-    assert signal.source == "irs_bmf"
-    assert signal.lead_id is None
+    # NOT in the review queue, no side effects.
+    assert (await db_session.execute(select(ProspectSignal))).scalars().first() is None
     assert (await db_session.execute(select(Lead))).scalars().first() is None
     assert (await db_session.execute(select(CrmActivity))).scalars().first() is None
-    notifs = (await db_session.execute(select(Notification))).scalars().all()
-    assert len(notifs) == 1
+    assert (await db_session.execute(select(Notification))).scalars().first() is None
+
+    # Parked in the deferred-enrichment queue (pending), with the address.
+    row = await db_session.scalar(
+        select(FundingEnrichmentQueue).where(
+            FundingEnrichmentQueue.dedup_key == org.dedup_key
+        )
+    )
+    assert row is not None
+    assert row.status == FundingEnrichmentStatus.PENDING
+    assert row.attempts == 1
+    assert row.next_attempt_at is not None
+    assert row.payload["detail"]["mailing_address"]["city"] == "Erie"
+
+    # Re-discovery of the same org doesn't double-queue or re-resolve.
+    r2 = await _stage_discovery_signal(db_session, "irs_bmf", org)
+    await db_session.commit()
+    assert r2["queued"] is False
+    n = await db_session.scalar(
+        select(func.count()).select_from(FundingEnrichmentQueue)
+        .where(FundingEnrichmentQueue.dedup_key == org.dedup_key)
+    )
+    assert n == 1
 
 
 async def test_staging_dedup_emits_once(db_session, monkeypatch):
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=_resolved()),
     )
     org = _org(dedup="grant_awarded:DUP")
     r1 = await _stage_discovery_signal(db_session, "usaspending", org)
@@ -338,7 +368,7 @@ async def test_usaspending_poll_uses_trailing_window(db_session, monkeypatch):
     monkeypatch.setattr(funding_signals.usaspending, "fetch_recent_awards", _fake_fetch)
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=_resolved()),
     )
     result = await _poll_usaspending_async()
     assert result["fetched"] == 1
@@ -367,7 +397,7 @@ async def test_usaspending_poll_rescans_window_dedup_makes_overlap_free(db_sessi
     )
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=_resolved()),
     )
     first = await _poll_usaspending_async()
     second = await _poll_usaspending_async()
@@ -1026,10 +1056,11 @@ async def test_signal_enrich_finds_contact_and_links_lead(
     signal = await _notification_only_signal(db_session)
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact",
-        AsyncMock(return_value={
-            "email": "ED@HelpingHands.org", "first_name": "Dana",
-            "last_name": "Reed", "title": "Executive Director", "generic": False,
-        }),
+        AsyncMock(return_value=ContactResult(
+            status="resolved", domain="helpinghands.org",
+            email="ED@HelpingHands.org", first_name="Dana",
+            last_name="Reed", title="Executive Director", via="website",
+        )),
     )
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text
@@ -1059,7 +1090,9 @@ async def test_signal_enrich_parses_org_name_from_summary(
 
     async def _resolve(org):
         captured["org_name"] = org.org_name
-        return {"email": "info@tinyorg.org", "generic": True}
+        return ContactResult(
+            status="resolved", domain="tinyorg.org", email="info@tinyorg.org",
+        )
 
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact", _resolve,
@@ -1067,7 +1100,7 @@ async def test_signal_enrich_parses_org_name_from_summary(
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text
     assert captured["org_name"] == "Tiny Org"
-    assert resp.json()["generic"] is True
+    assert resp.json()["generic"] is True   # info@ → generic mailbox
 
 
 async def test_signal_enrich_no_contact_found(
@@ -1076,7 +1109,7 @@ async def test_signal_enrich_no_contact_found(
     signal = await _notification_only_signal(db_session)
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=ContactResult(status="no_contact")),
     )
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text
@@ -1112,7 +1145,10 @@ async def test_signal_enrich_reuses_existing_lead_by_email(
     signal = await _notification_only_signal(db_session)
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact",
-        AsyncMock(return_value={"email": "ed@helpinghands.org", "first_name": "Dana"}),
+        AsyncMock(return_value=ContactResult(
+            status="resolved", domain="helpinghands.org",
+            email="ed@helpinghands.org", first_name="Dana",
+        )),
     )
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text
@@ -1190,7 +1226,7 @@ async def test_signal_enrich_linkedin_only_creates_lead_without_email(
     )
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=ContactResult(status="no_contact")),
     )
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text

@@ -134,4 +134,10 @@ celery_app.conf.beat_schedule = {
         "task": "funding.poll_irs_bmf",
         "schedule": crontab(minute=0, hour=5, day_of_month=15),
     },
+    "funding-retry-enrichment": {
+        # Re-attempt contact resolution for orgs parked in the deferred
+        # enrichment queue; promote the ones that now resolve.
+        "task": "funding.retry_enrichment",
+        "schedule": crontab(minute=0, hour=6),  # daily, 06:00 UTC
+    },
 }

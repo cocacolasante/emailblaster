@@ -119,6 +119,20 @@ class Settings(BaseSettings):
     IRS_BMF_STATES: Annotated[list[str], NoDecode] = []
     IRS_BMF_RULING_LOOKBACK_MONTHS: int = 2
 
+    # --- Contact enrichment + deferred-enrichment queue ---
+    # Max pages the website scraper fetches per org (homepage + a fixed set
+    # of contact/about/staff paths).
+    FUNDING_SCRAPE_MAX_PAGES: int = 6
+    # Backoff (days) between enrichment retries; index = attempt number.
+    FUNDING_ENRICHMENT_RETRY_DAYS: list[int] = [7, 30, 60]
+    # Give up (mark exhausted) after this many attempts.
+    FUNDING_ENRICHMENT_MAX_ATTEMPTS: int = 3
+    # Rows processed per daily retry sweep.
+    FUNDING_ENRICHMENT_BATCH: int = 50
+    # When True, an exhausted org with a mailing address gets a "Direct mail"
+    # CRM task (no email, no campaign enrollment) instead of being dropped.
+    FUNDING_DIRECT_MAIL_FALLBACK: bool = False
+
     # Encryption
     ENCRYPTION_KEY: str = ""
 

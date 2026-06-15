@@ -45,6 +45,16 @@ def _parse_state_csv(text: str, state: str, since_ruling: str) -> list[Discovere
             continue
         ntee = (row.get("NTEE_CD") or "").strip() or None
         classification = (row.get("CLASSIFICATION") or "").strip() or None
+        # BMF mailing address (STREET/CITY/STATE/ZIP) — the direct-mail
+        # fallback's only contact path for unreachable new orgs.
+        mailing_address = {
+            "street": (row.get("STREET") or "").strip(),
+            "city": (row.get("CITY") or "").strip(),
+            "state": (row.get("STATE") or state).strip().upper(),
+            "zip": (row.get("ZIP") or "").strip(),
+        }
+        if not any(mailing_address.values()):
+            mailing_address = None
         orgs.append(DiscoveredOrg(
             signal_type="new_501c3",
             summary=f"New 501(c)(3): {name} ({state.upper()}) — IRS ruling {ruling}"[:300],
@@ -53,11 +63,13 @@ def _parse_state_csv(text: str, state: str, since_ruling: str) -> list[Discovere
             state=state.upper(),
             ein=ein,
             ntee_code=ntee,
+            mailing_address=mailing_address,
             detail={
                 "ruling_date": ruling,
                 "ntee_code": ntee,
                 "state": state.upper(),
                 "classification": classification,
+                "mailing_address": mailing_address,
             },
         ))
     return orgs

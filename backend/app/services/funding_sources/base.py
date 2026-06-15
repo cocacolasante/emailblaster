@@ -21,4 +21,7 @@ class DiscoveredOrg:
     ein: str | None = None
     ntee_code: str | None = None
     website: str | None = None
+    # Postal address (IRS BMF carries STREET/CITY/STATE/ZIP).  Powers the
+    # direct-mail fallback for orgs we can't reach by email.
+    mailing_address: dict[str, Any] | None = None
     detail: dict[str, Any] = field(default_factory=dict)

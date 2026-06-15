@@ -43,6 +43,43 @@ async def verify_email_hunter(email: str) -> dict[str, Any]:
     }
 
 
+async def domain_search(domain: str) -> list[dict[str, Any]]:
+    """Hunter Domain Search — every email Hunter has for ``domain``, with
+    role/type metadata.  The right tool when starting from an ORG (not a
+    person): no target name needed.
+
+    Returns ``[{email, first_name, last_name, position, type}]`` or ``[]``
+    when no key is set / no domain / the API hard-fails (permissive — an
+    outage must never crash the feed).
+    """
+    if not settings.HUNTER_API_KEY or not domain:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(HUNTER_DOMAIN_URL, params={
+                "domain": domain, "api_key": settings.HUNTER_API_KEY, "limit": 25,
+            })
+            resp.raise_for_status()
+            emails = ((resp.json() or {}).get("data") or {}).get("emails") or []
+    except Exception as e:  # noqa: BLE001 — opt-in feature, never crash the feed
+        logger.warning("Hunter domain_search failed for %s: %s", domain, e)
+        return []
+
+    out: list[dict[str, Any]] = []
+    for e in emails:
+        value = (e.get("value") or "").strip()
+        if not value:
+            continue
+        out.append({
+            "email": value,
+            "first_name": e.get("first_name"),
+            "last_name": e.get("last_name"),
+            "position": e.get("position"),
+            "type": e.get("type"),   # 'personal' | 'generic'
+        })
+    return out
+
+
 async def find_email_hunter(
     domain: str,
     *,

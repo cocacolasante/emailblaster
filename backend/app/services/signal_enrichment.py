@@ -159,9 +159,23 @@ async def enrich_signal_contact(
             verdict = await hunter.verify_email_hunter(found["email"])
             if verdict.get("deliverable"):
                 contact = found
-    # 2) Fall back to the role-priority / generic domain search.
+    # 2) Fall back to the full role-priority pipeline (domain discovery →
+    #    website scrape → Hunter domain-search → ProPublica).  It returns a
+    #    structured ContactResult; adapt it to the dict shape used below.
     if contact is None:
-        contact = await enrichment.resolve_contact(org)
+        cr = await enrichment.resolve_contact(org)
+        if cr.status == "resolved" and cr.email:
+            local = cr.email.split("@", 1)[0].lower()
+            contact = {
+                "email": cr.email,
+                "first_name": cr.first_name,
+                "last_name": cr.last_name,
+                "title": cr.title,
+                "generic": local in {
+                    "info", "contact", "hello", "admin", "office", "mail",
+                    "general", "inquiries", "support", "help", "team",
+                },
+            }
 
     contact = contact or {}
     email = canonical_email(contact["email"]) if contact.get("email") else None

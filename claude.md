@@ -22,7 +22,53 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Fixed the discovery Stop button (redelivery storm
+- **Last completed:** **Contact enrichment for IRS BMF orgs + deferred-
+  enrichment queue (gate the review queue).**  IRS BMF pulled many new
+  501(c)(3)s but resolved no contact, so they all fell through to
+  notification-only and cluttered the review queue.  Now contactless orgs
+  NEVER become a ProspectSignal — they park in a deferred queue and a daily
+  worker re-tries (new orgs stand up sites within months), promoting them
+  once a contact resolves and optionally falling back to direct mail.
+  - **`resolve_contact` rewritten → `ContactResult`** (status `resolved` |
+    `no_domain` | `no_contact`).  Cheapest-first pipeline: (a) domain — the
+    org's site else ONE capped Haiku web-search (`_discover_domain`,
+    aggregator hosts rejected); (b) **website scrape** of homepage +
+    contact/about/staff/team/leadership pages (`_scrape_contacts`, capped at
+    `FUNDING_SCRAPE_MAX_PAGES=6`, on-domain emails only, one Haiku call to
+    PAIR names/titles) — the primary free path; (c) Hunter **domain-search**
+    fallback; (d) optional **ProPublica** officer-name → Hunter email-finder
+    (established 990-filers only); (e) role-priority pick (ED → Development
+    → Grants → any named → generic info@ LAST) verified deliverable.  Every
+    step soft-fails.  `signal_enrichment` (the "Find contact" feature)
+    adapted to the new ContactResult.
+  - **`hunter.domain_search(domain)`** (Domain Search, permissive `[]`
+    fallback); **`funding_sources/propublica.lookup_org(ein)`** (Nonprofit
+    Explorer, best-effort).
+  - **`FundingEnrichmentQueue`** (model + migration 0036; status enum
+    pending|resolved|exhausted|mailed; UNIQUE `dedup_key` = the eventual
+    signal key so promotion never double-emits; cached `website`, `payload`
+    with mailing_address, `attempts`/`next_attempt_at` backoff).  BMF
+    mailing address now carried on `DiscoveredOrg.mailing_address` +
+    `detail` (powers direct mail).
+  - **Gating** (`_stage_discovery_signal`): resolved → existing Lead +
+    ProspectSignal + task + notification; else → upsert a pending queue row
+    (no signal).  Re-discovery of a queued/known org doesn't re-resolve.
+  - **Retry worker** `funding.retry_enrichment` (daily 06:00 UTC): re-runs
+    `resolve_contact` on due pending rows (batch
+    `FUNDING_ENRICHMENT_BATCH=50`); resolved → promote via the shared
+    staging path (original dedup_key); else backoff
+    (`FUNDING_ENRICHMENT_RETRY_DAYS=[7,30,60]`) until
+    `FUNDING_ENRICHMENT_MAX_ATTEMPTS=3` → exhausted, or (when
+    `FUNDING_DIRECT_MAIL_FALLBACK`) a campaign-less email-less Lead + a
+    "Direct mail —" CRM task using the BMF address → mailed.  acks_late=False
+    like the poll tasks.  Autonomy boundary intact (never enrolls a campaign).
+  - Tests: 16 new (`test_phase45_funding_enrichment.py`: domain discovery +
+    aggregator reject, scrape extract/cap/pair, domain_search no-key,
+    resolve_contact statuses + role priority + undeliverable skip, retry
+    promote/backoff/exhaust/direct-mail) + 6 updated in phase43 for the
+    ContactResult shape + gating.  Migration up/down verified.
+    Tests: **backend 1025**.
+- **Previously:** **Fixed the discovery Stop button (redelivery storm
   + cooperative stop).**  User reported Stop didn't stop a USAspending run
   — it kept "pulling."  Root cause: `task_acks_late=True` +
   `broker_transport_options.visibility_timeout=300s`, but a funding poll
@@ -1826,7 +1872,17 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — Fixed the discovery Stop button.  A
+_Last updated: 2026-06-15 (latest) — Contact enrichment + deferred queue
+for funding discovery.  `resolve_contact` rewritten into a cheapest-first
+`ContactResult` pipeline (domain discovery → website scrape → Hunter
+domain-search → ProPublica → role-priority verified pick).  Contactless orgs
+no longer flood the review queue: they park in `FundingEnrichmentQueue`
+(migration 0036) and a daily `funding.retry_enrichment` worker promotes them
+once a contact resolves, exhausting (or direct-mailing) after 3 tries.  IRS
+BMF mailing address now carried for the direct-mail fallback.  16 new + 6
+updated backend tests.  Tests: **backend 1025**.
+
+_Previously: 2026-06-15 — Fixed the discovery Stop button.  A
 funding poll runs longer than the broker visibility_timeout (300s), so with
 `acks_late=True` Redis redelivered it → concurrent copies that kept pulling
 (Stop killed one, another was just redelivered).  Fix: `acks_late=False` on
@@ -2382,7 +2438,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1009 passing**.  Frontend tests: **350 passing**._
+_Backend tests: **1025 passing**.  Frontend tests: **350 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
