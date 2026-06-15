@@ -1,5 +1,7 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { convertLead } from '../api/crm.js';
 import {
   actionSignal,
   addSignalsToCampaign,
@@ -191,6 +193,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
 function SignalDetailModal({ signal, onClose }) {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const navigate = useNavigate();
   const [stage, setStage] = useState('idle');   // idle | editing | sent
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
@@ -268,6 +271,40 @@ function SignalDetailModal({ signal, onClose }) {
       }
     },
     onError: (err) => toast.error(err?.response?.data?.detail || 'Lookup failed'),
+  });
+
+  // Lead-level actions (Create opportunity / Add to campaign) — available
+  // whenever the signal has a staged lead, regardless of the email stage.
+  const leadId = signal.lead_id || enrichedLeadId;
+  const [campaignId, setCampaignId] = useState('');
+  const { data: campaigns = [] } = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: listCampaigns,
+  });
+  const addableCampaigns = campaigns.filter((c) => c.status !== 'complete');
+
+  const convertMut = useMutation({
+    mutationFn: () => convertLead(leadId),
+    onSuccess: (d) => {
+      queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+      toast.success('Opportunity created');
+      if (d?.opportunity_id) navigate(`/opportunities/${d.opportunity_id}`);
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Could not create opportunity'),
+  });
+
+  const addToCampaignMut = useMutation({
+    mutationFn: () => addSignalsToCampaign({ signal_ids: [signal.id], campaign_id: campaignId }),
+    onSuccess: (d) => {
+      queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+      if (d.added > 0) {
+        toast.success('Added to campaign — emails will run automatically');
+        onClose();
+      } else {
+        toast.info('Not added (already in the campaign, suppressed, or no contact).');
+      }
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Add to campaign failed'),
   });
 
   return (
@@ -420,6 +457,48 @@ function SignalDetailModal({ signal, onClose }) {
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
               >
                 {sendMut.isPending ? 'Sending…' : 'Send email'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Lead-level actions — push the staged lead into the CRM as an
+            opportunity, or into a sending campaign.  Shown whenever there's
+            a lead (email or LinkedIn-only). */}
+        {leadId && (
+          <div
+            data-testid="signal-lead-actions"
+            className="mt-4 pt-4 border-t border-slate-200 flex flex-wrap items-center gap-2"
+          >
+            <button
+              type="button"
+              data-testid="signal-create-opp-btn"
+              onClick={() => convertMut.mutate()}
+              disabled={convertMut.isPending}
+              className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {convertMut.isPending ? 'Creating…' : '＋ Create opportunity'}
+            </button>
+            <div className="flex items-center gap-2 ml-auto">
+              <select
+                data-testid="signal-add-campaign-select"
+                value={campaignId}
+                onChange={(e) => setCampaignId(e.target.value)}
+                className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm bg-white"
+              >
+                <option value="">Add to campaign…</option>
+                {addableCampaigns.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                data-testid="signal-add-campaign-btn"
+                onClick={() => addToCampaignMut.mutate()}
+                disabled={!campaignId || addToCampaignMut.isPending}
+                className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {addToCampaignMut.isPending ? 'Adding…' : 'Add'}
               </button>
             </div>
           </div>

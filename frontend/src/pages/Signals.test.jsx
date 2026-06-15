@@ -25,10 +25,19 @@ vi.mock('../api/connectedAccounts.js', () => ({
 vi.mock('../api/campaigns.js', () => ({
   listCampaigns: vi.fn(),
 }));
+vi.mock('../api/crm.js', () => ({
+  convertLead: vi.fn(),
+}));
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async (orig) => ({
+  ...(await orig()),
+  useNavigate: () => mockNavigate,
+}));
 
 import * as api from '../api/signals.js';
 import * as accountsApi from '../api/connectedAccounts.js';
 import * as campaignsApi from '../api/campaigns.js';
+import * as crmApi from '../api/crm.js';
 import Signals from './Signals.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
@@ -355,5 +364,46 @@ describe('Signals → find contact (enrichment)', () => {
     await screen.findByTestId('signal-card-s3');
     expect(screen.queryByTestId('draft-signal-s3')).toBeNull();
     expect(screen.getByTestId('view-lead-signal-s3')).toBeInTheDocument();
+  });
+});
+
+describe('Signal detail → lead actions (opportunity / campaign)', () => {
+  it('Create opportunity converts the lead and navigates to the deal', async () => {
+    crmApi.convertLead.mockResolvedValue({ opportunity_id: 'opp9' });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s1'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    await user.click(within(modal).getByTestId('signal-create-opp-btn'));
+    await waitFor(() => {
+      expect(crmApi.convertLead).toHaveBeenCalledWith('l1');
+      expect(mockNavigate).toHaveBeenCalledWith('/opportunities/opp9');
+    });
+  });
+
+  it('Add to campaign posts the signal id + chosen campaign', async () => {
+    api.addSignalsToCampaign.mockResolvedValue({ added: 1, research_started: true });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s1'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    const sel = within(modal).getByTestId('signal-add-campaign-select');
+    expect(within(modal).getByTestId('signal-add-campaign-btn')).toBeDisabled();
+    await user.selectOptions(sel, 'c1');
+    await user.click(within(modal).getByTestId('signal-add-campaign-btn'));
+    await waitFor(() => {
+      const payload = api.addSignalsToCampaign.mock.calls[0][0];
+      expect(payload.signal_ids).toEqual(['s1']);
+      expect(payload.campaign_id).toBe('c1');
+    });
+  });
+
+  it('lead actions are hidden for a contactless signal', async () => {
+    api.listSignals.mockResolvedValue(paged([{ ...SIGNAL, id: 's2', lead_id: null }]));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s2'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    expect(within(modal).queryByTestId('signal-lead-actions')).toBeNull();
   });
 });
