@@ -23,8 +23,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Lead, ProspectSignal, canonical_email
+from app.services import hunter
 from app.services.funding_sources import enrichment
 from app.services.funding_sources.base import DiscoveredOrg
+# Reuse the existing capped Haiku web-search helper (cost-wrapped).
+from app.services.signal_detection import _web_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class EnrichResult:
     last_name: str | None = None
     title: str | None = None
     generic: bool = False
+    linkedin_url: str | None = None
     lead_id: Any = None
     lead_created: bool = False
     already_had_contact: bool = False
@@ -79,13 +83,44 @@ def _org_from_signal(signal: ProspectSignal) -> DiscoveredOrg | None:
     )
 
 
+async def _find_linkedin_decision_maker(org: DiscoveredOrg) -> dict[str, Any]:
+    """ONE capped Haiku web-search for the org's top decision-maker and
+    their public LinkedIn profile.  Also returns the org domain so the
+    downstream Hunter / role search can skip a second lookup.  Returns a
+    dict with None-able ``first_name`` / ``last_name`` / ``title`` /
+    ``linkedin_url`` / ``domain`` (empty dict-ish on failure)."""
+    roles = ", ".join(enrichment._ROLE_PRIORITY)
+    data = await _web_lookup(
+        f'"{org.org_name}" {org.state or ""} ({roles}) LinkedIn'.strip(),
+        "Identify the single most senior leadership / fundraising "
+        "decision-maker at this nonprofit and their PUBLIC LinkedIn "
+        "profile URL.  Respond ONLY with JSON: "
+        '{"first_name": "", "last_name": "", "title": "", '
+        '"linkedin_url": "https://www.linkedin.com/in/... or empty string", '
+        '"domain": "the org website domain or empty string"}.',
+    ) or {}
+    url = (data.get("linkedin_url") or "").strip()
+    if "linkedin.com/in/" not in url.lower():
+        url = ""  # drop hallucinated / non-profile URLs
+    return {
+        "first_name": (data.get("first_name") or "").strip() or None,
+        "last_name": (data.get("last_name") or "").strip() or None,
+        "title": (data.get("title") or "").strip() or None,
+        "linkedin_url": url or None,
+        "domain": enrichment._domain_from_website(data.get("domain")),
+    }
+
+
 async def enrich_signal_contact(
     db: AsyncSession, signal: ProspectSignal,
 ) -> EnrichResult:
     """Resolve a contact for ``signal`` and stage+link a campaign-less Lead.
 
-    Idempotent on a signal that already has a contactable lead — returns
-    that contact untouched (no API spend).  Commits the session on a hit.
+    Searches LinkedIn (one Haiku web-search) for the org's decision-maker
+    — both to find an email via Hunter's name-aware Email Finder and to
+    surface the LinkedIn profile — then falls back to the role-priority
+    domain search.  Idempotent on a signal that already has a contactable
+    lead (returns it untouched, no API spend).  Commits on a hit.
     """
     # Already contactable → no spend, report the existing contact.
     if signal.lead_id is not None:
@@ -95,18 +130,47 @@ async def enrich_signal_contact(
                 found=True, already_had_contact=True,
                 email=lead.email, first_name=lead.first_name,
                 last_name=lead.last_name, title=lead.job_title,
-                lead_id=lead.id,
+                linkedin_url=lead.linkedin_url, lead_id=lead.id,
             )
 
     org = _org_from_signal(signal)
     if org is None:
         return EnrichResult(found=False)
 
-    contact = await enrichment.resolve_contact(org)
+    # LinkedIn-guided lookup: a named decision-maker + profile + domain.
+    person = await _find_linkedin_decision_maker(org)
+    linkedin_url = person.get("linkedin_url")
+    full_name = " ".join(
+        p for p in (person.get("first_name"), person.get("last_name")) if p
+    ).strip()
+    # Seed the org website from the LinkedIn-found domain so the
+    # role-priority fallback below doesn't spend a second web-search.
+    if person.get("domain") and not org.website:
+        org.website = f"https://{person['domain']}"
+
+    contact: dict[str, Any] | None = None
+    domain = enrichment._domain_from_website(org.website)
+    # 1) Name-aware Hunter Email Finder (most accurate) when we have a name.
+    if domain and full_name:
+        found = await hunter.find_email_hunter(domain, full_name=full_name)
+        if found and found.get("email"):
+            verdict = await hunter.verify_email_hunter(found["email"])
+            if verdict.get("deliverable"):
+                contact = found
+    # 2) Fall back to the role-priority / generic domain search.
+    if contact is None:
+        contact = await enrichment.resolve_contact(org)
+
     if not contact or not contact.get("email"):
-        return EnrichResult(found=False)
+        # No email, but a LinkedIn profile is still a usable contact path.
+        return EnrichResult(found=False, linkedin_url=linkedin_url)
 
     email = canonical_email(contact["email"])
+    # Prefer Hunter's identity fields, fall back to the LinkedIn lookup's.
+    first_name = contact.get("first_name") or person.get("first_name")
+    last_name = contact.get("last_name") or person.get("last_name")
+    title = contact.get("title") or person.get("title")
+
     # Find-or-create a campaign-less lead by email (mirrors the worker's
     # discovery-staging branch).
     lead = await db.scalar(select(Lead).where(Lead.email == email).limit(1))
@@ -115,11 +179,12 @@ async def enrich_signal_contact(
         lead = Lead(
             campaign_id=None,                      # NEVER a campaign
             email=email,
-            first_name=contact.get("first_name"),
-            last_name=contact.get("last_name"),
+            first_name=first_name,
+            last_name=last_name,
             company=org.org_name,
             company_website=org.website,
-            job_title=contact.get("title"),
+            job_title=title,
+            linkedin_url=linkedin_url,
             research_data={
                 "ein": org.ein,
                 "ntee": org.ntee_code,
@@ -130,6 +195,9 @@ async def enrich_signal_contact(
         db.add(lead)
         await db.flush()
         lead_created = True
+    elif linkedin_url and not lead.linkedin_url:
+        # Backfill the profile onto a pre-existing lead.
+        lead.linkedin_url = linkedin_url
 
     signal.lead_id = lead.id
     await db.commit()
@@ -137,10 +205,11 @@ async def enrich_signal_contact(
     return EnrichResult(
         found=True,
         email=email,
-        first_name=contact.get("first_name"),
-        last_name=contact.get("last_name"),
-        title=contact.get("title"),
+        first_name=first_name,
+        last_name=last_name,
+        title=title,
         generic=bool(contact.get("generic")),
+        linkedin_url=linkedin_url,
         lead_id=lead.id,
         lead_created=lead_created,
     )

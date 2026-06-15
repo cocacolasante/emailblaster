@@ -73,12 +73,15 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
       if (d.found) {
         invalidate();
         toast.success(
-          d.email
+          (d.email
             ? `Found ${d.generic ? 'a general inbox' : 'a contact'}: ${d.email}`
-            : 'Contact found',
+            : 'Contact found')
+          + (d.linkedin_url ? ' · LinkedIn profile found' : ''),
         );
+      } else if (d.linkedin_url) {
+        toast.info(`No email found, but a LinkedIn profile was: ${d.linkedin_url}`);
       } else {
-        toast.info('No contact email could be found for this org.');
+        toast.info('No contact could be found for this org.');
       }
     },
     onError: (err) => toast.error(err?.response?.data?.detail || 'Lookup failed'),
@@ -233,19 +236,24 @@ function SignalDetailModal({ signal, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Send failed'),
   });
 
+  const [foundLinkedin, setFoundLinkedin] = useState(null);
   const enrichMut = useMutation({
     mutationFn: () => enrichSignalContact(signal.id),
     onSuccess: (d) => {
+      if (d.linkedin_url) setFoundLinkedin(d.linkedin_url);
       if (d.found && d.lead_id) {
         setEnrichedLeadId(d.lead_id);
         queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
         toast.success(
-          d.email
+          (d.email
             ? `Found ${d.generic ? 'a general inbox' : 'a contact'}: ${d.email}`
-            : 'Contact found',
+            : 'Contact found')
+          + (d.linkedin_url ? ' · LinkedIn profile found' : ''),
         );
+      } else if (d.linkedin_url) {
+        toast.info('No email found — but a LinkedIn profile was. See below.');
       } else {
-        toast.info('No contact email could be found for this org.');
+        toast.info('No contact could be found for this org.');
       }
     },
     onError: (err) => toast.error(err?.response?.data?.detail || 'Lookup failed'),
@@ -302,8 +310,20 @@ function SignalDetailModal({ signal, onClose }) {
               onClick={() => enrichMut.mutate()}
               className="mt-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 disabled:opacity-50"
             >
-              {enrichMut.isPending ? 'Searching…' : '🔎 Find contact'}
+              {enrichMut.isPending ? 'Searching…' : '🔎 Find contact (web + LinkedIn)'}
             </button>
+            {foundLinkedin && (
+              <p className="m-0 mt-2 text-slate-700">
+                LinkedIn profile found:{' '}
+                <a
+                  data-testid="signal-found-linkedin"
+                  href={foundLinkedin} target="_blank" rel="noreferrer"
+                  className="text-blue-600 underline"
+                >
+                  {foundLinkedin}
+                </a>
+              </p>
+            )}
           </div>
         ) : stage === 'sent' ? (
           <div data-testid="signal-send-success" className="text-sm">

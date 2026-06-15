@@ -326,4 +326,23 @@ describe('Signals → find contact (enrichment)', () => {
     expect(await within(modal).findByTestId('signal-draft-btn')).toBeInTheDocument();
     expect(within(modal).queryByTestId('signal-no-contact')).toBeNull();
   });
+
+  it('surfaces a LinkedIn profile in the modal when no email is found', async () => {
+    api.listSignals.mockResolvedValue(paged([NO_CONTACT]));
+    api.enrichSignalContact.mockResolvedValue({
+      found: false, email: null, lead_id: null, lead_created: false,
+      already_had_contact: false,
+      linkedin_url: 'https://www.linkedin.com/in/dana-reed',
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTestId('signal-card-s2'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    await user.click(within(modal).getByTestId('signal-enrich-btn'));
+    const link = await within(modal).findByTestId('signal-found-linkedin');
+    expect(link).toHaveAttribute('href', 'https://www.linkedin.com/in/dana-reed');
+    // Still no contact lead, so the draft flow stays hidden.
+    expect(within(modal).queryByTestId('signal-draft-btn')).toBeNull();
+  });
 });

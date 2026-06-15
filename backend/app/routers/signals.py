@@ -413,6 +413,7 @@ class SignalEnrichResponse(BaseModel):
     last_name: str | None = None
     title: str | None = None
     generic: bool = False
+    linkedin_url: str | None = None
     lead_id: uuid.UUID | None = None
     lead_created: bool = False
     already_had_contact: bool = False
@@ -439,6 +440,7 @@ async def enrich_signal(
         last_name=result.last_name,
         title=result.title,
         generic=result.generic,
+        linkedin_url=result.linkedin_url,
         lead_id=result.lead_id,
         lead_created=result.lead_created,
         already_had_contact=result.already_had_contact,

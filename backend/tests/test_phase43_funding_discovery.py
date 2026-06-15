@@ -975,7 +975,19 @@ async def _notification_only_signal(db_session, *, detail=None, summary=None):
     return signal
 
 
-async def test_signal_enrich_finds_contact_and_links_lead(client, db_session, monkeypatch):
+@pytest.fixture
+def no_linkedin_lookup(monkeypatch):
+    """Default the LinkedIn web-search to "found nobody" so tests that
+    only exercise the Hunter/domain path don't make a real Anthropic call."""
+    monkeypatch.setattr(
+        "app.services.signal_enrichment._web_lookup",
+        AsyncMock(return_value=None),
+    )
+
+
+async def test_signal_enrich_finds_contact_and_links_lead(
+    client, db_session, monkeypatch, no_linkedin_lookup,
+):
     signal = await _notification_only_signal(db_session)
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact",
@@ -1001,7 +1013,9 @@ async def test_signal_enrich_finds_contact_and_links_lead(client, db_session, mo
     assert lead.company == "Helping Hands"
 
 
-async def test_signal_enrich_parses_org_name_from_summary(client, db_session, monkeypatch):
+async def test_signal_enrich_parses_org_name_from_summary(
+    client, db_session, monkeypatch, no_linkedin_lookup,
+):
     # No org_name in detail — must be parsed from the IRS-style summary.
     signal = await _notification_only_signal(
         db_session, detail={}, summary="New 501(c)(3): Tiny Org (PA) — IRS ruling 202405",
@@ -1021,7 +1035,9 @@ async def test_signal_enrich_parses_org_name_from_summary(client, db_session, mo
     assert resp.json()["generic"] is True
 
 
-async def test_signal_enrich_no_contact_found(client, db_session, monkeypatch):
+async def test_signal_enrich_no_contact_found(
+    client, db_session, monkeypatch, no_linkedin_lookup,
+):
     signal = await _notification_only_signal(db_session)
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact",
@@ -1037,9 +1053,11 @@ async def test_signal_enrich_no_contact_found(client, db_session, monkeypatch):
 async def test_signal_enrich_already_has_contact_skips_lookup(client, db_session, monkeypatch):
     signal, lead = await _signal_with_staged_lead(db_session)
     resolver = AsyncMock(return_value=None)
+    web = AsyncMock(return_value=None)
     monkeypatch.setattr(
         "app.services.signal_enrichment.enrichment.resolve_contact", resolver,
     )
+    monkeypatch.setattr("app.services.signal_enrichment._web_lookup", web)
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -1047,9 +1065,12 @@ async def test_signal_enrich_already_has_contact_skips_lookup(client, db_session
     assert body["already_had_contact"] is True
     assert body["lead_id"] == str(lead.id)
     resolver.assert_not_awaited()                    # no API spend
+    web.assert_not_awaited()                         # no LinkedIn lookup either
 
 
-async def test_signal_enrich_reuses_existing_lead_by_email(client, db_session, monkeypatch):
+async def test_signal_enrich_reuses_existing_lead_by_email(
+    client, db_session, monkeypatch, no_linkedin_lookup,
+):
     existing = Lead(campaign_id=None, email="ed@helpinghands.org", first_name="Dana")
     db_session.add(existing)
     await db_session.flush()
@@ -1068,6 +1089,102 @@ async def test_signal_enrich_reuses_existing_lead_by_email(client, db_session, m
         select(func.count()).select_from(Lead).where(Lead.email == "ed@helpinghands.org")
     )
     assert n == 1                                    # no duplicate
+
+
+async def test_signal_enrich_linkedin_name_drives_hunter_and_sets_profile(
+    client, db_session, monkeypatch,
+):
+    """LinkedIn search finds a named decision-maker + profile; that name
+    drives Hunter's Email Finder (no role-search fallback needed)."""
+    signal = await _notification_only_signal(db_session)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment._web_lookup",
+        AsyncMock(return_value={
+            "first_name": "Dana", "last_name": "Reed",
+            "title": "Executive Director",
+            "linkedin_url": "https://www.linkedin.com/in/dana-reed",
+            "domain": "helpinghands.org",
+        }),
+    )
+    finder = AsyncMock(return_value={
+        "email": "dana@helpinghands.org", "first_name": "Dana",
+        "last_name": "Reed", "title": "ED", "generic": False,
+    })
+    monkeypatch.setattr("app.services.signal_enrichment.hunter.find_email_hunter", finder)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.hunter.verify_email_hunter",
+        AsyncMock(return_value={"deliverable": True}),
+    )
+    resolver = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact", resolver,
+    )
+
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["found"] is True
+    assert body["email"] == "dana@helpinghands.org"
+    assert body["linkedin_url"] == "https://www.linkedin.com/in/dana-reed"
+    # Name-aware Hunter Finder was used; role-search fallback was not.
+    assert finder.await_args.kwargs.get("full_name") == "Dana Reed"
+    resolver.assert_not_awaited()
+
+    await db_session.refresh(signal)
+    lead = await db_session.get(Lead, signal.lead_id)
+    assert lead.linkedin_url == "https://www.linkedin.com/in/dana-reed"
+
+
+async def test_signal_enrich_surfaces_linkedin_when_no_email(
+    client, db_session, monkeypatch,
+):
+    """A LinkedIn profile is found but no email resolves — the URL is
+    still returned (found=False, no lead staged)."""
+    signal = await _notification_only_signal(db_session)
+    monkeypatch.setattr(
+        "app.services.signal_enrichment._web_lookup",
+        AsyncMock(return_value={
+            "first_name": "Dana", "last_name": "Reed", "title": None,
+            "linkedin_url": "https://www.linkedin.com/in/dana-reed",
+            "domain": "helpinghands.org",
+        }),
+    )
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.hunter.find_email_hunter",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "app.services.signal_enrichment.enrichment.resolve_contact",
+        AsyncMock(return_value=None),
+    )
+    resp = await client.post(f"/signals/{signal.id}/enrich")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["found"] is False
+    assert body["linkedin_url"] == "https://www.linkedin.com/in/dana-reed"
+    await db_session.refresh(signal)
+    assert signal.lead_id is None                    # no email → no lead
+
+
+async def test_signal_enrich_drops_non_profile_linkedin_url(db_session, monkeypatch):
+    """A hallucinated / non-/in/ LinkedIn URL is discarded."""
+    from app.services import signal_enrichment
+    from app.services.funding_sources.base import DiscoveredOrg
+
+    monkeypatch.setattr(
+        "app.services.signal_enrichment._web_lookup",
+        AsyncMock(return_value={
+            "first_name": "X", "last_name": "Y",
+            "linkedin_url": "https://www.linkedin.com/company/helping-hands",
+            "domain": "",
+        }),
+    )
+    org = DiscoveredOrg(
+        signal_type="grant_awarded", summary="s", dedup_key="k",
+        org_name="Helping Hands",
+    )
+    person = await signal_enrichment._find_linkedin_decision_maker(org)
+    assert person["linkedin_url"] is None            # company URL dropped
 
 
 async def test_signal_enrich_unknown_404(client):
