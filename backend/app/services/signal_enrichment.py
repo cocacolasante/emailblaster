@@ -45,6 +45,7 @@ class EnrichResult:
     last_name: str | None = None
     title: str | None = None
     generic: bool = False
+    has_email: bool = False
     linkedin_url: str | None = None
     lead_id: Any = None
     lead_created: bool = False
@@ -122,15 +123,16 @@ async def enrich_signal_contact(
     domain search.  Idempotent on a signal that already has a contactable
     lead (returns it untouched, no API spend).  Commits on a hit.
     """
-    # Already contactable → no spend, report the existing contact.
+    # Already linked to a lead (email OR LinkedIn-only) → no spend.
     if signal.lead_id is not None:
         lead = await db.get(Lead, signal.lead_id)
-        if lead is not None and lead.email:
+        if lead is not None and (lead.email or lead.linkedin_url):
             return EnrichResult(
                 found=True, already_had_contact=True,
-                email=lead.email, first_name=lead.first_name,
-                last_name=lead.last_name, title=lead.job_title,
-                linkedin_url=lead.linkedin_url, lead_id=lead.id,
+                email=lead.email, has_email=bool(lead.email),
+                first_name=lead.first_name, last_name=lead.last_name,
+                title=lead.job_title, linkedin_url=lead.linkedin_url,
+                lead_id=lead.id,
             )
 
     org = _org_from_signal(signal)
@@ -161,19 +163,35 @@ async def enrich_signal_contact(
     if contact is None:
         contact = await enrichment.resolve_contact(org)
 
-    if not contact or not contact.get("email"):
-        # No email, but a LinkedIn profile is still a usable contact path.
-        return EnrichResult(found=False, linkedin_url=linkedin_url)
-
-    email = canonical_email(contact["email"])
+    contact = contact or {}
+    email = canonical_email(contact["email"]) if contact.get("email") else None
     # Prefer Hunter's identity fields, fall back to the LinkedIn lookup's.
     first_name = contact.get("first_name") or person.get("first_name")
     last_name = contact.get("last_name") or person.get("last_name")
     title = contact.get("title") or person.get("title")
 
-    # Find-or-create a campaign-less lead by email (mirrors the worker's
-    # discovery-staging branch).
-    lead = await db.scalar(select(Lead).where(Lead.email == email).limit(1))
+    # Nothing actionable at all → notification-only, no lead.
+    if not email and not linkedin_url:
+        return EnrichResult(found=False)
+
+    research_data = {
+        "ein": org.ein,
+        "ntee": org.ntee_code,
+        "source": signal.source,
+        **(org.detail or {}),
+    }
+
+    # Find-or-create a campaign-less lead.  Dedup by email when we have
+    # one (mirrors the worker's discovery-staging branch), else by the
+    # LinkedIn profile URL for an email-less (LinkedIn-only) lead.
+    lead = None
+    if email:
+        lead = await db.scalar(select(Lead).where(Lead.email == email).limit(1))
+    elif linkedin_url:
+        lead = await db.scalar(
+            select(Lead).where(Lead.linkedin_url == linkedin_url).limit(1)
+        )
+
     lead_created = False
     if lead is None:
         lead = Lead(
@@ -185,12 +203,7 @@ async def enrich_signal_contact(
             company_website=org.website,
             job_title=title,
             linkedin_url=linkedin_url,
-            research_data={
-                "ein": org.ein,
-                "ntee": org.ntee_code,
-                "source": signal.source,
-                **(org.detail or {}),
-            },
+            research_data=research_data,
         )
         db.add(lead)
         await db.flush()
@@ -205,6 +218,7 @@ async def enrich_signal_contact(
     return EnrichResult(
         found=True,
         email=email,
+        has_email=bool(email),
         first_name=first_name,
         last_name=last_name,
         title=title,

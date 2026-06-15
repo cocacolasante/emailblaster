@@ -354,6 +354,18 @@ async def list_signals(
         .limit(page_size)
         .offset((page - 1) * page_size)
     )).scalars().all()
+    # Which linked leads are emailable — drives the UI's "Draft & send"
+    # vs "LinkedIn only" affordance without a per-row query.
+    lead_ids = [s.lead_id for s in rows if s.lead_id is not None]
+    emailable_ids: set[uuid.UUID] = set()
+    if lead_ids:
+        emailable_ids = {
+            lid for (lid,) in (await db.execute(
+                select(Lead.id).where(
+                    Lead.id.in_(lead_ids), Lead.email.isnot(None)
+                )
+            )).all()
+        }
     items = [
         {
             "id": s.id,
@@ -364,6 +376,7 @@ async def list_signals(
             "detail": s.detail,
             "status": s.status,
             "lead_id": s.lead_id,
+            "lead_has_email": s.lead_id in emailable_ids,
             "opportunity_id": s.opportunity_id,
             "detected_at": s.detected_at,
         }
@@ -413,6 +426,7 @@ class SignalEnrichResponse(BaseModel):
     last_name: str | None = None
     title: str | None = None
     generic: bool = False
+    has_email: bool = False
     linkedin_url: str | None = None
     lead_id: uuid.UUID | None = None
     lead_created: bool = False
@@ -440,6 +454,7 @@ async def enrich_signal(
         last_name=result.last_name,
         title=result.title,
         generic=result.generic,
+        has_email=result.has_email,
         linkedin_url=result.linkedin_url,
         lead_id=result.lead_id,
         lead_created=result.lead_created,

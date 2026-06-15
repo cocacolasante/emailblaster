@@ -72,14 +72,12 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
     onSuccess: (d) => {
       if (d.found) {
         invalidate();
+        const lead = d.lead_created ? 'Lead created' : 'Lead updated';
         toast.success(
-          (d.email
-            ? `Found ${d.generic ? 'a general inbox' : 'a contact'}: ${d.email}`
-            : 'Contact found')
-          + (d.linkedin_url ? ' · LinkedIn profile found' : ''),
+          d.email
+            ? `${lead} — ${d.generic ? 'general inbox' : 'contact'}: ${d.email}`
+            : `${lead} from LinkedIn profile (no email found)`,
         );
-      } else if (d.linkedin_url) {
-        toast.info(`No email found, but a LinkedIn profile was: ${d.linkedin_url}`);
       } else {
         toast.info('No contact could be found for this org.');
       }
@@ -138,7 +136,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
       </div>
       {signal.status === 'new' && (
         <div className="flex gap-2 shrink-0">
-          {signal.lead_id ? (
+          {signal.lead_id && signal.lead_has_email ? (
             <button
               type="button"
               data-testid={`draft-signal-${signal.id}`}
@@ -146,6 +144,15 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
               className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             >
               Draft &amp; send
+            </button>
+          ) : signal.lead_id ? (
+            <button
+              type="button"
+              data-testid={`view-lead-signal-${signal.id}`}
+              onClick={stop(() => onOpen(signal))}
+              className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+            >
+              View lead
             </button>
           ) : (
             <button
@@ -191,7 +198,12 @@ function SignalDetailModal({ signal, onClose }) {
   const [fromEmail, setFromEmail] = useState('');   // '' = workspace default
   const [crmNote, setCrmNote] = useState(null);
   const [enrichedLeadId, setEnrichedLeadId] = useState(null);
-  const hasContact = !!(signal.lead_id || enrichedLeadId);
+  const [enrichedEmailable, setEnrichedEmailable] = useState(false);
+  const hasLead = !!(signal.lead_id || enrichedLeadId);
+  // Whether the linked lead can actually be emailed (drives the draft flow).
+  const emailable = enrichedLeadId
+    ? enrichedEmailable
+    : !!(signal.lead_id && signal.lead_has_email);
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['connected-accounts'],
@@ -243,15 +255,14 @@ function SignalDetailModal({ signal, onClose }) {
       if (d.linkedin_url) setFoundLinkedin(d.linkedin_url);
       if (d.found && d.lead_id) {
         setEnrichedLeadId(d.lead_id);
+        setEnrichedEmailable(!!d.has_email);
         queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+        const lead = d.lead_created ? 'Lead created' : 'Lead updated';
         toast.success(
-          (d.email
-            ? `Found ${d.generic ? 'a general inbox' : 'a contact'}: ${d.email}`
-            : 'Contact found')
-          + (d.linkedin_url ? ' · LinkedIn profile found' : ''),
+          d.email
+            ? `${lead} — ${d.generic ? 'general inbox' : 'contact'}: ${d.email}`
+            : `${lead} from LinkedIn profile (no email found)`,
         );
-      } else if (d.linkedin_url) {
-        toast.info('No email found — but a LinkedIn profile was. See below.');
       } else {
         toast.info('No contact could be found for this org.');
       }
@@ -297,7 +308,7 @@ function SignalDetailModal({ signal, onClose }) {
           ))}
         </dl>
 
-        {!hasContact ? (
+        {!hasLead ? (
           <div data-testid="signal-no-contact" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <p className="m-0">
               No contact email was found for this org yet (notification-only).
@@ -312,17 +323,23 @@ function SignalDetailModal({ signal, onClose }) {
             >
               {enrichMut.isPending ? 'Searching…' : '🔎 Find contact (web + LinkedIn)'}
             </button>
+          </div>
+        ) : !emailable ? (
+          <div data-testid="signal-linkedin-only" className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            <p className="m-0 font-medium">
+              Lead created — LinkedIn only (no email address found).
+            </p>
+            <p className="m-0 mt-1 text-slate-500">
+              Reach out on LinkedIn; there's nothing to email yet.
+            </p>
             {foundLinkedin && (
-              <p className="m-0 mt-2 text-slate-700">
-                LinkedIn profile found:{' '}
-                <a
-                  data-testid="signal-found-linkedin"
-                  href={foundLinkedin} target="_blank" rel="noreferrer"
-                  className="text-blue-600 underline"
-                >
-                  {foundLinkedin}
-                </a>
-              </p>
+              <a
+                data-testid="signal-found-linkedin"
+                href={foundLinkedin} target="_blank" rel="noreferrer"
+                className="inline-block mt-2 text-blue-600 underline"
+              >
+                {foundLinkedin}
+              </a>
             )}
           </div>
         ) : stage === 'sent' ? (

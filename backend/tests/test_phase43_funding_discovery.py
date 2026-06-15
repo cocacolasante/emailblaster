@@ -1135,16 +1135,16 @@ async def test_signal_enrich_linkedin_name_drives_hunter_and_sets_profile(
     assert lead.linkedin_url == "https://www.linkedin.com/in/dana-reed"
 
 
-async def test_signal_enrich_surfaces_linkedin_when_no_email(
+async def test_signal_enrich_linkedin_only_creates_lead_without_email(
     client, db_session, monkeypatch,
 ):
-    """A LinkedIn profile is found but no email resolves — the URL is
-    still returned (found=False, no lead staged)."""
+    """A LinkedIn profile is found but no email resolves — a campaign-less
+    email-less lead is still staged + linked (for LinkedIn outreach)."""
     signal = await _notification_only_signal(db_session)
     monkeypatch.setattr(
         "app.services.signal_enrichment._web_lookup",
         AsyncMock(return_value={
-            "first_name": "Dana", "last_name": "Reed", "title": None,
+            "first_name": "Dana", "last_name": "Reed", "title": "ED",
             "linkedin_url": "https://www.linkedin.com/in/dana-reed",
             "domain": "helpinghands.org",
         }),
@@ -1160,10 +1160,19 @@ async def test_signal_enrich_surfaces_linkedin_when_no_email(
     resp = await client.post(f"/signals/{signal.id}/enrich")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["found"] is False
+    assert body["found"] is True
+    assert body["has_email"] is False
+    assert body["lead_created"] is True
+    assert body["email"] is None
     assert body["linkedin_url"] == "https://www.linkedin.com/in/dana-reed"
+
     await db_session.refresh(signal)
-    assert signal.lead_id is None                    # no email → no lead
+    assert signal.lead_id is not None
+    lead = await db_session.get(Lead, signal.lead_id)
+    assert lead.email is None
+    assert lead.campaign_id is None
+    assert lead.linkedin_url == "https://www.linkedin.com/in/dana-reed"
+    assert lead.first_name == "Dana"
 
 
 async def test_signal_enrich_drops_non_profile_linkedin_url(db_session, monkeypatch):
@@ -1185,6 +1194,36 @@ async def test_signal_enrich_drops_non_profile_linkedin_url(db_session, monkeypa
     )
     person = await signal_enrichment._find_linkedin_decision_maker(org)
     assert person["linkedin_url"] is None            # company URL dropped
+
+
+async def test_signal_list_exposes_lead_has_email(client, db_session):
+    """The feed flags whether a linked lead is emailable so the UI can
+    show Draft & send vs View-lead."""
+    emailable_lead = Lead(campaign_id=None, email="ed@helpinghands.org")
+    li_only_lead = Lead(
+        campaign_id=None, email=None,
+        linkedin_url="https://www.linkedin.com/in/dana-reed",
+    )
+    db_session.add_all([emailable_lead, li_only_lead])
+    await db_session.flush()
+    s_email = ProspectSignal(
+        watch_id=None, source="usaspending", signal_type="grant_awarded",
+        summary="A won a grant", detail={}, lead_id=emailable_lead.id,
+        dedup_key=f"grant_awarded:{uuid.uuid4().hex}",
+    )
+    s_li = ProspectSignal(
+        watch_id=None, source="irs_bmf", signal_type="new_501c3",
+        summary="New 501(c)(3): B", detail={}, lead_id=li_only_lead.id,
+        dedup_key=f"new_501c3:{uuid.uuid4().hex}",
+    )
+    db_session.add_all([s_email, s_li])
+    await db_session.commit()
+
+    resp = await client.get("/signals")
+    assert resp.status_code == 200, resp.text
+    by_id = {i["id"]: i for i in resp.json()["items"]}
+    assert by_id[str(s_email.id)]["lead_has_email"] is True
+    assert by_id[str(s_li.id)]["lead_has_email"] is False
 
 
 async def test_signal_enrich_unknown_404(client):

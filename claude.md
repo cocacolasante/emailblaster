@@ -58,19 +58,30 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   - **Endpoint** `POST /signals/{id}/enrich` → `SignalEnrichResponse`
     (found, email, names, title, generic, lead_id, lead_created,
     already_had_contact); 404 unknown.
+  - **A lead is ALWAYS staged when any contact is found — including
+    LinkedIn-only** (no email).  `leads.email` is now NULLABLE
+    (migration 0034) so an email-less LinkedIn lead can exist; the
+    enrichment dedups by email when present, else by `linkedin_url`.
+    The campaign-bound send path is unaffected (a null-email lead is
+    campaign-less and never composes/sends).  `LeadSummary.email` →
+    `str | None`.  `enrich_signal_contact` returns `has_email`; the
+    signals list serializer exposes `lead_has_email` (one batched query)
+    so the UI shows "Draft & send" only for emailable leads and "View
+    lead" otherwise.
   - **Frontend** (`pages/Signals.jsx`): contactless `new` signal cards
-    show a "Find contact" button in place of "Draft & send"; the detail
-    modal's no-contact panel gains a "🔎 Find contact (web + LinkedIn)"
-    button that, on a hit, flips the panel to the draft flow and (when
-    only a profile was found) shows a clickable LinkedIn link.  Toast
-    reports the found email (or "a general inbox" for generic mailboxes)
-    and notes when a LinkedIn profile was found, else "no contact could
-    be found".
-  - Tests: 9 backend (`test_phase43_funding_discovery.py`: finds +
+    show a "Find contact" button; an email-less linked lead shows "View
+    lead" (not "Draft & send").  The detail modal's no-contact panel
+    gains a "🔎 Find contact (web + LinkedIn)" button that, on a hit,
+    flips to the draft flow for an emailable contact, or to a
+    "Lead created — LinkedIn only" panel (with a clickable profile link)
+    when no email resolved.  Toast reports lead created/updated + the
+    email or "from LinkedIn profile (no email found)".
+  - Tests: 11 backend (`test_phase43_funding_discovery.py`: finds +
     links, summary-parse org name, no-contact, already-has-contact skips
     lookup, reuses existing lead by email, LinkedIn name drives Hunter,
-    LinkedIn surfaced when no email, non-profile URL dropped, 404) + 3
-    frontend (`Signals.test.jsx`).  Tests: **backend 984, frontend 345**.
+    LinkedIn-only creates an email-less lead, non-profile URL dropped,
+    `lead_has_email` in the feed, 404) + 4 frontend (`Signals.test.jsx`).
+    Tests: **backend 985, frontend 346**.
 - **Previously:** **Bulk add signals to a campaign — emails run
   automatically.**  The Signals feed now lets the user select any
   number of `new` signals (per-card checkbox), pick a target campaign,
@@ -1686,12 +1697,14 @@ _Last updated: 2026-06-15 (latest) — "Find contact" light enrichment
 signals: one capped Haiku web-search finds the org's decision-maker +
 public LinkedIn profile + domain, that name drives Hunter's Email Finder
 (verified), with the role-priority domain search as fallback.  On a hit
-it stages + links a campaign-less Lead (storing `linkedin_url`) so the
-Draft / Send / Add-to-campaign flows light up; the profile URL is
-surfaced even when no email resolves.  `POST /signals/{id}/enrich` +
-`services/signal_enrichment`; the funding worker now persists
-org_name/website/state/ein/ntee into signal `detail`.  9 new backend +
-3 new frontend tests.  Tests: **backend 984, frontend 345**.
+it ALWAYS stages + links a campaign-less Lead (storing `linkedin_url`) —
+including a LinkedIn-only lead with no email (`leads.email` now NULLABLE,
+migration 0034) — so the Draft / Send / Add-to-campaign flows light up
+for emailable contacts and "View lead" / a profile link for
+LinkedIn-only ones.  `POST /signals/{id}/enrich` + `services/signal_enrichment`;
+the signals feed exposes `lead_has_email`; the funding worker persists
+org_name/website/state/ein/ntee into signal `detail`.  11 new backend +
+4 new frontend tests.  Tests: **backend 985, frontend 346**.
 
 _Previously: 2026-06-15 — Bulk add signals to a campaign.
 The Signals feed lets the user select `new` signals, pick a campaign,
@@ -2191,7 +2204,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **984 passing**.  Frontend tests: **345 passing**._
+_Backend tests: **985 passing**.  Frontend tests: **346 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

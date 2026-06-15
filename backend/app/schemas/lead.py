@@ -15,7 +15,8 @@ class LeadSummary(BaseModel):
     id: uuid.UUID
     # None for manually-created CRM leads (no campaign).
     campaign_id: uuid.UUID | None
-    email: str
+    # None for LinkedIn-only leads staged by signal enrichment.
+    email: str | None = None
     first_name: str | None
     last_name: str | None
     company: str | None

@@ -64,7 +64,10 @@ class Lead(Base):
         nullable=True,
         index=True,
     )
-    email: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    # Nullable since migration 0034: a signal "Find contact" enrichment
+    # can stage a LinkedIn-only lead (no email).  Campaign-bound leads
+    # always carry an email in practice.
+    email: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     phone: Mapped[str | None] = mapped_column(Text, nullable=True)
     linkedin_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_name: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -49,7 +49,7 @@ const SIGNAL = {
   id: 's1', watch_id: 'w1', signal_type: 'job_change',
   summary: 'Jane Doe changed roles: Director of IT → VP of Engineering',
   detail: { old_title: 'Director of IT', new_title: 'VP of Engineering' },
-  status: 'new', lead_id: 'l1', opportunity_id: null,
+  status: 'new', lead_id: 'l1', lead_has_email: true, opportunity_id: null,
   detected_at: '2026-06-12T10:00:00Z',
 };
 
@@ -307,10 +307,10 @@ describe('Signals → find contact (enrichment)', () => {
     });
   });
 
-  it('modal Find contact button resolves a contact and reveals the draft flow', async () => {
+  it('modal Find contact resolves an emailable contact and reveals the draft flow', async () => {
     api.listSignals.mockResolvedValue(paged([NO_CONTACT]));
     api.enrichSignalContact.mockResolvedValue({
-      found: true, email: 'ed@helpinghands.org', generic: false,
+      found: true, has_email: true, email: 'ed@helpinghands.org', generic: false,
       lead_id: 'l9', lead_created: true, already_had_contact: false,
     });
     const user = userEvent.setup();
@@ -322,16 +322,16 @@ describe('Signals → find contact (enrichment)', () => {
     await waitFor(() => {
       expect(api.enrichSignalContact).toHaveBeenCalledWith('s2');
     });
-    // Contact found → draft button now available, no-contact panel gone.
+    // Emailable contact → draft button available, no-contact panel gone.
     expect(await within(modal).findByTestId('signal-draft-btn')).toBeInTheDocument();
     expect(within(modal).queryByTestId('signal-no-contact')).toBeNull();
   });
 
-  it('surfaces a LinkedIn profile in the modal when no email is found', async () => {
+  it('creates a LinkedIn-only lead (no email) and surfaces the profile', async () => {
     api.listSignals.mockResolvedValue(paged([NO_CONTACT]));
     api.enrichSignalContact.mockResolvedValue({
-      found: false, email: null, lead_id: null, lead_created: false,
-      already_had_contact: false,
+      found: true, has_email: false, email: null,
+      lead_id: 'l9', lead_created: true, already_had_contact: false,
       linkedin_url: 'https://www.linkedin.com/in/dana-reed',
     });
     const user = userEvent.setup();
@@ -340,9 +340,20 @@ describe('Signals → find contact (enrichment)', () => {
     await user.click(await screen.findByTestId('signal-card-s2'));
     const modal = await screen.findByTestId('signal-detail-modal');
     await user.click(within(modal).getByTestId('signal-enrich-btn'));
-    const link = await within(modal).findByTestId('signal-found-linkedin');
-    expect(link).toHaveAttribute('href', 'https://www.linkedin.com/in/dana-reed');
-    // Still no contact lead, so the draft flow stays hidden.
+    // Lead created but not emailable → LinkedIn-only panel, no draft flow.
+    const panel = await within(modal).findByTestId('signal-linkedin-only');
+    expect(within(panel).getByTestId('signal-found-linkedin'))
+      .toHaveAttribute('href', 'https://www.linkedin.com/in/dana-reed');
     expect(within(modal).queryByTestId('signal-draft-btn')).toBeNull();
+  });
+
+  it('a lead with no email shows View lead (not Draft & send) on the card', async () => {
+    api.listSignals.mockResolvedValue(paged([
+      { ...SIGNAL, id: 's3', lead_id: 'l3', lead_has_email: false },
+    ]));
+    renderPage();
+    await screen.findByTestId('signal-card-s3');
+    expect(screen.queryByTestId('draft-signal-s3')).toBeNull();
+    expect(screen.getByTestId('view-lead-signal-s3')).toBeInTheDocument();
   });
 });
