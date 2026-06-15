@@ -51,6 +51,57 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+def _funding_redis():
+    """A sync redis client on the broker, or None if it can't connect.
+
+    Used for the cross-process stop flag (Celery control is broadcast +
+    async; a plain Redis key is the simplest thing a running task can poll
+    between orgs)."""
+    try:
+        import redis
+        return redis.Redis.from_url(celery_app.conf.broker_url)
+    except Exception:  # noqa: BLE001
+        logger.exception("funding: redis connect failed")
+        return None
+
+
+def _stop_key(source: str) -> str:
+    return f"funding:stop:{source}"
+
+
+def _request_stop(source: str) -> bool:
+    """Raise the stop flag so an in-flight run aborts at its next org.
+    TTL-bounded so a missed clear can't wedge the feed permanently."""
+    r = _funding_redis()
+    if r is None:
+        return False
+    try:
+        r.set(_stop_key(source), "1", ex=900)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("funding: set stop flag failed for %s", source)
+        return False
+
+
+def _stop_requested(r, source: str) -> bool:
+    if r is None:
+        return False
+    try:
+        return bool(r.exists(_stop_key(source)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _clear_stop(source: str) -> None:
+    r = _funding_redis()
+    if r is None:
+        return
+    try:
+        r.delete(_stop_key(source))
+    except Exception:  # noqa: BLE001
+        logger.exception("funding: clear stop flag failed for %s", source)
+
+
 def _purge_broker_messages(task_name: str) -> dict[str, int]:
     """Remove every queued + unacked broker message for ``task_name``.
 
@@ -92,6 +143,12 @@ def stop_funding_run(source: str) -> dict[str, Any]:
     timeout.  Safe no-op when nothing is running (zero counts).
     """
     task_name = f"funding.poll_{source}"
+    # 1) Raise the cooperative stop flag FIRST so a run already mid-staging
+    #    aborts at its next org even if the SIGKILL below races or can't
+    #    land (e.g. the worker child is blocked in an httpx await).
+    stop_flagged = _request_stop(source)
+
+    # 2) Hard-kill every active/reserved copy across workers.
     ids: set[str] = set()
     try:
         insp = celery_app.control.inspect(timeout=2.0)
@@ -109,10 +166,12 @@ def stop_funding_run(source: str) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             logger.exception("funding stop: revoke failed for %s", tid)
 
+    # 3) Purge queued + redelivered copies from the broker.
     purged = _purge_broker_messages(task_name)
     return {
         "task": task_name,
         "terminated": sorted(ids),
+        "stop_flagged": stop_flagged,
         "purged_queued": purged["queue"],
         "purged_unacked": purged["unacked"],
     }
@@ -268,9 +327,17 @@ async def _stage_all(
 ) -> dict[str, int]:
     """Stage each org in its OWN transaction so one bad org (failed
     enrichment, notification hiccup) can't roll back the whole batch and
-    a dedup guard makes the whole run idempotent."""
+    a dedup guard makes the whole run idempotent.
+
+    Polls the cooperative stop flag before each org so a Stop press aborts
+    the run promptly (mid-batch) without waiting for the remaining ~100
+    enrichment calls to finish."""
     staged = leads = tasks = 0
+    stop_client = _funding_redis()
     for org in orgs:
+        if _stop_requested(stop_client, src):
+            logger.info("funding stage for %s aborted by stop request", src)
+            break
         try:
             r = await _stage_discovery_signal(session, src, org)
             await session.commit()
@@ -289,6 +356,10 @@ async def _stage_all(
 
 
 async def _poll_usaspending_async() -> dict[str, Any]:
+    # Clear any stale stop flag from a previous run so this fresh run isn't
+    # pre-aborted.  (A redelivered copy can't pre-clear someone else's stop:
+    # acks_late=False on the task means there are no redelivered copies.)
+    _clear_stop(USASPENDING_SOURCE)
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -343,7 +414,14 @@ async def _poll_usaspending_async() -> dict[str, Any]:
         await engine.dispose()
 
 
-@celery_app.task(name="funding.poll_usaspending")
+# acks_late=False (overrides the global True): a funding poll can run far
+# longer than the broker visibility_timeout (300s).  With acks-late the
+# message sits in `unacked` and Redis REDELIVERS it past the timeout,
+# stacking concurrent copies that each keep "pulling" — and make the Stop
+# button look broken (it kills one copy while another was just redelivered).
+# Acking on receipt means the long run is never redelivered; if the worker
+# dies mid-run the periodic beat simply re-runs it next tick.
+@celery_app.task(name="funding.poll_usaspending", acks_late=False)
 def poll_usaspending() -> dict[str, Any]:
     return asyncio.run(_poll_usaspending_async())
 
@@ -354,6 +432,7 @@ def poll_usaspending() -> dict[str, Any]:
 
 
 async def _poll_irs_bmf_async() -> dict[str, Any]:
+    _clear_stop(IRS_BMF_SOURCE)
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -399,6 +478,6 @@ async def _poll_irs_bmf_async() -> dict[str, Any]:
         await engine.dispose()
 
 
-@celery_app.task(name="funding.poll_irs_bmf")
+@celery_app.task(name="funding.poll_irs_bmf", acks_late=False)
 def poll_irs_bmf() -> dict[str, Any]:
     return asyncio.run(_poll_irs_bmf_async())

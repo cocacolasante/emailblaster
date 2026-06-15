@@ -22,7 +22,28 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Fixed USAspending discovery returning 0 signals
+- **Last completed:** **Fixed the discovery Stop button (redelivery storm
+  + cooperative stop).**  User reported Stop didn't stop a USAspending run
+  — it kept "pulling."  Root cause: `task_acks_late=True` +
+  `broker_transport_options.visibility_timeout=300s`, but a funding poll
+  (esp. the now-30-day USAspending window enriching ~100 orgs) runs longer
+  than 5 min, so Redis REDELIVERS the unacked message → concurrent copies.
+  Stop killed the visible copy while another was redelivered moments later.
+  - **`acks_late=False` on both poll tasks** (`funding.poll_usaspending` /
+    `funding.poll_irs_bmf`, overriding the global True) — the message is
+    acked on receipt, so a long run is NEVER redelivered into duplicate
+    copies.  A periodic poll lost on a worker crash just re-runs next tick.
+  - **Cooperative stop flag** (`funding:stop:<source>` in Redis, 900s TTL):
+    `stop_funding_run` now raises it FIRST (before revoke/purge), and
+    `_stage_all` polls it before each org and aborts the batch promptly —
+    so Stop works even if the SIGKILL races or the child is mid-`httpx`
+    await.  Each poll `_clear_stop`s at start so a prior Stop can't wedge
+    the next run.  `stop_funding_run` keeps the revoke+terminate+broker
+    purge as the hard backstop; response gains `stop_flagged`.
+  - Tests: 3 backend (`test_phase43_funding_discovery.py`: `_stage_all`
+    aborts on flag, stop raises the flag, poll clears a stale flag).
+    Tests: **backend 1009**.
+- **Previously:** **Fixed USAspending discovery returning 0 signals
   (trailing window instead of an advancing cursor).**  Diagnosed a feed
   configured with `lookback_days=1` surfacing nothing.  Root cause: the
   poll advanced its cursor (`last_action_date → today`) every run, so
@@ -1805,7 +1826,15 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — Fixed USAspending discovery 0-signals
+_Last updated: 2026-06-15 (latest) — Fixed the discovery Stop button.  A
+funding poll runs longer than the broker visibility_timeout (300s), so with
+`acks_late=True` Redis redelivered it → concurrent copies that kept pulling
+(Stop killed one, another was just redelivered).  Fix: `acks_late=False` on
+both poll tasks (no redelivery) + a cooperative `funding:stop:<source>` flag
+that `_stage_all` checks before each org so Stop aborts mid-batch.  3 backend
+tests.  Tests: **backend 1009**.
+
+_Previously: 2026-06-15 — Fixed USAspending discovery 0-signals
 bug.  The poll advanced a since-cursor to `today` each run, so the window
 was always ~1 day regardless of lookback — and federal action_date data
 lags, so back-dated awards were permanently skipped.  Now always queries a
@@ -2353,7 +2382,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1006 passing**.  Frontend tests: **350 passing**._
+_Backend tests: **1009 passing**.  Frontend tests: **350 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

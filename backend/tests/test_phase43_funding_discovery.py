@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import func, select
@@ -1264,3 +1264,63 @@ async def test_signal_list_exposes_lead_has_email(client, db_session):
 async def test_signal_enrich_unknown_404(client):
     resp = await client.post(f"/signals/{uuid.uuid4()}/enrich")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Cooperative stop flag (makes Stop abort an in-flight run mid-batch)
+# ---------------------------------------------------------------------------
+
+
+class _FakeFlagRedis:
+    def __init__(self):
+        self.store: dict[str, bytes] = {}
+
+    def set(self, key, val, ex=None):
+        self.store[key] = val if isinstance(val, bytes) else str(val).encode()
+
+    def exists(self, key):
+        return 1 if key in self.store else 0
+
+    def delete(self, key):
+        self.store.pop(key, None)
+
+
+async def test_stage_all_aborts_when_stop_flag_set(db_session, monkeypatch):
+    fake = _FakeFlagRedis()
+    fake.set("funding:stop:usaspending", "1")
+    monkeypatch.setattr(funding_signals, "_funding_redis", lambda: fake)
+    staged = MagicMock()
+    monkeypatch.setattr(funding_signals, "_stage_discovery_signal", staged)
+
+    orgs = [_org(dedup=f"grant_awarded:S{i}") for i in range(5)]
+    out = await funding_signals._stage_all(db_session, "usaspending", orgs)
+
+    assert out["staged"] == 0
+    staged.assert_not_called()          # bailed before processing any org
+
+
+async def test_stop_funding_run_raises_stop_flag(monkeypatch):
+    fake = _FakeFlagRedis()
+    monkeypatch.setattr(funding_signals, "_funding_redis", lambda: fake)
+    control = _FakeControl(_FakeInspect(active={}, reserved={}))
+    monkeypatch.setattr(funding_signals.celery_app, "control", control)
+    monkeypatch.setattr(
+        funding_signals, "_purge_broker_messages",
+        lambda name: {"queue": 0, "unacked": 0},
+    )
+
+    result = funding_signals.stop_funding_run("usaspending")
+    assert result["stop_flagged"] is True
+    assert fake.exists("funding:stop:usaspending")
+
+
+async def test_poll_clears_stale_stop_flag_on_start(db_session, monkeypatch):
+    fake = _FakeFlagRedis()
+    fake.set("funding:stop:usaspending", "1")
+    monkeypatch.setattr(funding_signals, "_funding_redis", lambda: fake)
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", False)
+
+    # Even a disabled (early-return) poll clears the stale flag first, so a
+    # prior Stop can't wedge the next run.
+    await _poll_usaspending_async()
+    assert not fake.exists("funding:stop:usaspending")
