@@ -9,7 +9,7 @@ advance.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -325,12 +325,17 @@ async def test_irs_bmf_poll_noop_when_disabled(monkeypatch):
     assert await _poll_irs_bmf_async() == {"skipped": "disabled"}
 
 
-async def test_usaspending_poll_advances_cursor(db_session, monkeypatch):
+async def test_usaspending_poll_uses_trailing_window(db_session, monkeypatch):
     monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
-    monkeypatch.setattr(
-        funding_signals.usaspending, "fetch_recent_awards",
-        AsyncMock(return_value=[_org(dedup="grant_awarded:CUR1")]),
-    )
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_LOOKBACK_DAYS", 30)
+    captured = {}
+
+    async def _fake_fetch(since, until, **kw):
+        captured["since"] = since
+        captured["until"] = until
+        return [_org(dedup="grant_awarded:CUR1")]
+
+    monkeypatch.setattr(funding_signals.usaspending, "fetch_recent_awards", _fake_fetch)
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
         AsyncMock(return_value=None),
@@ -339,12 +344,42 @@ async def test_usaspending_poll_advances_cursor(db_session, monkeypatch):
     assert result["fetched"] == 1
     assert result["staged"] == 1
 
-    # Cursor advanced to today, status done (worker uses its own engine →
-    # query via the test session sees the committed row).
+    today = datetime.now(timezone.utc).date()
+    # Trailing window: since = today - lookback (NOT a since-cursor), so the
+    # configured lookback applies on every run — covering reporting lag.
+    assert captured["until"] == today
+    assert captured["since"] == today - timedelta(days=30)
+
     state = await db_session.get(FundingSourceState, "usaspending")
     assert state is not None
-    assert state.cursor["last_action_date"] == datetime.now(timezone.utc).date().isoformat()
+    assert state.cursor["last_window_start"] == (today - timedelta(days=30)).isoformat()
+    assert state.cursor["last_run_date"] == today.isoformat()
     assert state.last_run_status == "done"
+
+
+async def test_usaspending_poll_rescans_window_dedup_makes_overlap_free(db_session, monkeypatch):
+    """A second poll re-fetches the same award; the dedup_key guard makes it
+    a no-op (no duplicate signal), so overlapping windows are safe."""
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
+    monkeypatch.setattr(
+        funding_signals.usaspending, "fetch_recent_awards",
+        AsyncMock(return_value=[_org(dedup="grant_awarded:DUP1")]),
+    )
+    monkeypatch.setattr(
+        funding_signals.enrichment, "resolve_contact",
+        AsyncMock(return_value=None),
+    )
+    first = await _poll_usaspending_async()
+    second = await _poll_usaspending_async()
+    assert first["staged"] == 1
+    assert second["staged"] == 0          # re-seen award not re-staged
+
+    n = await db_session.scalar(
+        select(func.count()).select_from(ProspectSignal).where(
+            ProspectSignal.dedup_key == "grant_awarded:DUP1"
+        )
+    )
+    assert n == 1
 
 
 async def test_irs_bmf_first_run_guard_bounds_window(db_session, monkeypatch):

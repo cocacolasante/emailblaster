@@ -300,13 +300,21 @@ async def _poll_usaspending_async() -> dict[str, Any]:
                 cfg = state.config or {}
                 cur = dict(state.cursor or {})
                 today = _now().date()
-                if cur.get("last_action_date"):
-                    since = date.fromisoformat(cur["last_action_date"])
-                else:
-                    lookback = int(
-                        cfg.get("lookback_days") or settings.USASPENDING_LOOKBACK_DAYS
-                    )
-                    since = today - timedelta(days=lookback)
+                # Always query a TRAILING window of `lookback_days`.  We do
+                # NOT advance a since-cursor: USAspending action_date data
+                # lags reporting by days-to-weeks, so an award only becomes
+                # visible in the API after its action_date has already passed
+                # — a cursor parked at the last run day would skip every
+                # back-dated award forever (the "0 signals" bug).  Re-scanning
+                # the full window each poll is safe and free: the dedup_key
+                # guard in `_stage_discovery_signal` (+ the UNIQUE on
+                # prospect_signals) makes an already-seen award a no-op, so no
+                # duplicate signal/lead/Anthropic/Hunter work happens on overlap.
+                lookback = max(
+                    int(cfg.get("lookback_days") or settings.USASPENDING_LOOKBACK_DAYS),
+                    1,
+                )
+                since = today - timedelta(days=lookback)
                 state.last_run_at = _now()
                 state.last_run_status = "running"
                 await session.commit()  # release the state row before slow I/O
@@ -315,7 +323,11 @@ async def _poll_usaspending_async() -> dict[str, Any]:
                 counts = await _stage_all(session, USASPENDING_SOURCE, orgs)
 
                 state = await _get_or_create_state(session, USASPENDING_SOURCE)
-                state.cursor = {**cur, "last_action_date": today.isoformat()}
+                state.cursor = {
+                    **cur,
+                    "last_window_start": since.isoformat(),
+                    "last_run_date": today.isoformat(),
+                }
                 state.last_run_at = _now()
                 state.last_run_status = "done"
                 await session.commit()

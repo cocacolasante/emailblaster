@@ -22,7 +22,31 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **"Reply to previous email" sequence node
+- **Last completed:** **Fixed USAspending discovery returning 0 signals
+  (trailing window instead of an advancing cursor).**  Diagnosed a feed
+  configured with `lookback_days=1` surfacing nothing.  Root cause: the
+  poll advanced its cursor (`last_action_date → today`) every run, so
+  after the first poll the query window was always `[last_run_day, today]`
+  (~1 day) regardless of the configured lookback — and USAspending
+  `action_date` data lags reporting by days-to-weeks, so back-dated awards
+  that only just became visible were permanently skipped (the cursor had
+  already moved past them).  Live-verified: a 1-day window returns 0; a
+  30-day window returns 100+ nonprofit grants; the `nonprofit` filter is
+  valid.
+  - **Fix** (`workers/funding_signals.poll_usaspending`): always query a
+    TRAILING window `since = today - lookback_days` (no since-cursor).
+    Re-scanning the overlapping window each poll is free — the
+    `dedup_key` guard (`grant_awarded:<award_id>` + the UNIQUE on
+    `prospect_signals`) makes an already-seen award a no-op, so no
+    duplicate signal/lead/Anthropic/Hunter work.  Cursor now stores
+    `last_window_start` + `last_run_date` for display only.
+  - **Default lookback 7 → 30** (`config.py` + compose) — 7 is too narrow
+    for a source that lags; 30 covers typical reporting lag.  (IRS BMF is
+    unaffected — it has its own ruling-month cursor + first-run guard.)
+  - Tests: 2 backend (`test_phase43_funding_discovery.py`: trailing-window
+    since/until + cursor shape; re-scan dedup makes overlap a no-op) —
+    replaces the old advance-cursor test.  Tests: **backend 1006**.
+- **Previously:** **"Reply to previous email" sequence node
   (AI-written or manual).**  A new builder node (`email_reply`, migration
   0035) that replies IN-THREAD to the lead's original campaign email
   instead of starting a new thread.  The body is either AI-written
@@ -1781,7 +1805,14 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — "Reply to previous email" sequence
+_Last updated: 2026-06-15 (latest) — Fixed USAspending discovery 0-signals
+bug.  The poll advanced a since-cursor to `today` each run, so the window
+was always ~1 day regardless of lookback — and federal action_date data
+lags, so back-dated awards were permanently skipped.  Now always queries a
+trailing `lookback_days` window (dedup makes overlap free); default lookback
+7 → 30.  2 backend tests.  Tests: **backend 1006**.
+
+_Previously: 2026-06-15 — "Reply to previous email" sequence
 node.  A new `email_reply` builder node (migration 0035) replies in-thread
 to the lead's original campaign email (In-Reply-To/References via
 `brevo.send_email(in_reply_to=...)`, subject `Re: …`) instead of a new
@@ -2322,7 +2353,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1005 passing**.  Frontend tests: **350 passing**._
+_Backend tests: **1006 passing**.  Frontend tests: **350 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -107,7 +107,11 @@ class Settings(BaseSettings):
     # Each poll task no-ops when its *_ENABLED flag is false (default).
     # USAspending grant-award feed (free, no auth).
     USASPENDING_ENABLED: bool = False
-    USASPENDING_LOOKBACK_DAYS: int = 7
+    # Trailing window (days) re-scanned each poll.  USAspending action_date
+    # data lags reporting by days-to-weeks, so a narrow window misses
+    # back-dated awards that only just became visible; 30 covers typical lag.
+    # Dedup makes the overlap free.
+    USASPENDING_LOOKBACK_DAYS: int = 30
     # IRS EO BMF new-501(c)(3) feed.  STATES empty = skip (e.g. ["PA","NJ"]).
     IRS_BMF_ENABLED: bool = False
     # NoDecode: keep pydantic-settings from JSON-parsing the env value so
