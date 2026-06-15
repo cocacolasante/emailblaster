@@ -1563,7 +1563,46 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-13 (later) — Signals section build-out.  The
+_Last updated: 2026-06-14 — CRM Reporting tab.  New read-only
+reporting layer (no migration) mounted under ``/crm/reports`` +
+a Reports nav page.
+- **``GET /crm/reports/overview?start=&end=``** — date-scoped
+  dashboard: KPIs (won/lost count+value, win rate, avg deal size,
+  avg sales cycle days, open pipeline value + probability-weighted
+  value, deals created, new leads, conversions, activities), won/lost
+  monthly trend (continuous ``YYYY-MM`` buckets so charts have no
+  gaps), current pipeline-by-stage snapshot (weighted by explicit
+  probability else ``STAGE_DEFAULT_PROBABILITY``), forecast by
+  ``close_date`` month (``"unscheduled"`` bucket last), loss-reason
+  breakdown, activity breakdown (by type/direction/agent-vs-human),
+  and a conversion funnel (leads → opps → won with rates).  Default
+  window is last 90 days.  **Date semantics:** won/lost scoped by
+  ``closed_at``; pipeline+forecast are a live snapshot (NOT
+  date-scoped — pipeline is "where things stand now"); leads/
+  conversions/activities scoped by their own timestamps.
+- **``GET /crm/reports/deals?outcome=won|lost|open|all``** + **``GET
+  /crm/reports/activities``** — detail rows backing the UI tables +
+  client-side CSV export (capped at 2000 rows, ``truncated`` flag).
+  won/lost ordered most-recently-closed; open/all are a snapshot
+  ignoring the date window.
+- All aggregation is in ``routers/reports.py`` (closed + open deal
+  rows pulled and rolled up in Python — closed sets are small;
+  activity/lead counts via SQL group-by/COUNT).  ``schemas/reports.py``
+  holds the response models.  No new tables → nothing added to the
+  conftest truncate list.
+- Frontend ``pages/Reports.jsx``: date-range presets (30d/90d/12mo/
+  YTD/all-time + custom start/end), KPI card grid, Recharts won-vs-lost
+  bar chart, pipeline/forecast/loss-reason/activity/funnel cards, and
+  Deal-detail (won/lost/open tabs) + Activity-detail tables each with
+  an Export-CSV button (Blob download, no server round-trip).  Reuses
+  ``STAGES``/``fmtAmount`` from Opportunities.jsx.  Nav entry between
+  Opportunities and Replies.
+- Tests: 10 backend (``test_phase42_crm_reports.py``) + 6 frontend
+  (``Reports.test.jsx``, recharts stubbed, ``URL.createObjectURL``
+  stubbed for the CSV-export assertion).  Tests: **backend 940,
+  frontend 328**._
+
+_Previously: Signals section build-out.  The
 page shipped functional but unexplained; this pass makes it
 self-documenting and list-friendly:
 - **Per-type required fields enforced at creation** (422 with pointed
@@ -1895,7 +1934,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **928 passing**.  Frontend tests: **322 passing**._
+_Backend tests: **940 passing**.  Frontend tests: **328 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

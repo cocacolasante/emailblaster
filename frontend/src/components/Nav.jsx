@@ -32,6 +32,16 @@ const ITEMS = [
     ),
   },
   {
+    to: '/reports',
+    label: 'Reports',
+    icon: (
+      // Bar chart — "reports"
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6m4 6V5m4 14v-9M5 19h14" />
+      </svg>
+    ),
+  },
+  {
     to: '/replies',
     label: 'Replies',
     icon: (

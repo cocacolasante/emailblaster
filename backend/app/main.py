@@ -16,6 +16,7 @@ from app.routers import (
     leads,
     linkedin_accounts,
     preview,
+    reports,
     research_client,
     sequences,
     social_radar,
@@ -120,6 +121,7 @@ app.include_router(sequences.router)
 app.include_router(research_client.router)
 app.include_router(social_radar.router)
 app.include_router(crm.router)
+app.include_router(reports.router)
 app.include_router(agent.router)
 app.include_router(signals.router)
 app.include_router(icp.router)
