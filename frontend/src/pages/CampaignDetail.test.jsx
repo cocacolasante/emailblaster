@@ -204,17 +204,49 @@ describe('CampaignDetail', () => {
     expect(screen.getByText(/09:00.*17:00.*utc/i)).toBeInTheDocument();
   });
 
-  it('Leads tab signature editor saves via updateCampaign', async () => {
+  it('Leads tab signature editor saves a per-campaign override via updateCampaign', async () => {
     renderPage();
     await screen.findByTestId('overview-tab');
     fireEvent.click(screen.getByTestId('tab-leads'));
     const editor = await screen.findByTestId('signature-editor');
+    // No override + no account signature → must opt into customizing first.
+    fireEvent.click(within(editor).getByTestId('customize-signature-btn'));
     fireEvent.change(within(editor).getByRole('textbox'), {
       target: { value: 'Anthony\n555-1234\nacme.com' },
     });
     fireEvent.click(screen.getByTestId('save-signature-btn'));
     await waitFor(() => expect(api.updateCampaign).toHaveBeenCalledWith('c1', {
       signature: 'Anthony\n555-1234\nacme.com',
+    }));
+  });
+
+  it('shows the inherited Settings signature when no per-campaign override', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, signature: null,
+      account_signature: 'Anthony\nacme.com',
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    const editor = await screen.findByTestId('signature-editor');
+    expect(within(editor).getByTestId('signature-inherited-preview').textContent)
+      .toMatch(/acme\.com/);
+    // No editable textarea until the user opts into customizing.
+    expect(within(editor).queryByRole('textbox')).toBeNull();
+  });
+
+  it('revert clears the per-campaign override (signature: "")', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, signature: 'Override sig',
+      account_signature: 'Acct sig',
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    const editor = await screen.findByTestId('signature-editor');
+    fireEvent.click(within(editor).getByTestId('revert-signature-btn'));
+    await waitFor(() => expect(api.updateCampaign).toHaveBeenCalledWith('c1', {
+      signature: '',
     }));
   });
 

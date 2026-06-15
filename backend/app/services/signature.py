@@ -90,6 +90,27 @@ def apply_signature(body: str | None, signature: str | None) -> str:
     return f"{kept}\n\n{sig}" if kept else sig
 
 
+async def resolve_campaign_signature(session, campaign) -> str | None:
+    """The signature actually applied to a campaign's emails.
+
+    The campaign's own ``signature`` is a per-campaign OVERRIDE; when it's
+    blank the campaign inherits the bound connected account's signature
+    (the one configured in Settings).  Returns the effective signature, or
+    None when neither is set.
+    """
+    if (getattr(campaign, "signature", None) or "").strip():
+        return campaign.signature
+    account_id = getattr(campaign, "connected_account_id", None)
+    if account_id is not None:
+        # Lazy import keeps this string-utility module free of DB/model
+        # imports at module load.
+        from app.models import ConnectedAccount
+        acc = await session.get(ConnectedAccount, account_id)
+        if acc is not None and (acc.signature or "").strip():
+            return acc.signature
+    return None
+
+
 # ---- HTML-signature renderers -----------------------------------------
 
 # Allowlist of tag names a signature may legitimately contain.  Anything

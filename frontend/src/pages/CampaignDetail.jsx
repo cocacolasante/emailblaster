@@ -21,6 +21,7 @@ import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
 import LeadTable from '../components/LeadTable.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import { useToast } from '../components/Toast.jsx';
+import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { AnalyticsContent } from './Analytics.jsx';
 
 const STATUS_CLASSES = {
@@ -1173,16 +1174,35 @@ function ScheduleEditor({ campaignId, campaign }) {
 function SignatureEditor({ campaignId, campaign }) {
   const queryClient = useQueryClient();
   const toast = useToast();
+
+  const inherited = (campaign.account_signature || '').trim();
+  const override = (campaign.signature || '').trim();
+  // Show the editable override form when this campaign has its own signature.
+  const [overriding, setOverriding] = useState(!!override);
   const [sig, setSig] = useState(campaign.signature || '');
   const dirty = sig !== (campaign.signature || '');
+  // What actually gets applied to emails: the saved override, else inherited.
+  const effective = override || inherited;
 
   const saveMutation = useMutation({
     mutationFn: () => updateCampaign(campaignId, { signature: sig }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
-      toast.success('Signature saved');
+      toast.success('Campaign signature saved');
     },
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save signature'),
+  });
+
+  // Revert: clear the per-campaign override → falls back to the Settings sig.
+  const revertMutation = useMutation({
+    mutationFn: () => updateCampaign(campaignId, { signature: '' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+      setSig('');
+      setOverriding(false);
+      toast.success('Reverted to your Settings signature');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to revert'),
   });
 
   const applyMutation = useMutation({
@@ -1194,43 +1214,99 @@ function SignatureEditor({ campaignId, campaign }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to apply signature'),
   });
 
+  const applyBtn = (
+    <button
+      type="button"
+      onClick={() => applyMutation.mutate()}
+      disabled={!effective || dirty || applyMutation.isPending}
+      title={dirty ? 'Save the signature first' : 'Apply to all composed, unsent emails'}
+      data-testid="apply-signature-btn"
+      className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+    >
+      {applyMutation.isPending ? 'Applying…' : 'Apply to all emails'}
+    </button>
+  );
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" data-testid="signature-editor">
       <h3 className="text-sm font-semibold text-slate-900 mb-1">Email signature</h3>
       <p className="text-xs text-slate-500 mb-3">
-        Saved on the campaign and swapped in for the AI's sign-off on every email
-        (including future ones). Include your contact info, website, and calendar link.
+        Swapped in for the AI's sign-off on every email (including future ones).
+        By default this campaign uses the signature from your connected account in{' '}
+        <strong>Settings</strong> — you can override it just for this campaign.
         Already-composed emails update when you click <strong>Apply to all emails</strong>;
         sent emails are left alone.
       </p>
-      <textarea
-        value={sig}
-        onChange={(e) => setSig(e.target.value)}
-        rows={5}
-        placeholder={'Anthony Colasante\nVP Sales, Acme\n555-123-4567\nacme.com\ncal.com/anthony'}
-        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
-      />
-      <div className="flex justify-end gap-2 mt-3">
-        <button
-          type="button"
-          onClick={() => saveMutation.mutate()}
-          disabled={!dirty || saveMutation.isPending}
-          data-testid="save-signature-btn"
-          className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-        >
-          {saveMutation.isPending ? 'Saving…' : 'Save signature'}
-        </button>
-        <button
-          type="button"
-          onClick={() => applyMutation.mutate()}
-          disabled={!(campaign.signature || '').trim() || dirty || applyMutation.isPending}
-          title={dirty ? 'Save the signature first' : 'Apply to all composed, unsent emails'}
-          data-testid="apply-signature-btn"
-          className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-        >
-          {applyMutation.isPending ? 'Applying…' : 'Apply to all emails'}
-        </button>
-      </div>
+
+      {!overriding ? (
+        <div data-testid="signature-inherited">
+          {inherited ? (
+            <>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+                  Using your Settings signature
+                </span>
+              </div>
+              <div
+                data-testid="signature-inherited-preview"
+                className="border border-slate-200 rounded-lg p-3 text-sm text-slate-700 bg-slate-50"
+                dangerouslySetInnerHTML={{ __html: signatureToPreviewHtml(inherited) }}
+              />
+            </>
+          ) : (
+            <p data-testid="signature-none" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              No signature is set on this campaign's connected account (Settings),
+              so emails send without one. Set one in Settings, or customize a
+              signature just for this campaign below.
+            </p>
+          )}
+          <div className="flex justify-end gap-2 mt-3">
+            <button
+              type="button"
+              onClick={() => { setSig(campaign.signature || campaign.account_signature || ''); setOverriding(true); }}
+              data-testid="customize-signature-btn"
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50"
+            >
+              Customize for this campaign
+            </button>
+            {applyBtn}
+          </div>
+        </div>
+      ) : (
+        <div data-testid="signature-override">
+          <textarea
+            value={sig}
+            onChange={(e) => setSig(e.target.value)}
+            rows={5}
+            placeholder={'Anthony Colasante\nVP Sales, Acme\n555-123-4567\nacme.com\ncal.com/anthony'}
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+          />
+          <p className="text-xs text-slate-400 mt-1">
+            This overrides your Settings signature for this campaign only.
+          </p>
+          <div className="flex justify-end gap-2 mt-3">
+            <button
+              type="button"
+              onClick={() => revertMutation.mutate()}
+              disabled={revertMutation.isPending}
+              data-testid="revert-signature-btn"
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {revertMutation.isPending ? 'Reverting…' : 'Use Settings signature'}
+            </button>
+            <button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={!dirty || saveMutation.isPending}
+              data-testid="save-signature-btn"
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save signature'}
+            </button>
+            {applyBtn}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

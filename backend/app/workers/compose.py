@@ -32,7 +32,7 @@ from app.models import (
     StyleCorrection,
 )
 from app.services.sequence_service import campaign_sends_legacy_first_email
-from app.services.signature import apply_signature
+from app.services.signature import apply_signature, resolve_campaign_signature
 from app.services import copy_insights
 from app.services.template_render import build_merge_context, render_template
 from app.services.web_research import _extract_text, _parse_json
@@ -367,7 +367,9 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             # render (below) doesn't touch the closed session.
             template_subject = campaign.template_subject
             template_body = campaign.template_body
-            signature = campaign.signature
+            # Per-campaign override if set, else the connected account's
+            # Settings signature.
+            signature = await resolve_campaign_signature(session, campaign)
             merge_ctx = build_merge_context(lead) if mode == ResearchMode.TEMPLATE else {}
             is_sample = lead.is_sample
             campaign_status_now = campaign.status

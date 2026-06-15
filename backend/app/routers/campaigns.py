@@ -47,7 +47,7 @@ from app.schemas.campaign import (
 )
 from app.schemas.lead import LeadEmailUpdate, LeadResponse, LeadSummary, PaginatedLeads
 from app.services.sequence_service import ensure_default_sequence
-from app.services.signature import apply_signature
+from app.services.signature import apply_signature, resolve_campaign_signature
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -131,13 +131,18 @@ async def _build_response(db: AsyncSession, campaign: Campaign) -> CampaignRespo
     counts, stats = await _compute_stats_and_counts(db, campaign)
 
     account_info: ConnectedAccountInfo | None = None
+    account_signature: str | None = None
     if campaign.connected_account_id is not None:
         acc = await db.get(ConnectedAccount, campaign.connected_account_id)
         if acc is not None:
             account_info = ConnectedAccountInfo.model_validate(acc)
+            account_signature = acc.signature
 
     payload: dict[str, Any] = campaign_to_dict(campaign)
     payload["connected_account"] = account_info
+    # The inherited signature from Settings (the bound account); the UI shows
+    # this when the campaign has no per-campaign override.
+    payload["account_signature"] = account_signature
     payload["connected_account_configured"] = campaign.connected_account_id is not None
     payload["linkedin_account_configured"] = campaign.linkedin_account_id is not None
     payload["lead_counts"] = counts
@@ -481,10 +486,17 @@ async def apply_campaign_signature(
     """Apply the campaign's signature to every composed, not-yet-sent email —
     swapping each one's AI sign-off for the signature block.  Idempotent: an
     email that already ends with the signature is left unchanged, so it's safe
-    to run more than once.  Sent emails are skipped (can't be unsent)."""
+    to run more than once.  Sent emails are skipped (can't be unsent).
+
+    Uses the campaign's own signature when set, otherwise the connected
+    account's Settings signature (the inherited default)."""
     c = await _get_or_404(db, campaign_id)
-    if not (c.signature or "").strip():
-        raise HTTPException(status_code=400, detail="Campaign has no signature set")
+    effective_sig = await resolve_campaign_signature(db, c)
+    if not (effective_sig or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="No signature set on this campaign or its connected account",
+        )
 
     leads = (await db.execute(
         select(Lead).where(
@@ -496,7 +508,7 @@ async def apply_campaign_signature(
 
     updated = 0
     for lead in leads:
-        new_body = apply_signature(lead.composed_body, c.signature)
+        new_body = apply_signature(lead.composed_body, effective_sig)
         if new_body != (lead.composed_body or ""):
             lead.composed_body = new_body
             updated += 1

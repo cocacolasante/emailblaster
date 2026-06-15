@@ -263,7 +263,10 @@ class CampaignResponse(BaseModel):
     research_mode: ResearchMode
     template_subject: str | None
     template_body: str | None
+    # Per-campaign signature OVERRIDE (None = inherit the account's).
     signature: str | None
+    # Inherited signature from the bound connected account (Settings).
+    account_signature: str | None = None
     sample_count: int
     connected_account_id: uuid.UUID | None
     connected_account: ConnectedAccountInfo | None

@@ -967,6 +967,86 @@ async def test_apply_signature_400_when_campaign_has_no_signature(client):
     assert resp.status_code == 400
 
 
+# ---------- signature inheritance from the connected account ----------
+
+
+async def _make_account_with_sig(db_session, sig, email="sig@gmail.com"):
+    acc = await _make_account(db_session, email=email)
+    acc.signature = sig
+    await db_session.commit()
+    await db_session.refresh(acc)
+    return acc
+
+
+async def test_campaign_response_exposes_account_signature(client, db_session):
+    acc = await _make_account_with_sig(db_session, "Acct Sig\nacme.com")
+    created = (await client.post(
+        "/campaigns/", json=_campaign_payload(connected_account_id=str(acc.id)),
+    )).json()
+    resp = await client.get(f"/campaigns/{created['id']}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["signature"] is None                  # no per-campaign override
+    assert body["account_signature"] == "Acct Sig\nacme.com"
+
+
+async def test_apply_signature_uses_account_when_campaign_has_none(client, db_session):
+    from sqlalchemy import select
+    acc = await _make_account_with_sig(db_session, "Inherited Sig\nacme.com")
+    created = (await client.post(
+        "/campaigns/", json=_campaign_payload(connected_account_id=str(acc.id)),
+    )).json()
+    cid = uuid.UUID(created["id"])
+    lead = Lead(
+        campaign_id=cid, email="p@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Hi,\n\nBody.\n\nBest,\nAnthony", send_status=SendStatus.PENDING,
+    )
+    db_session.add(lead)
+    await db_session.commit()
+    lead_id = lead.id
+
+    resp = await client.post(f"/campaigns/{created['id']}/apply-signature")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated"] == 1
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead_id))
+    await db_session.refresh(refreshed)
+    assert refreshed.composed_body.endswith("Inherited Sig\nacme.com")
+
+
+async def test_campaign_override_signature_wins_over_account(client, db_session):
+    acc = await _make_account_with_sig(db_session, "Account Sig")
+    created = (await client.post(
+        "/campaigns/",
+        json=_campaign_payload(connected_account_id=str(acc.id), signature="Override Sig"),
+    )).json()
+    resp = await client.get(f"/campaigns/{created['id']}")
+    body = resp.json()
+    assert body["signature"] == "Override Sig"
+    assert body["account_signature"] == "Account Sig"
+
+
+async def test_resolve_campaign_signature_fallback_chain(client, db_session):
+    from app.models import Campaign
+    from app.services.signature import resolve_campaign_signature
+
+    acc = await _make_account_with_sig(db_session, "Account Sig", email="r@x.com")
+    created = (await client.post(
+        "/campaigns/", json=_campaign_payload(connected_account_id=str(acc.id)),
+    )).json()
+    camp = await db_session.get(Campaign, uuid.UUID(created["id"]))
+
+    # Override set → wins.
+    camp.signature = "Override"
+    assert await resolve_campaign_signature(db_session, camp) == "Override"
+    # No override → account signature.
+    camp.signature = None
+    assert await resolve_campaign_signature(db_session, camp) == "Account Sig"
+    # No account → None.
+    camp.connected_account_id = None
+    assert await resolve_campaign_signature(db_session, camp) is None
+
+
 async def test_delete_campaign_cascades_to_leads_and_events(client, db_session):
     created = (await client.post("/campaigns/", json=_campaign_payload())).json()
     cid = uuid.UUID(created["id"])

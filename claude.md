@@ -22,7 +22,40 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **"Find contact" — on-demand light contact
+- **Last completed:** **Campaign signature inherits from Settings, with
+  a per-campaign override.**  The campaign Leads-tab signature editor
+  used to be a blank box even though the user had already set a signature
+  on their connected account in Settings.  Now a campaign with no
+  signature of its own INHERITS the bound connected account's signature;
+  the editor shows that inherited signature (read-only preview) with a
+  "Customize for this campaign" button to override, and a "Use Settings
+  signature" button to revert the override.
+  - **Shared resolver** `signature.resolve_campaign_signature(session,
+    campaign)` — returns `campaign.signature` if set (the per-campaign
+    OVERRIDE), else the bound `ConnectedAccount.signature` (Settings),
+    else None.  Lazy-imports `ConnectedAccount` so the string-utility
+    module stays DB-free at import.
+  - **Compose** (`workers/compose.py`) now resolves the effective
+    signature via that helper instead of reading `campaign.signature`
+    directly, so AI emails get the Settings signature when the campaign
+    has no override.  **`POST /campaigns/{id}/apply-signature`** applies
+    the effective signature too (400 only when NEITHER campaign nor
+    account has one); message updated.
+  - **`CampaignResponse.account_signature`** (new field) carries the
+    bound account's signature so the UI can show what's inherited;
+    `campaign.signature` stays the override (None = inherit).
+  - **Frontend** `SignatureEditor` rewritten: inherited-preview mode
+    (emerald "Using your Settings signature" pill + HTML preview, or an
+    amber "no signature set" note) vs override mode (textarea + Save +
+    "Use Settings signature" revert).  "Apply to all emails" enables on
+    the effective signature (override or inherited).
+  - Tests: 4 backend (`test_phase4_campaigns.py`: response exposes
+    account_signature, apply uses account when no override, override
+    wins, resolver fallback chain) + 2 frontend (inherited preview shown
+    / no textarea until customize; revert clears override) + 1 updated
+    (save now clicks Customize first).  Tests: **backend 989, frontend
+    348**.
+- **Previously:** **"Find contact" — on-demand light contact
   enrichment for notification-only signals.**  Discovery signals whose
   org had no resolvable contact at discovery time land in the queue
   notification-only (no `lead_id`).  A per-signal "Find contact" button
@@ -1692,7 +1725,17 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — "Find contact" light enrichment
+_Last updated: 2026-06-15 (latest) — Campaign signature inherits from
+Settings.  A campaign with no signature of its own now inherits the
+bound connected account's signature (set in Settings); the Leads-tab
+editor shows the inherited signature with a "Customize for this campaign"
+override + a "Use Settings signature" revert.  Shared
+`signature.resolve_campaign_signature` (override → account → None) drives
+compose + apply-signature; `CampaignResponse.account_signature` exposes
+the inherited value.  4 new backend + 2 new frontend tests.
+Tests: **backend 989, frontend 348**.
+
+_Previously: 2026-06-15 — "Find contact" light enrichment
 (now searches LinkedIn).  A per-signal button enriches notification-only
 signals: one capped Haiku web-search finds the org's decision-maker +
 public LinkedIn profile + domain, that name drives Hunter's Email Finder
@@ -2204,7 +2247,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **985 passing**.  Frontend tests: **346 passing**._
+_Backend tests: **989 passing**.  Frontend tests: **348 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
