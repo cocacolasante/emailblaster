@@ -182,8 +182,8 @@ async def test_patch_signature_allowed_in_any_status(client, db_session, status_
     assert resp.status_code == 200, resp.text
     assert resp.json()["signature"] == "Anthony\n555-1234"
 
-    # Other content fields are still gated.
-    blocked = await client.patch(f"/campaigns/{created['id']}", json={"goal": "new"})
+    # Other content fields (tone) are still gated to draft/previewing.
+    blocked = await client.patch(f"/campaigns/{created['id']}", json={"tone": "new"})
     assert blocked.status_code == 409
 
 
@@ -229,9 +229,9 @@ async def test_patch_schedule_window_allowed_on_live_campaigns(client, db_sessio
     assert body["max_per_hour"] == 30
     assert body["max_per_day"] == 200
 
-    # But content fields are still 409.
+    # But content fields like tone are still 409 (goal is now editable).
     blocked = await client.patch(
-        f"/campaigns/{created['id']}", json={"goal": "new goal"}
+        f"/campaigns/{created['id']}", json={"tone": "new tone"}
     )
     assert blocked.status_code == 409
 
@@ -1024,6 +1024,82 @@ async def test_campaign_override_signature_wins_over_account(client, db_session)
     body = resp.json()
     assert body["signature"] == "Override Sig"
     assert body["account_signature"] == "Account Sig"
+
+
+# ---------- goal edit rewrites unsent emails (no new research) ----------
+
+
+async def _running_campaign_with_leads(client, db_session):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    c = await db_session.get(Campaign, cid)
+    c.status = CampaignStatus.RUNNING
+    pending = Lead(
+        campaign_id=cid, email="p@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Old body", send_status=SendStatus.PENDING,
+    )
+    scheduled = Lead(
+        campaign_id=cid, email="sch@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Old body", send_status=SendStatus.SCHEDULED,
+    )
+    sent = Lead(
+        campaign_id=cid, email="sent@x.com", compose_status=ComposeStatus.DONE,
+        composed_body="Old body", send_status=SendStatus.SENT,
+    )
+    db_session.add_all([pending, scheduled, sent])
+    await db_session.commit()
+    return created, {"pending": pending.id, "scheduled": scheduled.id, "sent": sent.id}
+
+
+async def test_goal_edit_on_running_recomposes_only_unsent(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+    created, ids = await _running_campaign_with_leads(client, db_session)
+    delay = MagicMock()
+    monkeypatch.setattr("app.workers.compose.compose_lead.delay", delay)
+
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": "Brand new goal"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["goal"] == "Brand new goal"
+
+    dispatched = {call.args[0] for call in delay.call_args_list}
+    assert str(ids["pending"]) in dispatched
+    assert str(ids["scheduled"]) in dispatched
+    assert str(ids["sent"]) not in dispatched          # sent emails left alone
+    assert len(dispatched) == 2
+
+
+async def test_goal_edit_unchanged_does_not_recompose(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+    created, _ = await _running_campaign_with_leads(client, db_session)
+    delay = MagicMock()
+    monkeypatch.setattr("app.workers.compose.compose_lead.delay", delay)
+
+    # Same goal value the campaign already has → no rewrite.
+    same_goal = (await client.get(f"/campaigns/{created['id']}")).json()["goal"]
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": same_goal})
+    assert resp.status_code == 200, resp.text
+    delay.assert_not_called()
+
+
+async def test_goal_edit_on_draft_does_not_recompose(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    delay = MagicMock()
+    monkeypatch.setattr("app.workers.compose.compose_lead.delay", delay)
+
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": "Draft goal"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["goal"] == "Draft goal"
+    delay.assert_not_called()                          # nothing composed yet
+
+
+async def test_goal_edit_on_complete_409(client, db_session):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    c = await db_session.get(Campaign, uuid.UUID(created["id"]))
+    c.status = CampaignStatus.COMPLETE
+    await db_session.commit()
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": "x"})
+    assert resp.status_code == 409
 
 
 async def test_resolve_campaign_signature_fallback_chain(client, db_session):

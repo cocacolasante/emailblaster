@@ -214,10 +214,12 @@ async def update_campaign(
     #   - schedule (days / start / end / timezone) and throughput (min_delay,
     #     hour cap, day cap) take effect on the next send_lead invocation;
     #     existing eta-deferred tasks re-check the window when they fire.
-    # Content fields (goal, tone, sender_*, research_mode, templates, ...)
-    # are still gated to draft/previewing because changing them mid-flight
-    # would split the campaign's voice between already-sent and unsent
-    # batches.
+    # ``goal`` is editable on any non-complete status: changing it rewrites
+    # every not-yet-sent email (re-compose, NO new research — the existing
+    # research_data is reused), so the "split voice" risk is resolved by
+    # rewriting the unsent batch rather than by blocking the edit.  The
+    # remaining content fields (tone, sender_*, research_mode, templates,
+    # ...) stay gated to draft/previewing.
     _SCHEDULE_FIELDS = {
         "schedule_days",
         "schedule_time_start",
@@ -232,7 +234,7 @@ async def update_campaign(
         "send_time_optimization",
     }
     _status_exempt_fields = (
-        {"linkedin_account_id", "connected_account_id", "signature"}
+        {"linkedin_account_id", "connected_account_id", "signature", "goal"}
         | _SCHEDULE_FIELDS
         | _THROUGHPUT_FIELDS
     )
@@ -243,12 +245,19 @@ async def update_campaign(
                 detail=f"Cannot edit campaign in status '{c.status.value}' (only draft or previewing)",
             )
 
+    # A completed campaign is frozen — no goal rewrite (nothing left to send).
+    if "goal" in updates and c.status == CampaignStatus.COMPLETE:
+        raise HTTPException(
+            status_code=409, detail="Cannot edit a completed campaign",
+        )
+
     if "connected_account_id" in updates:
         await _verify_account_exists(db, updates["connected_account_id"])
     if "linkedin_account_id" in updates:
         await _verify_linkedin_account_exists(db, updates["linkedin_account_id"])
 
     schedule_touched = bool(updates.keys() & _SCHEDULE_FIELDS)
+    goal_changed = "goal" in updates and updates["goal"] != c.goal
 
     for key, value in updates.items():
         setattr(c, key, value)
@@ -272,8 +281,27 @@ async def update_campaign(
             )
         )).scalars().all())
 
+    # Goal changed → rewrite every already-composed, not-yet-sent email.
+    # Re-compose reuses the lead's existing research_data, so NO new research
+    # runs (research is a separate task).  Sent emails are left alone.
+    recompose_ids: list[uuid.UUID] = []
+    if goal_changed and c.status != CampaignStatus.DRAFT:
+        recompose_ids = list((await db.execute(
+            select(Lead.id).where(
+                Lead.campaign_id == c.id,
+                Lead.compose_status == ComposeStatus.DONE,
+                Lead.send_status != SendStatus.SENT,
+            )
+        )).scalars().all())
+
     await db.commit()
     await db.refresh(c)
+
+    if recompose_ids:
+        from app.workers.compose import compose_lead
+
+        for lid in recompose_ids:
+            compose_lead.delay(str(lid))
 
     if requeue_ids:
         from app.workers.send import send_lead

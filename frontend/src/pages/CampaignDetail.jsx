@@ -431,11 +431,12 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
 
         <ScheduleEditor campaignId={campaign.id} campaign={campaign} />
 
+        <GoalEditor campaignId={campaign.id} campaign={campaign} />
+
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 className="text-base font-semibold text-slate-900 mb-4">Campaign config</h2>
           <dl className="space-y-2">
             {[
-              { label: 'Goal', value: campaign.goal },
               { label: 'Tone', value: campaign.tone },
               { label: 'Sender', value: `${campaign.sender_name} <${campaign.sender_email}>` },
               { label: 'Research mode', value: campaign.research_mode },
@@ -898,6 +899,91 @@ function _normTime(t) {
   // Backend returns "HH:MM:SS"; the <input type="time"> wants "HH:MM".
   return (t || '').slice(0, 5);
 }
+
+function GoalEditor({ campaignId, campaign }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [goal, setGoal] = useState(campaign.goal || '');
+  const isComplete = campaign.status === 'complete';
+  const trimmed = goal.trim();
+  const dirty = trimmed !== (campaign.goal || '').trim();
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateCampaign(campaignId, { goal: trimmed }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+      queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] });
+      setEditing(false);
+      toast.success(
+        campaign.status === 'draft'
+          ? 'Goal saved'
+          : 'Goal saved — unsent emails are being rewritten',
+      );
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save goal'),
+  });
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" data-testid="goal-editor">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-semibold text-slate-900">Campaign goal</h3>
+        {!editing && !isComplete && (
+          <button
+            type="button"
+            onClick={() => { setGoal(campaign.goal || ''); setEditing(true); }}
+            data-testid="edit-goal-btn"
+            className="text-sm text-blue-600 hover:text-blue-700"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+
+      {!editing ? (
+        <p data-testid="goal-value" className="text-sm text-slate-800 m-0 whitespace-pre-wrap">
+          {campaign.goal}
+        </p>
+      ) : (
+        <>
+          <textarea
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            rows={3}
+            data-testid="goal-input"
+            placeholder="Book a 15-minute intro call to demo our onboarding tool"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+          />
+          <p className="text-xs text-slate-500 mt-1">
+            Saving rewrites every email not yet sent — reusing each lead's
+            existing research, so <strong>no new research runs</strong>. Already-sent
+            emails are left as-is.
+          </p>
+          <div className="flex justify-end gap-2 mt-3">
+            <button
+              type="button"
+              onClick={() => { setGoal(campaign.goal || ''); setEditing(false); }}
+              data-testid="cancel-goal-btn"
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={!trimmed || !dirty || saveMutation.isPending}
+              data-testid="save-goal-btn"
+              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save goal'}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 
 function ScheduleEditor({ campaignId, campaign }) {
   const queryClient = useQueryClient();

@@ -22,7 +22,32 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Campaign signature inherits from Settings, with
+- **Last completed:** **Editable campaign goal — rewrites unsent emails
+  (no new research).**  The Overview tab now has a Goal editor.  Saving a
+  new goal on a non-complete campaign re-composes every already-composed,
+  not-yet-sent email so the new goal takes effect immediately; sent
+  emails are left alone.  **No research re-runs** — re-compose reuses each
+  lead's existing `research_data` (research is a separate task).
+  - **`update_campaign`**: `goal` moved into `_status_exempt_fields` so
+    it's editable on running/paused/approved (the other content fields —
+    tone, sender_*, research_mode, templates — stay draft/previewing
+    gated); explicit 409 on COMPLETE.  When `goal` actually changes (value
+    differs) on a non-DRAFT campaign, snapshots every
+    `compose_status=DONE` lead with `send_status != SENT` and dispatches
+    `compose_lead.delay(...)` for each after commit.  Unchanged-goal saves
+    and DRAFT saves dispatch nothing.
+  - **Frontend** `GoalEditor` card (Overview, above Campaign config; Goal
+    removed from the read-only config list): read-only value + Edit →
+    textarea + Save/Cancel, with a hint that saving rewrites unsent emails
+    using existing research (no new research).  Hidden Edit on COMPLETE.
+    Toast: "Goal saved — unsent emails are being rewritten" (or just
+    "Goal saved" on draft).
+  - Tests: 4 backend (`test_phase4_campaigns.py`: running recomposes only
+    unsent, unchanged-goal no-op, draft no recompose, COMPLETE 409; +2
+    pre-existing guard tests repointed from `goal` to `tone`) + 2 frontend
+    (`CampaignDetail.test.jsx`: save via updateCampaign, read-only on
+    complete).  Tests: **backend 993, frontend 350**.
+- **Previously:** **Campaign signature inherits from Settings, with
   a per-campaign override.**  The campaign Leads-tab signature editor
   used to be a blank box even though the user had already set a signature
   on their connected account in Settings.  Now a campaign with no
@@ -1725,7 +1750,16 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-06-15 (latest) — Campaign signature inherits from
+_Last updated: 2026-06-15 (latest) — Editable campaign goal that rewrites
+unsent emails.  The Overview Goal editor lets you change the goal on a
+running/paused campaign; saving re-composes every composed, not-yet-sent
+email (reusing existing research — NO new research) so the new goal takes
+effect, leaving sent emails alone.  `update_campaign` exempts `goal` from
+the content guard (409 on complete) and dispatches `compose_lead` for
+unsent leads on a real change.  4 new backend + 2 new frontend tests.
+Tests: **backend 993, frontend 350**.
+
+_Previously: 2026-06-15 — Campaign signature inherits from
 Settings.  A campaign with no signature of its own now inherits the
 bound connected account's signature (set in Settings); the Leads-tab
 editor shows the inherited signature with a "Customize for this campaign"
@@ -2247,7 +2281,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **989 passing**.  Frontend tests: **348 passing**._
+_Backend tests: **993 passing**.  Frontend tests: **350 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

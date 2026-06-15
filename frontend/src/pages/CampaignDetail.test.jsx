@@ -250,6 +250,30 @@ describe('CampaignDetail', () => {
     }));
   });
 
+  it('Goal editor saves a new goal via updateCampaign', async () => {
+    api.updateCampaign.mockResolvedValue({ ...RUNNING_CAMPAIGN, goal: 'New goal' });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    const editor = await screen.findByTestId('goal-editor');
+    expect(within(editor).getByTestId('goal-value').textContent).toMatch(/Book demos/);
+    fireEvent.click(within(editor).getByTestId('edit-goal-btn'));
+    fireEvent.change(within(editor).getByTestId('goal-input'), {
+      target: { value: 'Book product walkthroughs' },
+    });
+    fireEvent.click(within(editor).getByTestId('save-goal-btn'));
+    await waitFor(() => expect(api.updateCampaign).toHaveBeenCalledWith('c1', {
+      goal: 'Book product walkthroughs',
+    }));
+  });
+
+  it('Goal editor is read-only (no Edit) on a completed campaign', async () => {
+    api.getCampaign.mockResolvedValue({ ...RUNNING_CAMPAIGN, status: 'complete' });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    const editor = await screen.findByTestId('goal-editor');
+    expect(within(editor).queryByTestId('edit-goal-btn')).toBeNull();
+  });
+
   it('Schedule editor renders a read-only summary on overview', async () => {
     api.getCampaign.mockResolvedValue({
       ...RUNNING_CAMPAIGN,
