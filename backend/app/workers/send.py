@@ -36,7 +36,7 @@ from app.models import (
 )
 from app.services import brevo
 from app.services.email_template import render_html, render_text  # noqa: F401 — render_* kept for callers/tests that patch here
-from app.services.signature import render_email_with_signature
+from app.services.signature import render_email_with_signature, resolve_campaign_signature
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -502,8 +502,15 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             # composed_body already carries the signature text (merged by
             # apply_signature at compose time) — the helper strips that
             # tail idempotently before re-rendering, so nothing doubles.
+            #
+            # Use the EFFECTIVE signature (campaign override → connected
+            # account's Settings signature), NOT campaign.signature.  When a
+            # campaign inherits its account's signature, campaign.signature
+            # is None — passing that here would strip the sign-off and append
+            # nothing, sending an UNSIGNED email (the bug this fixes).
+            effective_signature = await resolve_campaign_signature(session, campaign)
             html_body, text_body = render_email_with_signature(
-                ctx["body"], campaign.signature,
+                ctx["body"], effective_signature,
             )
             message_id = await brevo.send_email(
                 to_email=ctx["to_email"],

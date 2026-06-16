@@ -13,6 +13,7 @@ from app.models import (
     Campaign,
     CampaignStatus,
     ComposeStatus,
+    ConnectedAccount,
     Lead,
     SendStatus,
     Suppression,
@@ -218,6 +219,47 @@ async def test_full_send_flow_marks_sent_and_records_message_id(db_session, fake
     # Counters bumped.
     assert await fake_redis.get(f"rate:{campaign.id}:hour") == "1"
     assert await fake_redis.get(f"rate:{campaign.id}:day") == "1"
+
+
+async def test_send_injects_campaign_own_signature(db_session, fake_redis):
+    campaign = await _make_campaign(db_session)
+    campaign.signature = "Anthony Colasante\nacme.com"
+    await db_session.commit()
+    lead = await _make_lead(db_session, campaign, composed_body="Hi,\n\nBody.\n\nBest,\nAI")
+
+    rp, bp = _patch_send_pipeline(fake_redis)
+    with rp, bp as send_mock:
+        await send_mod.send_lead_async(str(lead.id))
+    html = send_mock.call_args.kwargs["html_body"]
+    text = send_mock.call_args.kwargs["text_body"]
+    assert "Anthony Colasante" in html and "acme.com" in html
+    assert "Anthony Colasante" in text
+
+
+async def test_send_injects_inherited_account_signature(db_session, fake_redis):
+    """Regression: a campaign with NO signature of its own must still send
+    its connected account's (Settings) signature — previously the send path
+    used campaign.signature (None) and stripped the sign-off, sending an
+    UNSIGNED email."""
+    acc = ConnectedAccount(
+        label="Outreach", email_address="me@acme.com",
+        imap_host="imap.acme.com", username="me@acme.com",
+        password_encrypted="x", signature="Anthony @ Acme\nacme.com/demo",
+    )
+    db_session.add(acc)
+    await db_session.flush()
+    campaign = await _make_campaign(db_session)
+    campaign.signature = None                 # inherit from the account
+    campaign.connected_account_id = acc.id
+    await db_session.commit()
+    lead = await _make_lead(db_session, campaign, composed_body="Hi,\n\nBody.\n\nBest,\nAI")
+
+    rp, bp = _patch_send_pipeline(fake_redis)
+    with rp, bp as send_mock:
+        await send_mod.send_lead_async(str(lead.id))
+    html = send_mock.call_args.kwargs["html_body"]
+    assert "Anthony @ Acme" in html
+    assert "acme.com/demo" in html
 
 
 async def test_suppressed_email_marked_suppressed_without_send(db_session, fake_redis):
