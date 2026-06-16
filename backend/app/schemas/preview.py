@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -55,3 +56,17 @@ class PreviewProgress(BaseModel):
     composed: int
     sent: int
     failed: int
+    # Leads currently mid-compose (compose_status == RUNNING).  Includes
+    # both first-time composes and goal-change rewrites — the UI shows
+    # this as a "(N composing)" sub-hint on the rewrite card.
+    composing: int = 0
+    # When the goal was last edited on a non-draft campaign.  NULL means
+    # the rewrite card stays hidden — nothing to track.
+    goal_updated_at: datetime | None = None
+    # Total leads in scope for the rewrite: unsent leads whose compose
+    # status is DONE (some still on the old goal) or RUNNING (mid-rewrite).
+    # Sent leads are frozen and don't count.
+    rewrite_total: int = 0
+    # How many of ``rewrite_total`` have caught up to the new goal
+    # (compose_status == DONE AND updated_at >= goal_updated_at).
+    rewrite_done: int = 0

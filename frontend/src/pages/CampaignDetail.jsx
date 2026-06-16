@@ -64,11 +64,35 @@ function ProgressBar({ value, max, color = 'bg-blue-500' }) {
   );
 }
 
+function _fmtGoalStamp(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
 function PipelineCard({ progress, status, onLaunch, launchLoading }) {
   if (!progress) return null;
-  const { total_leads: total, researched, composed, sent, failed } = progress;
+  const {
+    total_leads: total,
+    researched, composed, sent, failed,
+    composing = 0,
+    goal_updated_at: goalUpdatedAt = null,
+    rewrite_total: rewriteTotal = 0,
+    rewrite_done: rewriteDone = 0,
+  } = progress;
   const samplesReady = composed > 0;
   const isPreviewing = status === 'previewing';
+
+  // Show the rewrite card while the goal has been edited AND there's
+  // still rewrite work outstanding (queued or in-flight).  Once the
+  // worker catches up the card auto-hides — the regular Composed bar
+  // is enough on its own from that point.
+  const rewritePending = (rewriteDone < rewriteTotal) || composing > 0;
+  const showRewriteCard = !!goalUpdatedAt && rewritePending;
 
   return (
     <div className={`bg-white rounded-xl border shadow-sm p-6 ${isPreviewing ? 'border-amber-300' : 'border-slate-200'}`}>
@@ -90,6 +114,34 @@ function PipelineCard({ progress, status, onLaunch, launchLoading }) {
           </span>
         )}
       </div>
+
+      {showRewriteCard && (
+        <div
+          data-testid="goal-rewrite-card"
+          className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3"
+        >
+          <div className="flex items-center justify-between text-xs text-blue-900 mb-1.5">
+            <span className="font-semibold">
+              Rewriting emails with new goal
+              {goalUpdatedAt && (
+                <span className="font-normal text-blue-700"> · saved {_fmtGoalStamp(goalUpdatedAt)}</span>
+              )}
+            </span>
+            <span className="tabular-nums font-medium" data-testid="rewrite-fraction">
+              {rewriteDone} / {rewriteTotal}
+            </span>
+          </div>
+          <ProgressBar value={rewriteDone} max={rewriteTotal} color="bg-blue-500" />
+          {composing > 0 && (
+            <p className="mt-2 text-xs text-blue-700" data-testid="rewrite-composing">
+              {composing} currently being rewritten…
+            </p>
+          )}
+          <p className="mt-1.5 text-xs text-blue-700">
+            Sent emails are left as-is. Reuses each lead's existing research — no new research runs.
+          </p>
+        </div>
+      )}
 
       <div className="space-y-3">
         <div>
@@ -1608,7 +1660,23 @@ export default function CampaignDetail() {
     queryKey: ['preview-progress', id],
     queryFn: () => getPreviewProgress(id),
     enabled: shouldPollProgress,
-    refetchInterval: campaign?.status === 'previewing' ? 5000 : campaign?.status === 'running' ? 8000 : false,
+    // Polling tiers:
+    // - previewing: 5s, sample composition is the foreground task
+    // - running: 8s, the standard live-view cadence
+    // - paused: 8s ONLY while a rewrite is in flight (composing > 0 or
+    //   rewrite hasn't caught up); otherwise off, so an idle paused
+    //   campaign isn't polled to no end.
+    refetchInterval: (q) => {
+      if (campaign?.status === 'previewing') return 5000;
+      if (campaign?.status === 'running') return 8000;
+      if (campaign?.status === 'paused') {
+        const p = q.state.data;
+        const rewriting = (p?.composing ?? 0) > 0
+          || ((p?.rewrite_done ?? 0) < (p?.rewrite_total ?? 0));
+        return rewriting ? 5000 : false;
+      }
+      return false;
+    },
   });
 
   const { data: linkedinAccounts = [] } = useQuery({

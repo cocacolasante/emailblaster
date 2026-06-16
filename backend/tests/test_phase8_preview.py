@@ -416,12 +416,78 @@ async def test_progress_counts_each_status(client, db_session):
     resp = await client.get(f"/campaigns/{campaign.id}/preview/progress")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {
-        "total_leads": 5,
-        "researched": 3,
-        "composed": 2,
-        "sent": 1,
-        "failed": 1,
-    }
+    assert body["total_leads"] == 5
+    assert body["researched"] == 3
+    assert body["composed"] == 2
+    assert body["sent"] == 1
+    assert body["failed"] == 1
+    # No goal edit yet → rewrite fields zeroed; composing counts RUNNING (none here).
+    assert body["composing"] == 0
+    assert body["goal_updated_at"] is None
+    assert body["rewrite_total"] == 0
+    assert body["rewrite_done"] == 0
+
+
+async def test_progress_rewrite_counts_after_goal_change(client, db_session):
+    """After a goal edit, ``rewrite_total`` = unsent composed-or-running,
+    ``rewrite_done`` = leads whose updated_at >= goal_updated_at.  Sent
+    leads are excluded (frozen on the old goal by design)."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import update
+
+    campaign = await _make_campaign(db_session)
+    stamp = datetime.now(timezone.utc)
+
+    # Pre-stamp: 2 composed but not yet rewritten + 1 sent (frozen).
+    old1 = await _make_lead(db_session, campaign, email="old1@x.com",
+                            compose_status=ComposeStatus.DONE)
+    old2 = await _make_lead(db_session, campaign, email="old2@x.com",
+                            compose_status=ComposeStatus.DONE)
+    sent_lead = await _make_lead(db_session, campaign, email="sent@x.com",
+                                 compose_status=ComposeStatus.DONE,
+                                 send_status=SendStatus.SENT)
+    # Force their updated_at to BEFORE the stamp.
+    await db_session.execute(
+        update(Lead).where(Lead.id.in_([old1.id, old2.id, sent_lead.id]))
+        .values(updated_at=stamp - timedelta(minutes=5))
+    )
+    await db_session.commit()
+
+    # Stamp the campaign + mark 1 lead RUNNING (mid-rewrite) and 1 DONE-fresh.
+    campaign.goal_updated_at = stamp
+    running = await _make_lead(db_session, campaign, email="running@x.com",
+                               compose_status=ComposeStatus.RUNNING)
+    fresh = await _make_lead(db_session, campaign, email="fresh@x.com",
+                             compose_status=ComposeStatus.DONE)
+    await db_session.execute(
+        update(Lead).where(Lead.id == fresh.id)
+        .values(updated_at=stamp + timedelta(seconds=1))
+    )
+    await db_session.commit()
+
+    resp = await client.get(f"/campaigns/{campaign.id}/preview/progress")
+    body = resp.json()
+    # 5 total; 4 composed (old1, old2, sent, fresh — running is RUNNING).
+    # 1 composing (running).  In rewrite scope: 4 unsent in DONE/RUNNING
+    # (old1, old2, running, fresh — sent excluded).  1 done since stamp (fresh).
+    assert body["composing"] == 1
+    assert body["goal_updated_at"] is not None
+    assert body["rewrite_total"] == 4
+    assert body["rewrite_done"] == 1
+
+
+async def test_progress_rewrite_zero_when_goal_never_edited(client, db_session):
+    """Without a goal edit, the rewrite card stays hidden — fields are 0 / None
+    even when composed leads exist."""
+    campaign = await _make_campaign(db_session)
+    await _make_lead(db_session, campaign, email="a@x.com",
+                     compose_status=ComposeStatus.DONE)
+    assert campaign.goal_updated_at is None
+
+    resp = await client.get(f"/campaigns/{campaign.id}/preview/progress")
+    body = resp.json()
+    assert body["goal_updated_at"] is None
+    assert body["rewrite_total"] == 0
+    assert body["rewrite_done"] == 0
 
 

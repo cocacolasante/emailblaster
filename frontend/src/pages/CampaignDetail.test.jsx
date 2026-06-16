@@ -30,6 +30,7 @@ vi.mock('../api/campaigns.js', () => ({
   getLeadDetail: vi.fn(),
   getDeliverability: vi.fn(),
   getCopyInsights: vi.fn(),
+  getPreviewProgress: vi.fn(),
 }));
 
 // Recharts stub
@@ -95,6 +96,10 @@ beforeEach(() => {
   api.getCopyInsights.mockResolvedValue({
     outcome_counts: { positive: 0, neutral: 0, negative: 0 },
     insights: null, refreshed_at: null, winning_examples: [],
+  });
+  api.getPreviewProgress.mockResolvedValue({
+    total_leads: 100, researched: 100, composed: 100, sent: 50, failed: 0,
+    composing: 0, goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
   });
 });
 
@@ -369,6 +374,43 @@ describe('CampaignDetail', () => {
     await waitFor(() => expect(api.updateLeadEmail).toHaveBeenCalledWith(
       'c1', 'L1', expect.objectContaining({ composed_body: 'Body here\n\nAnthony\n555-1234' }),
     ));
+  });
+
+  it('shows the goal-rewrite progress card while a rewrite is in flight', async () => {
+    api.getPreviewProgress.mockResolvedValue({
+      total_leads: 100, researched: 100, composed: 95, sent: 50, failed: 0,
+      composing: 5,
+      goal_updated_at: '2026-06-15T22:57:48Z',
+      rewrite_total: 50, rewrite_done: 30,
+    });
+    renderPage();
+    const card = await screen.findByTestId('goal-rewrite-card');
+    expect(within(card).getByTestId('rewrite-fraction')).toHaveTextContent('30 / 50');
+    expect(within(card).getByTestId('rewrite-composing')).toHaveTextContent('5 currently being rewritten');
+  });
+
+  it('hides the rewrite card when the goal has never been edited', async () => {
+    api.getPreviewProgress.mockResolvedValue({
+      total_leads: 100, researched: 100, composed: 100, sent: 50, failed: 0,
+      composing: 0, goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
+    });
+    renderPage();
+    // Wait for the pipeline card to render (composed counter is enough).
+    await screen.findByTestId('campaign-name');
+    expect(screen.queryByTestId('goal-rewrite-card')).not.toBeInTheDocument();
+  });
+
+  it('hides the rewrite card once recompose catches up', async () => {
+    // Goal was edited but every lead has caught up — card stays out of the way.
+    api.getPreviewProgress.mockResolvedValue({
+      total_leads: 100, researched: 100, composed: 100, sent: 50, failed: 0,
+      composing: 0,
+      goal_updated_at: '2026-06-15T22:57:48Z',
+      rewrite_total: 50, rewrite_done: 50,
+    });
+    renderPage();
+    await screen.findByTestId('campaign-name');
+    expect(screen.queryByTestId('goal-rewrite-card')).not.toBeInTheDocument();
   });
 });
 

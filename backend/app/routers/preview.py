@@ -295,7 +295,7 @@ async def get_progress(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> PreviewProgress:
-    await _get_campaign_or_404(db, campaign_id)
+    campaign = await _get_campaign_or_404(db, campaign_id)
 
     total = (await db.execute(
         select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign_id)
@@ -312,6 +312,13 @@ async def get_progress(
         select(func.count()).select_from(Lead).where(
             Lead.campaign_id == campaign_id,
             Lead.compose_status == ComposeStatus.DONE,
+        )
+    )).scalar_one()
+
+    composing = (await db.execute(
+        select(func.count()).select_from(Lead).where(
+            Lead.campaign_id == campaign_id,
+            Lead.compose_status == ComposeStatus.RUNNING,
         )
     )).scalar_one()
 
@@ -333,10 +340,46 @@ async def get_progress(
         )
     )).scalar_one()
 
+    # Goal-rewrite progress: when the goal has been edited post-draft, count
+    # how many unsent leads have caught up to the new goal vs how many are
+    # still queued.  Sent leads are frozen (and stay on the old goal — by
+    # design; rewriting an already-delivered email would be incoherent).
+    rewrite_total = 0
+    rewrite_done = 0
+    if campaign.goal_updated_at is not None:
+        # Denominator: every unsent lead that's already produced an email
+        # (DONE) plus any actively being rewritten (RUNNING).  Pending /
+        # failed are excluded — they haven't yet entered the rewrite scope
+        # and have their own status track.
+        rewrite_total = (await db.execute(
+            select(func.count()).select_from(Lead).where(
+                Lead.campaign_id == campaign_id,
+                Lead.send_status != SendStatus.SENT,
+                Lead.compose_status.in_(
+                    (ComposeStatus.DONE, ComposeStatus.RUNNING)
+                ),
+            )
+        )).scalar_one()
+        # Numerator: leads composed AT OR AFTER the goal edit.  ``updated_at``
+        # is bumped on every status transition, so a lead that's transitioned
+        # DONE -> RUNNING -> DONE since the stamp has updated_at >= stamp.
+        rewrite_done = (await db.execute(
+            select(func.count()).select_from(Lead).where(
+                Lead.campaign_id == campaign_id,
+                Lead.send_status != SendStatus.SENT,
+                Lead.compose_status == ComposeStatus.DONE,
+                Lead.updated_at >= campaign.goal_updated_at,
+            )
+        )).scalar_one()
+
     return PreviewProgress(
         total_leads=total,
         researched=researched,
         composed=composed,
         sent=sent,
         failed=failed,
+        composing=composing,
+        goal_updated_at=campaign.goal_updated_at,
+        rewrite_total=rewrite_total,
+        rewrite_done=rewrite_done,
     )

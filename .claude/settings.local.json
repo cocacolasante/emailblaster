@@ -21,7 +21,12 @@
       "Bash(sed -n 40/60p docker-compose.yml)",
       "Bash(sed -n '40,75p' docker-compose.yml)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "WebFetch(domain:api.usaspending.gov)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.irs.gov)",
+      "Bash(curl -s localhost:8000/openapi.json)",
+      "Bash(grep -n \"^describe\\\\|^}\\);$\" /Users/anthonycolasante/Projects/emailblaster/frontend/src/pages/CampaignDetail.test.jsx)"
     ]
   }
 }

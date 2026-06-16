@@ -289,6 +289,9 @@ class CampaignResponse(BaseModel):
     send_time_optimization: bool
     auto_paused_at: datetime | None
     auto_pause_reason: str | None
+    # Stamped on the most recent post-draft goal edit (NULL on campaigns
+    # that have never had their goal rewritten).
+    goal_updated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     lead_counts: LeadCounts
@@ -323,6 +326,7 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "send_time_optimization": c.send_time_optimization,
         "auto_paused_at": c.auto_paused_at,
         "auto_pause_reason": c.auto_pause_reason,
+        "goal_updated_at": c.goal_updated_at,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
     }

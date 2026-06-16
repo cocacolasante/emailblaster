@@ -111,6 +111,15 @@ class Campaign(Base):
         DateTime(timezone=True), nullable=True
     )
     auto_pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stamped by ``update_campaign`` when the goal actually changes on a
+    # non-draft campaign.  Powers the "X of Y emails rewritten" progress
+    # indicator: leads with ``updated_at >= goal_updated_at`` have been
+    # recomposed since the edit; the rest are still queued behind the
+    # in-flight ``compose_lead`` tasks.  NULL on campaigns that have never
+    # had their goal edited (post-draft) — the rewrite card stays hidden.
+    goal_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

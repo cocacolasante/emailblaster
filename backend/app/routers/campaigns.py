@@ -284,8 +284,13 @@ async def update_campaign(
     # Goal changed → rewrite every already-composed, not-yet-sent email.
     # Re-compose reuses the lead's existing research_data, so NO new research
     # runs (research is a separate task).  Sent emails are left alone.
+    # Stamp ``goal_updated_at`` so the progress endpoint can show "X of Y
+    # rewritten" — leads with ``updated_at >= goal_updated_at`` have caught
+    # up to the new goal; the rest are still queued.  Draft saves don't
+    # stamp (no rewrite to track).
     recompose_ids: list[uuid.UUID] = []
     if goal_changed and c.status != CampaignStatus.DRAFT:
+        c.goal_updated_at = datetime.now(timezone.utc)
         recompose_ids = list((await db.execute(
             select(Lead.id).where(
                 Lead.campaign_id == c.id,

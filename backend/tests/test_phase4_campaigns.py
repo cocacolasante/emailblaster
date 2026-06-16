@@ -1102,6 +1102,49 @@ async def test_goal_edit_on_complete_409(client, db_session):
     assert resp.status_code == 409
 
 
+async def test_goal_edit_stamps_goal_updated_at_on_running(client, db_session, monkeypatch):
+    """A real goal change on a non-draft campaign stamps ``goal_updated_at``
+    so the progress endpoint can count rewrite progress.  Without this the
+    UI can't tell which leads are still on the old goal."""
+    from unittest.mock import MagicMock
+    created, _ = await _running_campaign_with_leads(client, db_session)
+    monkeypatch.setattr("app.workers.compose.compose_lead.delay", MagicMock())
+
+    before = await db_session.get(Campaign, uuid.UUID(created["id"]))
+    assert before.goal_updated_at is None
+
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": "Brand new goal"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["goal_updated_at"] is not None
+
+    after = await db_session.get(Campaign, uuid.UUID(created["id"]))
+    await db_session.refresh(after)
+    assert after.goal_updated_at is not None
+
+
+async def test_goal_edit_unchanged_does_not_stamp_goal_updated_at(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+    created, _ = await _running_campaign_with_leads(client, db_session)
+    monkeypatch.setattr("app.workers.compose.compose_lead.delay", MagicMock())
+
+    same_goal = (await client.get(f"/campaigns/{created['id']}")).json()["goal"]
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": same_goal})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["goal_updated_at"] is None
+
+
+async def test_goal_edit_on_draft_does_not_stamp_goal_updated_at(client, db_session, monkeypatch):
+    """Draft campaigns have nothing to rewrite — don't stamp, keep the
+    rewrite card hidden on first launch."""
+    from unittest.mock import MagicMock
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    monkeypatch.setattr("app.workers.compose.compose_lead.delay", MagicMock())
+
+    resp = await client.patch(f"/campaigns/{created['id']}", json={"goal": "Draft goal"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["goal_updated_at"] is None
+
+
 async def test_resolve_campaign_signature_fallback_chain(client, db_session):
     from app.models import Campaign
     from app.services.signature import resolve_campaign_signature
