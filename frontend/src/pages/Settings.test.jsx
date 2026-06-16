@@ -331,6 +331,32 @@ describe('Discovery tab', () => {
     });
   });
 
+  it('saving USASpending PATCHes the max award amount (blank = no cap)', async () => {
+    signalsApi.updateFundingSource.mockResolvedValue(FUNDING_SOURCES.sources[0]);
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await screen.findByTestId('funding-card-usaspending');
+
+    const maxAward = screen.getByTestId('funding-max-award');
+    await user.clear(maxAward);
+    await user.type(maxAward, '250000');
+    await user.click(screen.getByTestId('funding-save-usaspending'));
+    await waitFor(() => {
+      const [src, payload] = signalsApi.updateFundingSource.mock.calls[0];
+      expect(src).toBe('usaspending');
+      expect(payload.max_award_amount).toBe(250000);
+    });
+
+    // Blank clears the cap → explicit null.
+    signalsApi.updateFundingSource.mockClear();
+    await user.clear(maxAward);
+    await user.click(screen.getByTestId('funding-save-usaspending'));
+    await waitFor(() => {
+      expect(signalsApi.updateFundingSource.mock.calls[0][1].max_award_amount).toBeNull();
+    });
+  });
+
   it('Run now calls the API for an enabled feed', async () => {
     signalsApi.runFundingSourceNow.mockResolvedValue({ enqueued: true });
     const user = userEvent.setup();

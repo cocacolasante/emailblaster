@@ -97,24 +97,46 @@ async def fetch_recent_awards(
     *,
     limit: int = _DEFAULT_PAGE_LIMIT,
     max_pages: int = _MAX_PAGES,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
 ) -> list[DiscoveredOrg]:
     """Recent nonprofit grant awards with ``action_date`` in [since, until].
+
+    ``min_amount`` / ``max_amount`` bound the award size via the API's
+    ``award_amounts`` filter — e.g. ``max_amount=500_000`` skips the
+    multi-million grants that go to large, already-well-funded nonprofits
+    and surfaces the smaller orgs that are a better outreach fit.
 
     Never raises — a feed outage logs and returns whatever was gathered
     so the beat task can't be crashed by USAspending being down.
     """
+    filters: dict[str, Any] = {
+        "award_type_codes": GRANT_AWARD_TYPE_CODES,
+        "time_period": [{
+            "start_date": since.isoformat(),
+            "end_date": until.isoformat(),
+            "date_type": "action_date",
+        }],
+        # Restrict to nonprofit recipients (business-category roll-up).
+        "recipient_type_names": ["nonprofit"],
+    }
+    if min_amount is not None or max_amount is not None:
+        # USAspending wants one {lower_bound, upper_bound} object; either
+        # bound may be omitted for an open-ended range.
+        rng: dict[str, float] = {}
+        if min_amount is not None:
+            rng["lower_bound"] = float(min_amount)
+        if max_amount is not None:
+            rng["upper_bound"] = float(max_amount)
+        filters["award_amounts"] = [rng]
+
     body: dict[str, Any] = {
-        "filters": {
-            "award_type_codes": GRANT_AWARD_TYPE_CODES,
-            "time_period": [{
-                "start_date": since.isoformat(),
-                "end_date": until.isoformat(),
-                "date_type": "action_date",
-            }],
-            # Restrict to nonprofit recipients (business-category roll-up).
-            "recipient_type_names": ["nonprofit"],
-        },
+        "filters": filters,
         "fields": _FIELDS,
+        # Biggest-first within the (capped) range: the largest grants UNDER
+        # the cap are substantial, real-funding mid-size orgs — the best
+        # outreach targets — and $0 deobligation/admin records sink to the
+        # bottom, out of a tight per-run window.
         "limit": limit,
         "sort": "Award Amount",
         "order": "desc",

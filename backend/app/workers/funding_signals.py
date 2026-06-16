@@ -194,7 +194,11 @@ def _env_enabled(source: str) -> bool:
 
 def _env_config(source: str) -> dict[str, Any]:
     if source == USASPENDING_SOURCE:
-        return {"lookback_days": settings.USASPENDING_LOOKBACK_DAYS}
+        return {
+            "lookback_days": settings.USASPENDING_LOOKBACK_DAYS,
+            "min_award_amount": settings.USASPENDING_MIN_AWARD_AMOUNT,
+            "max_award_amount": settings.USASPENDING_MAX_AWARD_AMOUNT,
+        }
     return {
         "ruling_lookback_months": settings.IRS_BMF_RULING_LOOKBACK_MONTHS,
         "states": list(settings.IRS_BMF_STATES),
@@ -477,11 +481,22 @@ async def _poll_usaspending_async() -> dict[str, Any]:
                     1,
                 )
                 since = today - timedelta(days=lookback)
+                # Award-size bounds (.get with a default only when the key is
+                # absent, so a user-set null = "no bound" is honoured).
+                min_amount = (
+                    cfg.get("min_award_amount", settings.USASPENDING_MIN_AWARD_AMOUNT)
+                )
+                max_amount = (
+                    cfg.get("max_award_amount", settings.USASPENDING_MAX_AWARD_AMOUNT)
+                )
                 state.last_run_at = _now()
                 state.last_run_status = "running"
                 await session.commit()  # release the state row before slow I/O
 
-                orgs = await usaspending.fetch_recent_awards(since, today, limit=100)
+                orgs = await usaspending.fetch_recent_awards(
+                    since, today, limit=100,
+                    min_amount=min_amount, max_amount=max_amount,
+                )
                 counts = await _stage_all(session, USASPENDING_SOURCE, orgs)
 
                 state = await _get_or_create_state(session, USASPENDING_SOURCE)

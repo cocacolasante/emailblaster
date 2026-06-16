@@ -145,6 +145,61 @@ async def test_usaspending_mapping_pagination_dedup(monkeypatch):
     assert "$50,000" in a1.summary
 
 
+async def test_usaspending_award_amount_filter(monkeypatch):
+    """A max_amount adds the award_amounts filter + sorts ascending so a
+    tight cap keeps the smallest grants; no bound = no filter, desc sort."""
+    captured = {}
+
+    def handler(url, body):
+        captured["body"] = body
+        return _FakeResp(json_data={"results": [], "page_metadata": {"hasNext": False}})
+
+    _patch_client(monkeypatch, usaspending, handler)
+    await usaspending.fetch_recent_awards(
+        date(2026, 6, 1), date(2026, 6, 8), min_amount=10000, max_amount=500000,
+    )
+    f = captured["body"]["filters"]
+    assert f["award_amounts"] == [{"lower_bound": 10000.0, "upper_bound": 500000.0}]
+    # Always biggest-first (largest grant under the cap = best target).
+    assert captured["body"]["order"] == "desc"
+
+    await usaspending.fetch_recent_awards(date(2026, 6, 1), date(2026, 6, 8))
+    assert "award_amounts" not in captured["body"]["filters"]
+    assert captured["body"]["order"] == "desc"
+
+
+async def test_usaspending_poll_passes_amount_bounds(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_MAX_AWARD_AMOUNT", 500000)
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_MIN_AWARD_AMOUNT", None)
+    captured = {}
+
+    async def _fake_fetch(since, until, **kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(funding_signals.usaspending, "fetch_recent_awards", _fake_fetch)
+    await _poll_usaspending_async()
+    assert captured["max_amount"] == 500000
+    assert captured["min_amount"] is None
+
+
+async def test_funding_source_patch_sets_max_award(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
+    # Set a cap.
+    resp = await client.patch("/signals/funding/sources/usaspending", json={
+        "lookback_days": 30, "max_award_amount": 250000,
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["max_award_amount"] == 250000
+    # Clear it (explicit null = no cap).
+    resp = await client.patch("/signals/funding/sources/usaspending", json={
+        "max_award_amount": None,
+    })
+    assert resp.status_code == 200
+    assert resp.json()["config"]["max_award_amount"] is None
+
+
 async def test_usaspending_outage_returns_empty(monkeypatch):
     def handler(url, body):
         raise RuntimeError("usaspending down")
@@ -590,7 +645,7 @@ async def test_worker_honors_db_config_over_env(db_session, monkeypatch):
 
     captured = {}
 
-    async def _fake_fetch(since, until, *, limit=100):
+    async def _fake_fetch(since, until, *, limit=100, **kw):
         captured["since"] = since
         captured["until"] = until
         return []

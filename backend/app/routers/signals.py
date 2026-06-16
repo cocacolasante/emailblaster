@@ -745,6 +745,10 @@ async def list_funding_sources(db: AsyncSession = Depends(get_db)) -> dict[str, 
 class FundingSourceUpdate(BaseModel):
     enabled: bool | None = None
     lookback_days: int | None = Field(default=None, ge=1, le=365)
+    # Award-size bounds (USAspending).  Sent explicitly as null = "no
+    # bound"; absent = leave unchanged (handled via model_fields_set).
+    min_award_amount: float | None = Field(default=None, ge=0)
+    max_award_amount: float | None = Field(default=None, ge=0)
     ruling_lookback_months: int | None = Field(default=None, ge=1, le=24)
     states: list[str] | None = None
 
@@ -763,6 +767,11 @@ async def update_funding_source(
     if source == "usaspending":
         if payload.lookback_days is not None:
             cfg["lookback_days"] = payload.lookback_days
+        # Amount bounds: apply when explicitly sent (incl. null = no bound).
+        if "min_award_amount" in payload.model_fields_set:
+            cfg["min_award_amount"] = payload.min_award_amount
+        if "max_award_amount" in payload.model_fields_set:
+            cfg["max_award_amount"] = payload.max_award_amount
     else:  # irs_bmf
         if payload.ruling_lookback_months is not None:
             cfg["ruling_lookback_months"] = payload.ruling_lookback_months

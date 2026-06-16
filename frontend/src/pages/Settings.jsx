@@ -535,6 +535,9 @@ function FundingSourceCard({ source, hunterConfigured }) {
 
   const [enabled, setEnabled] = useState(source.enabled);
   const [lookbackDays, setLookbackDays] = useState(cfg.lookback_days ?? 7);
+  const [maxAward, setMaxAward] = useState(
+    cfg.max_award_amount == null ? '' : String(cfg.max_award_amount),
+  );
   const [rulingMonths, setRulingMonths] = useState(cfg.ruling_lookback_months ?? 2);
   const [states, setStates] = useState((cfg.states || []).join(', '));
 
@@ -548,6 +551,8 @@ function FundingSourceCard({ source, hunterConfigured }) {
         payload.states = states.split(',').map((s) => s.trim()).filter(Boolean);
       } else {
         payload.lookback_days = Number(lookbackDays);
+        // Blank = no cap (explicit null); a number caps the award size.
+        payload.max_award_amount = maxAward.trim() === '' ? null : Number(maxAward);
       }
       return updateFundingSource(source.source, payload);
     },
@@ -629,16 +634,32 @@ function FundingSourceCard({ source, hunterConfigured }) {
             </label>
           </>
         ) : (
-          <label className="text-xs text-slate-600">
-            Lookback (days)
-            <input
-              type="number" min={1} max={365}
-              data-testid="funding-lookback-days"
-              value={lookbackDays}
-              onChange={(e) => setLookbackDays(e.target.value)}
-              className="mt-1 block w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
-            />
-          </label>
+          <div className="flex flex-wrap gap-4">
+            <label className="text-xs text-slate-600">
+              Lookback (days)
+              <input
+                type="number" min={1} max={365}
+                data-testid="funding-lookback-days"
+                value={lookbackDays}
+                onChange={(e) => setLookbackDays(e.target.value)}
+                className="mt-1 block w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+              />
+            </label>
+            <label className="text-xs text-slate-600">
+              Max award amount ($)
+              <input
+                type="number" min={0} step={1000}
+                data-testid="funding-max-award"
+                value={maxAward}
+                onChange={(e) => setMaxAward(e.target.value)}
+                placeholder="no cap"
+                className="mt-1 block w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+              />
+              <span className="block mt-0.5 text-[11px] text-slate-400">
+                Skip grants above this (big grants → large orgs). Blank = no cap.
+              </span>
+            </label>
+          </div>
         )}
       </div>
 

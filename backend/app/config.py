@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     # back-dated awards that only just became visible; 30 covers typical lag.
     # Dedup makes the overlap free.
     USASPENDING_LOOKBACK_DAYS: int = 30
+    # Award-size bounds (USD) on the grants we surface.  Big multi-million
+    # grants go to large, already-well-funded nonprofits that are a poor
+    # outreach fit; cap at $500k by default so we pull the smaller orgs.
+    # 0 / None = no bound.  Tunable per-feed in Settings → Discovery.
+    USASPENDING_MIN_AWARD_AMOUNT: float | None = None
+    USASPENDING_MAX_AWARD_AMOUNT: float | None = 500_000
     # IRS EO BMF new-501(c)(3) feed.  STATES empty = skip (e.g. ["PA","NJ"]).
     IRS_BMF_ENABLED: bool = False
     # NoDecode: keep pydantic-settings from JSON-parsing the env value so
