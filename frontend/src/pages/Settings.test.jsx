@@ -357,6 +357,24 @@ describe('Discovery tab', () => {
     });
   });
 
+  it('saving a feed PATCHes max_per_run (lead-pull cap)', async () => {
+    signalsApi.updateFundingSource.mockResolvedValue(FUNDING_SOURCES.sources[1]);
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole('tab', { name: 'Discovery' }));
+    await screen.findByTestId('funding-card-irs_bmf');
+
+    const cap = screen.getByTestId('funding-max-per-run-irs_bmf');
+    await user.clear(cap);
+    await user.type(cap, '40');
+    await user.click(screen.getByTestId('funding-save-irs_bmf'));
+    await waitFor(() => {
+      const [src, payload] = signalsApi.updateFundingSource.mock.calls[0];
+      expect(src).toBe('irs_bmf');
+      expect(payload.max_per_run).toBe(40);
+    });
+  });
+
   it('Run now calls the API for an enabled feed', async () => {
     signalsApi.runFundingSourceNow.mockResolvedValue({ enqueued: true });
     const user = userEvent.setup();

@@ -184,6 +184,58 @@ async def test_usaspending_poll_passes_amount_bounds(db_session, monkeypatch):
     assert captured["min_amount"] is None
 
 
+async def test_irs_fetch_max_orgs_bounds_list(monkeypatch):
+    """The IRS fetch caps the parsed list (and keeps the newest rulings)."""
+    rows = "\n".join(
+        f'{1000+i},ORG {i},3,2026{(i % 12) + 1:02d},P20,1000'
+        for i in range(50)
+    )
+    csv = "EIN,NAME,SUBSECTION,RULING,NTEE_CD,CLASSIFICATION\n" + rows
+
+    def handler(url, body):
+        return _FakeResp(text=csv)
+
+    _patch_client(monkeypatch, irs_bmf, handler)
+    orgs = await irs_bmf.fetch_new_501c3(["PA"], "202001", max_orgs=5)
+    assert len(orgs) == 5                            # bounded
+
+
+async def test_irs_poll_respects_max_per_run(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_STATES", ["PA"])
+    db_session.add(FundingSourceState(
+        source="irs_bmf", enabled=True,
+        config={"states": ["PA"], "ruling_lookback_months": 2, "max_per_run": 3},
+        cursor={},
+    ))
+    await db_session.commit()
+
+    captured = {}
+
+    async def _fake_fetch(states, since_ruling, *, max_orgs=None):
+        captured["max_orgs"] = max_orgs
+        return [_org(dedup=f"new_501c3:{i}", signal_type="new_501c3") for i in range(10)]
+
+    monkeypatch.setattr(funding_signals.irs_bmf, "fetch_new_501c3", _fake_fetch)
+    monkeypatch.setattr(
+        funding_signals.enrichment, "resolve_contact",
+        AsyncMock(return_value=ContactResult(status="no_contact")),
+    )
+    result = await _poll_irs_bmf_async()
+    # Cap 3 → only 3 enriched/queued even though 10 were fetched.
+    assert result["queued"] == 3
+    assert result["capped"] is True
+    assert captured["max_orgs"] == 12                # cap * 4
+
+
+async def test_funding_source_patch_sets_max_per_run(client, db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_STATES", ["PA"])
+    resp = await client.patch("/signals/funding/sources/irs_bmf", json={"max_per_run": 10})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["max_per_run"] == 10
+
+
 async def test_funding_source_patch_sets_max_award(client, db_session, monkeypatch):
     monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
     # Set a cap.
@@ -474,7 +526,7 @@ async def test_irs_bmf_first_run_guard_bounds_window(db_session, monkeypatch):
 
     captured = {}
 
-    async def _fake_fetch(states, since_ruling):
+    async def _fake_fetch(states, since_ruling, *, max_orgs=None):
         captured["since_ruling"] = since_ruling
         captured["states"] = states
         return []

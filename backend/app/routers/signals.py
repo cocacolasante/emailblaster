@@ -745,6 +745,8 @@ async def list_funding_sources(db: AsyncSession = Depends(get_db)) -> dict[str, 
 class FundingSourceUpdate(BaseModel):
     enabled: bool | None = None
     lookback_days: int | None = Field(default=None, ge=1, le=365)
+    # Per-feed lead-pull cap per run (applies to both feeds).
+    max_per_run: int | None = Field(default=None, ge=1, le=1000)
     # Award-size bounds (USAspending).  Sent explicitly as null = "no
     # bound"; absent = leave unchanged (handled via model_fields_set).
     min_award_amount: float | None = Field(default=None, ge=0)
@@ -764,6 +766,9 @@ async def update_funding_source(
         state.enabled = payload.enabled
 
     cfg = dict(state.config or {})
+    # Per-feed lead-pull cap — applies to both feeds.
+    if payload.max_per_run is not None:
+        cfg["max_per_run"] = payload.max_per_run
     if source == "usaspending":
         if payload.lookback_days is not None:
             cfg["lookback_days"] = payload.lookback_days

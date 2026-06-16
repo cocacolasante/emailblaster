@@ -540,12 +540,14 @@ function FundingSourceCard({ source, hunterConfigured }) {
   );
   const [rulingMonths, setRulingMonths] = useState(cfg.ruling_lookback_months ?? 2);
   const [states, setStates] = useState((cfg.states || []).join(', '));
+  const [maxPerRun, setMaxPerRun] = useState(cfg.max_per_run ?? 25);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['funding-sources'] });
 
   const saveMut = useMutation({
     mutationFn: () => {
       const payload = { enabled };
+      if (String(maxPerRun).trim() !== '') payload.max_per_run = Number(maxPerRun);
       if (isIrs) {
         payload.ruling_lookback_months = Number(rulingMonths);
         payload.states = states.split(',').map((s) => s.trim()).filter(Boolean);
@@ -661,6 +663,21 @@ function FundingSourceCard({ source, hunterConfigured }) {
             </label>
           </div>
         )}
+
+        {/* Lead-pull cap — applies to both feeds; safeguards a huge run. */}
+        <label className="text-xs text-slate-600">
+          Max leads per run
+          <input
+            type="number" min={1} max={1000}
+            data-testid={`funding-max-per-run-${source.source}`}
+            value={maxPerRun}
+            onChange={(e) => setMaxPerRun(e.target.value)}
+            className="mt-1 block w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+          />
+          <span className="block mt-0.5 text-[11px] text-slate-400">
+            Caps how many orgs are enriched per run.
+          </span>
+        </label>
       </div>
 
       <div className="flex items-center justify-between border-t border-slate-100 pt-3">

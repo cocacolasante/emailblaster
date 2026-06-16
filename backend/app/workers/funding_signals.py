@@ -198,10 +198,12 @@ def _env_config(source: str) -> dict[str, Any]:
             "lookback_days": settings.USASPENDING_LOOKBACK_DAYS,
             "min_award_amount": settings.USASPENDING_MIN_AWARD_AMOUNT,
             "max_award_amount": settings.USASPENDING_MAX_AWARD_AMOUNT,
+            "max_per_run": settings.FUNDING_DISCOVERY_MAX_PER_RUN,
         }
     return {
         "ruling_lookback_months": settings.IRS_BMF_RULING_LOOKBACK_MONTHS,
         "states": list(settings.IRS_BMF_STATES),
+        "max_per_run": settings.FUNDING_DISCOVERY_MAX_PER_RUN,
     }
 
 
@@ -399,16 +401,18 @@ async def _stage_discovery_signal(
 
 async def _stage_all(
     session: AsyncSession, src: str, orgs: list[DiscoveredOrg],
+    *, max_per_run: int | None = None,
 ) -> dict[str, int]:
     """Stage each org in its OWN transaction so one bad org (failed
     enrichment, notification hiccup) can't roll back the whole batch and
     a dedup guard makes the whole run idempotent.
 
-    Polls the cooperative stop flag before each org so a Stop press aborts
-    the run promptly (mid-batch) without waiting for the remaining ~100
-    enrichment calls to finish."""
+    ``max_per_run`` hard-caps how many NEW orgs get enriched this run (the
+    per-feed lead-pull limit); falls back to the global
+    ``FUNDING_DISCOVERY_MAX_PER_RUN``.  Polls the cooperative stop flag
+    before each org so a Stop press aborts the run promptly (mid-batch)."""
     staged = leads = tasks = queued = processed = 0
-    cap = int(settings.FUNDING_DISCOVERY_MAX_PER_RUN)
+    cap = int(max_per_run if max_per_run is not None else settings.FUNDING_DISCOVERY_MAX_PER_RUN)
     stop_client = _funding_redis()
     capped = False
     for i, org in enumerate(orgs):
@@ -489,6 +493,9 @@ async def _poll_usaspending_async() -> dict[str, Any]:
                 max_amount = (
                     cfg.get("max_award_amount", settings.USASPENDING_MAX_AWARD_AMOUNT)
                 )
+                max_per_run = int(
+                    cfg.get("max_per_run") or settings.FUNDING_DISCOVERY_MAX_PER_RUN
+                )
                 state.last_run_at = _now()
                 state.last_run_status = "running"
                 await session.commit()  # release the state row before slow I/O
@@ -497,7 +504,9 @@ async def _poll_usaspending_async() -> dict[str, Any]:
                     since, today, limit=100,
                     min_amount=min_amount, max_amount=max_amount,
                 )
-                counts = await _stage_all(session, USASPENDING_SOURCE, orgs)
+                counts = await _stage_all(
+                    session, USASPENDING_SOURCE, orgs, max_per_run=max_per_run,
+                )
 
                 state = await _get_or_create_state(session, USASPENDING_SOURCE)
                 state.cursor = {
@@ -560,12 +569,22 @@ async def _poll_irs_bmf_async() -> dict[str, Any]:
                 # FIRST RUN GUARD: with no cursor, bound to the lookback so
                 # we never blast the entire historical file.
                 since_ruling = floor if last is None else max(last, floor)
+                # Per-feed lead-pull cap (safeguard against a huge run).
+                max_per_run = int(
+                    cfg.get("max_per_run") or settings.FUNDING_DISCOVERY_MAX_PER_RUN
+                )
                 state.last_run_at = _now()
                 state.last_run_status = "running"
                 await session.commit()
 
-                orgs = await irs_bmf.fetch_new_501c3(states, since_ruling)
-                counts = await _stage_all(session, IRS_BMF_SOURCE, orgs)
+                # Fetch a little extra (cap * 4) so dedup-skipped already-seen
+                # orgs don't starve the run, but still bound the parsed list.
+                orgs = await irs_bmf.fetch_new_501c3(
+                    states, since_ruling, max_orgs=max(max_per_run * 4, max_per_run),
+                )
+                counts = await _stage_all(
+                    session, IRS_BMF_SOURCE, orgs, max_per_run=max_per_run,
+                )
 
                 state = await _get_or_create_state(session, IRS_BMF_SOURCE)
                 state.cursor = {**cur, "last_file_month": _yyyymm(today)}

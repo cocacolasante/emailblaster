@@ -75,14 +75,23 @@ def _parse_state_csv(text: str, state: str, since_ruling: str) -> list[Discovere
     return orgs
 
 
-async def fetch_new_501c3(states: list[str], since_ruling: str) -> list[DiscoveredOrg]:
+async def fetch_new_501c3(
+    states: list[str], since_ruling: str, *, max_orgs: int | None = None,
+) -> list[DiscoveredOrg]:
     """New 501(c)(3) orgs in the configured states with RULING >=
     ``since_ruling`` (YYYYMM).  Never raises — a download failure for one
-    state logs and is skipped."""
+    state logs and is skipped.
+
+    ``max_orgs`` bounds the returned list (defense-in-depth: the EO BMF
+    per-state files are huge, so even after the ruling filter we cap the
+    list rather than build an unbounded one in memory).  Returns the
+    newest rulings first so a cap keeps the most recent orgs."""
     orgs: list[DiscoveredOrg] = []
     seen_keys: set[str] = set()
     async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         for raw_state in states:
+            if max_orgs is not None and len(orgs) >= max_orgs:
+                break
             state = (raw_state or "").strip()
             if not state:
                 continue
@@ -94,7 +103,15 @@ async def fetch_new_501c3(states: list[str], since_ruling: str) -> list[Discover
             except Exception as exc:  # noqa: BLE001 — one bad state must not crash
                 logger.warning("IRS BMF fetch failed for %s (%s): %s", state, url, exc)
                 continue
-            for org in _parse_state_csv(text, state, since_ruling):
+            # Newest rulings first so a cap keeps the freshest orgs.
+            parsed = sorted(
+                _parse_state_csv(text, state, since_ruling),
+                key=lambda o: (o.detail or {}).get("ruling_date") or "",
+                reverse=True,
+            )
+            for org in parsed:
+                if max_orgs is not None and len(orgs) >= max_orgs:
+                    break
                 if org.dedup_key in seen_keys:
                     continue
                 seen_keys.add(org.dedup_key)
