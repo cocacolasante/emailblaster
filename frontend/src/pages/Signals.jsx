@@ -345,6 +345,65 @@ function SignalDetailModal({ signal, onClose }) {
           ))}
         </dl>
 
+        {/* Contact & links — what enrichment found for this org. */}
+        {(() => {
+          const lead = signal.lead || {};
+          const website = lead.company_website || detail.website || detail.domain;
+          const contactName = [lead.first_name, lead.last_name].filter(Boolean).join(' ');
+          const href = website
+            ? (/^https?:\/\//i.test(website) ? website : `https://${website}`)
+            : null;
+          if (!website && !lead.email && !contactName && !lead.linkedin_url) return null;
+          return (
+            <div
+              data-testid="signal-contact-info"
+              className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm space-y-1"
+            >
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Contact &amp; links
+              </div>
+              {(contactName || lead.job_title) && (
+                <div className="text-slate-800">
+                  {contactName || '—'}
+                  {lead.job_title ? <span className="text-slate-500">, {lead.job_title}</span> : null}
+                </div>
+              )}
+              {lead.email && (
+                <div>
+                  ✉{' '}
+                  <a className="text-blue-600 hover:underline" href={`mailto:${lead.email}`}>
+                    {lead.email}
+                  </a>
+                </div>
+              )}
+              {href && (
+                <div>
+                  🌐{' '}
+                  <a
+                    data-testid="signal-website-link"
+                    href={href} target="_blank" rel="noreferrer"
+                    className="text-blue-600 hover:underline break-all"
+                  >
+                    {website}
+                  </a>
+                </div>
+              )}
+              {lead.linkedin_url && (
+                <div>
+                  in{' '}
+                  <a
+                    data-testid="signal-linkedin-link"
+                    href={lead.linkedin_url} target="_blank" rel="noreferrer"
+                    className="text-blue-600 hover:underline break-all"
+                  >
+                    LinkedIn profile
+                  </a>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {!hasLead ? (
           <div data-testid="signal-no-contact" className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <p className="m-0">

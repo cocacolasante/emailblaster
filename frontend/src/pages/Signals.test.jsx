@@ -407,3 +407,47 @@ describe('Signal detail → lead actions (opportunity / campaign)', () => {
     expect(within(modal).queryByTestId('signal-lead-actions')).toBeNull();
   });
 });
+
+describe('Signal detail → contact & website info', () => {
+  it('shows the resolved contact + a clickable website link', async () => {
+    api.listSignals.mockResolvedValue(paged([{
+      ...SIGNAL, id: 's5',
+      detail: { website: 'helpinghands.org', amount: 50000 },
+      lead: {
+        email: 'dana@helpinghands.org', first_name: 'Dana', last_name: 'Reed',
+        job_title: 'Executive Director', company: 'Helping Hands',
+        company_website: 'https://helpinghands.org',
+        linkedin_url: 'https://www.linkedin.com/in/dana-reed',
+      },
+    }]));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s5'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    const info = within(modal).getByTestId('signal-contact-info');
+    expect(info).toHaveTextContent('Dana Reed');
+    expect(info).toHaveTextContent('Executive Director');
+    expect(info).toHaveTextContent('dana@helpinghands.org');
+    const link = within(info).getByTestId('signal-website-link');
+    expect(link).toHaveAttribute('href', 'https://helpinghands.org');
+    expect(within(info).getByTestId('signal-linkedin-link')).toBeInTheDocument();
+  });
+
+  it('builds an https href for a bare domain and hides the panel with no info', async () => {
+    api.listSignals.mockResolvedValue(paged([
+      { ...SIGNAL, id: 's6', detail: { website: 'bare-domain.org' }, lead: null },
+      { ...SIGNAL, id: 's7', detail: {}, lead: null },
+    ]));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s6'));
+    let modal = await screen.findByTestId('signal-detail-modal');
+    expect(within(modal).getByTestId('signal-website-link'))
+      .toHaveAttribute('href', 'https://bare-domain.org');
+    await user.click(within(modal).getByLabelText('Close'));
+
+    await user.click(await screen.findByTestId('signal-card-s7'));
+    modal = await screen.findByTestId('signal-detail-modal');
+    expect(within(modal).queryByTestId('signal-contact-info')).toBeNull();
+  });
+});

@@ -1297,6 +1297,49 @@ async def test_signal_list_exposes_lead_has_email(client, db_session):
     assert by_id[str(s_li.id)]["lead_has_email"] is False
 
 
+async def test_signal_list_includes_lead_contact_info(client, db_session):
+    """The feed embeds the linked lead's contact basics (email, name,
+    website, LinkedIn) so the detail modal can show what we found."""
+    lead = Lead(
+        campaign_id=None, email="dana@helpinghands.org",
+        first_name="Dana", last_name="Reed", job_title="Executive Director",
+        company="Helping Hands", company_website="https://helpinghands.org",
+        linkedin_url="https://www.linkedin.com/in/dana-reed",
+    )
+    db_session.add(lead)
+    await db_session.flush()
+    sig = ProspectSignal(
+        watch_id=None, source="usaspending", signal_type="grant_awarded",
+        summary="Helping Hands won a grant", detail={"website": "helpinghands.org"},
+        lead_id=lead.id, dedup_key=f"grant_awarded:{uuid.uuid4().hex}",
+    )
+    db_session.add(sig)
+    await db_session.commit()
+
+    resp = await client.get("/signals")
+    assert resp.status_code == 200, resp.text
+    item = {i["id"]: i for i in resp.json()["items"]}[str(sig.id)]
+    ld = item["lead"]
+    assert ld["email"] == "dana@helpinghands.org"
+    assert ld["first_name"] == "Dana"
+    assert ld["job_title"] == "Executive Director"
+    assert ld["company_website"] == "https://helpinghands.org"
+    assert ld["linkedin_url"] == "https://www.linkedin.com/in/dana-reed"
+
+
+async def test_signal_list_lead_is_null_without_contact(client, db_session):
+    sig = ProspectSignal(
+        watch_id=None, source="irs_bmf", signal_type="new_501c3",
+        summary="New 501(c)(3): C", detail={}, lead_id=None,
+        dedup_key=f"new_501c3:{uuid.uuid4().hex}",
+    )
+    db_session.add(sig)
+    await db_session.commit()
+    resp = await client.get("/signals")
+    item = {i["id"]: i for i in resp.json()["items"]}[str(sig.id)]
+    assert item["lead"] is None
+
+
 async def test_signal_enrich_unknown_404(client):
     resp = await client.post(f"/signals/{uuid.uuid4()}/enrich")
     assert resp.status_code == 404

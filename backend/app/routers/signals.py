@@ -354,18 +354,27 @@ async def list_signals(
         .limit(page_size)
         .offset((page - 1) * page_size)
     )).scalars().all()
-    # Which linked leads are emailable — drives the UI's "Draft & send"
-    # vs "LinkedIn only" affordance without a per-row query.
+    # Pull the linked leads' contact basics in one batched query so the
+    # detail modal can show who/where we found without a per-row fetch.
     lead_ids = [s.lead_id for s in rows if s.lead_id is not None]
-    emailable_ids: set[uuid.UUID] = set()
+    lead_map: dict[uuid.UUID, dict[str, Any]] = {}
     if lead_ids:
-        emailable_ids = {
-            lid for (lid,) in (await db.execute(
-                select(Lead.id).where(
-                    Lead.id.in_(lead_ids), Lead.email.isnot(None)
-                )
-            )).all()
-        }
+        lead_rows = (await db.execute(
+            select(
+                Lead.id, Lead.email, Lead.first_name, Lead.last_name,
+                Lead.job_title, Lead.company, Lead.company_website, Lead.linkedin_url,
+            ).where(Lead.id.in_(lead_ids))
+        )).all()
+        for lid, email, fn, ln, title, company, website, linkedin in lead_rows:
+            lead_map[lid] = {
+                "email": email,
+                "first_name": fn,
+                "last_name": ln,
+                "job_title": title,
+                "company": company,
+                "company_website": website,
+                "linkedin_url": linkedin,
+            }
     items = [
         {
             "id": s.id,
@@ -376,7 +385,8 @@ async def list_signals(
             "detail": s.detail,
             "status": s.status,
             "lead_id": s.lead_id,
-            "lead_has_email": s.lead_id in emailable_ids,
+            "lead": lead_map.get(s.lead_id),
+            "lead_has_email": bool((lead_map.get(s.lead_id) or {}).get("email")),
             "opportunity_id": s.opportunity_id,
             "detected_at": s.detected_at,
         }
