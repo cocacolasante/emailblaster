@@ -69,6 +69,57 @@ async def test_update_crm_status_rejects_converted(client):
     assert resp.status_code == 400
 
 
+async def test_update_lead_contact_fields(client, db_session):
+    created = (await client.post("/crm/leads", json={"email": "old@x.com"})).json()
+    resp = await client.patch(f"/crm/leads/{created['id']}", json={
+        "email": "New@Acme.IO", "first_name": "Jane", "last_name": "Roe",
+        "company": "Acme", "job_title": "VP Ops", "phone": "555-1212",
+        "linkedin_url": "https://linkedin.com/in/jane",
+        "company_website": "acme.io", "notes": "updated",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["email"] == "new@acme.io"          # canonicalised
+    assert body["first_name"] == "Jane"
+    assert body["job_title"] == "VP Ops"
+    assert body["company_website"] == "acme.io"
+
+    lead = await db_session.get(Lead, uuid.UUID(created["id"]))
+    await db_session.refresh(lead)
+    assert lead.email == "new@acme.io"
+    assert lead.phone == "555-1212"
+    assert lead.notes == "updated"
+
+
+async def test_update_lead_contact_partial_leaves_others(client, db_session):
+    created = (await client.post("/crm/leads", json={
+        "email": "p@x.com", "company": "KeepCo", "first_name": "Al",
+    })).json()
+    # Only change job_title — company + first_name must survive (PATCH).
+    resp = await client.patch(f"/crm/leads/{created['id']}", json={"job_title": "Director"})
+    assert resp.status_code == 200
+    lead = await db_session.get(Lead, uuid.UUID(created["id"]))
+    assert lead.job_title == "Director"
+    assert lead.company == "KeepCo"
+    assert lead.first_name == "Al"
+
+
+async def test_update_lead_rejects_bad_email(client):
+    created = (await client.post("/crm/leads", json={"email": "ok@x.com"})).json()
+    resp = await client.patch(f"/crm/leads/{created['id']}", json={"email": "nope"})
+    assert resp.status_code == 422
+
+
+async def test_update_lead_blank_field_clears_it(client, db_session):
+    created = (await client.post("/crm/leads", json={
+        "email": "z@x.com", "company": "Wipe Me",
+    })).json()
+    resp = await client.patch(f"/crm/leads/{created['id']}", json={"company": "  "})
+    assert resp.status_code == 200
+    lead = await db_session.get(Lead, uuid.UUID(created["id"]))
+    assert lead.company is None
+
+
 # ---------- Lead conversion ----------
 
 async def test_convert_lead_creates_opportunity_with_snapshot(client, db_session):

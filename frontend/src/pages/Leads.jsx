@@ -16,6 +16,7 @@ import {
   convertLead,
   createCrmLead,
   updateLeadCrmStatus,
+  updateLeadFields,
 } from '../api/crm.js';
 import { createWatch } from '../api/signals.js';
 
@@ -464,6 +465,28 @@ function LeadCrmModal({ lead, onClose }) {
   }
   const dirty = hydrated && notes !== (view?.notes || '');
 
+  // Editable contact / details.
+  const CONTACT_FIELDS = ['first_name', 'last_name', 'email', 'company', 'job_title', 'phone', 'linkedin_url', 'company_website'];
+  const [editingContact, setEditingContact] = useState(false);
+  const [cform, setCform] = useState({});
+  function startEditContact() {
+    const src = view || lead;
+    setCform(Object.fromEntries(CONTACT_FIELDS.map((k) => [k, src[k] || ''])));
+    setEditingContact(true);
+  }
+  const editContactMut = useMutation({
+    mutationFn: () => updateLeadFields(lead.id, Object.fromEntries(
+      CONTACT_FIELDS.map((k) => [k, cform[k].trim()]),
+    )),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      setEditingContact(false);
+      toast.success('Contact details updated');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to update contact'),
+  });
+
   const saveMutation = useMutation({
     // updateLeadEmail still takes campaign_id (per-campaign route).  Use
     // the lead's own campaign_id so the call lands correctly.
@@ -723,50 +746,110 @@ function LeadCrmModal({ lead, onClose }) {
         {/* Contact / outreach info card */}
         <div
           data-testid="lead-contact-section"
-          className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs"
+          className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 text-xs"
         >
-          <InfoRow label="Email">
-            <a href={`mailto:${lead.email}`} className="text-blue-600 hover:underline">{lead.email}</a>
-          </InfoRow>
-          {(view?.phone || null) && (
-            <InfoRow label="Phone">
-              <a href={`tel:${view.phone}`} className="text-blue-600 hover:underline">{view.phone}</a>
-            </InfoRow>
-          )}
-          {view?.linkedin_url && (
-            <InfoRow label="LinkedIn">
-              <a
-                href={view.linkedin_url}
-                target="_blank" rel="noopener noreferrer"
-                data-testid="lead-linkedin-link"
-                className="text-blue-600 hover:underline"
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+              Contact &amp; details
+            </span>
+            {!editingContact && (
+              <button
+                type="button"
+                data-testid="lead-edit-contact-btn"
+                onClick={startEditContact}
+                className="text-xs text-blue-600 hover:underline bg-transparent border-none cursor-pointer p-0"
               >
-                Open profile ↗
-              </a>
-              {view?.linkedin_connection_status && view.linkedin_connection_status !== 'unknown' && (
-                <span className="ml-2 text-slate-500">
-                  ({LINKEDIN_CONN_LABEL[view.linkedin_connection_status] || view.linkedin_connection_status})
-                </span>
+                Edit
+              </button>
+            )}
+          </div>
+
+          {editingContact ? (
+            <div data-testid="lead-contact-edit" className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                {CONTACT_FIELDS.map((k) => (
+                  <label key={k} className="block">
+                    <span className="text-slate-500 capitalize">{k.replace(/_/g, ' ')}</span>
+                    <input
+                      type="text"
+                      data-testid={`lead-edit-${k}`}
+                      value={cform[k] ?? ''}
+                      onChange={(e) => setCform((f) => ({ ...f, [k]: e.target.value }))}
+                      className="mt-0.5 block w-full border border-slate-300 rounded px-2 py-1 text-xs"
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  data-testid="lead-edit-cancel-btn"
+                  onClick={() => setEditingContact(false)}
+                  className="px-2.5 py-1 text-xs border border-slate-300 rounded text-slate-600 hover:bg-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  data-testid="lead-edit-save-btn"
+                  onClick={() => editContactMut.mutate()}
+                  disabled={editContactMut.isPending || !(cform.email || '').trim()}
+                  className="px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {editContactMut.isPending ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+              <InfoRow label="Email">
+                {(view?.email || lead.email)
+                  ? <a href={`mailto:${view?.email || lead.email}`} className="text-blue-600 hover:underline">{view?.email || lead.email}</a>
+                  : <span className="text-slate-400">—</span>}
+              </InfoRow>
+              {(view?.company || lead.company) && <InfoRow label="Company">{view?.company || lead.company}</InfoRow>}
+              {(view?.job_title || lead.job_title) && <InfoRow label="Title">{view?.job_title || lead.job_title}</InfoRow>}
+              {view?.phone && (
+                <InfoRow label="Phone">
+                  <a href={`tel:${view.phone}`} className="text-blue-600 hover:underline">{view.phone}</a>
+                </InfoRow>
               )}
-            </InfoRow>
+              {view?.linkedin_url && (
+                <InfoRow label="LinkedIn">
+                  <a
+                    href={view.linkedin_url}
+                    target="_blank" rel="noopener noreferrer"
+                    data-testid="lead-linkedin-link"
+                    className="text-blue-600 hover:underline"
+                  >
+                    Open profile ↗
+                  </a>
+                  {view?.linkedin_connection_status && view.linkedin_connection_status !== 'unknown' && (
+                    <span className="ml-2 text-slate-500">
+                      ({LINKEDIN_CONN_LABEL[view.linkedin_connection_status] || view.linkedin_connection_status})
+                    </span>
+                  )}
+                </InfoRow>
+              )}
+              {view?.company_website && (
+                <InfoRow label="Website">
+                  <a
+                    href={
+                      view.company_website.startsWith('http')
+                        ? view.company_website
+                        : `https://${view.company_website}`
+                    }
+                    target="_blank" rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline"
+                  >
+                    {view.company_website} ↗
+                  </a>
+                </InfoRow>
+              )}
+              {sigSummary.industry && <InfoRow label="Industry">{sigSummary.industry}</InfoRow>}
+              {sigSummary.size_hint && <InfoRow label="Size">{sigSummary.size_hint}</InfoRow>}
+            </div>
           )}
-          {view?.company_website && (
-            <InfoRow label="Website">
-              <a
-                href={
-                  view.company_website.startsWith('http')
-                    ? view.company_website
-                    : `https://${view.company_website}`
-                }
-                target="_blank" rel="noopener noreferrer"
-                className="text-blue-600 hover:underline"
-              >
-                {view.company_website} ↗
-              </a>
-            </InfoRow>
-          )}
-          {sigSummary.industry && <InfoRow label="Industry">{sigSummary.industry}</InfoRow>}
-          {sigSummary.size_hint && <InfoRow label="Size">{sigSummary.size_hint}</InfoRow>}
         </div>
 
         {/* Composed email preview */}

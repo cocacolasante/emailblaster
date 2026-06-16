@@ -53,8 +53,38 @@ class LeadCreate(BaseModel):
 
 
 class LeadCrmUpdate(BaseModel):
-    """Update the CRM-facing lead fields (status etc.)."""
+    """Update the CRM-facing lead fields: status + editable contact info.
+
+    PATCH semantics — only fields actually sent are changed (the endpoint
+    uses ``exclude_unset``).  Blank contact strings clear the field; a
+    blank email is rejected only when a non-empty value is sent."""
     crm_status: CrmLeadStatus | None = None
+    email: str | None = Field(default=None, max_length=320)
+    first_name: str | None = Field(default=None, max_length=200)
+    last_name: str | None = Field(default=None, max_length=200)
+    company: str | None = Field(default=None, max_length=300)
+    job_title: str | None = Field(default=None, max_length=300)
+    phone: str | None = Field(default=None, max_length=50)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    company_website: str | None = Field(default=None, max_length=500)
+    notes: str | None = None
+
+    _v_blank = field_validator(
+        "first_name", "last_name", "company", "job_title", "phone",
+        "linkedin_url", "company_website",
+    )(_blank_to_none)
+
+    @field_validator("email")
+    @classmethod
+    def _email_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip().lower()
+        if not s:
+            return None            # explicit clear → no email (LinkedIn-only lead)
+        if "@" not in s or "." not in s.split("@")[-1]:
+            raise ValueError("invalid email address")
+        return s
 
 
 # ============================================================================

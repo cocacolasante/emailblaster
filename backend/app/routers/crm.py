@@ -92,19 +92,47 @@ async def update_lead_crm(
     payload: LeadCrmUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Update the CRM-facing lead fields (currently just crm_status)."""
+    """Update the CRM-facing lead fields: status + editable contact info
+    (email, name, company, job_title, phone, linkedin_url,
+    company_website, notes).  PATCH — only sent fields change."""
     lead = await db.get(Lead, lead_id)
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
-    if payload.crm_status is not None:
+
+    updates = payload.model_dump(exclude_unset=True)
+
+    if updates.get("crm_status") is not None:
         if payload.crm_status == CrmLeadStatus.CONVERTED:
             raise HTTPException(
                 status_code=400,
                 detail="Use POST /crm/leads/{id}/convert to convert a lead",
             )
         lead.crm_status = payload.crm_status.value
+
+    # Editable contact / detail fields (validators already canonicalised
+    # email + blanked empty strings to None).
+    for f in (
+        "email", "first_name", "last_name", "company", "job_title",
+        "phone", "linkedin_url", "company_website", "notes",
+    ):
+        if f in updates:
+            setattr(lead, f, updates[f])
+
     await db.commit()
-    return {"id": str(lead.id), "crm_status": lead.crm_status}
+    await db.refresh(lead)
+    return {
+        "id": str(lead.id),
+        "crm_status": lead.crm_status,
+        "email": lead.email,
+        "first_name": lead.first_name,
+        "last_name": lead.last_name,
+        "company": lead.company,
+        "job_title": lead.job_title,
+        "phone": lead.phone,
+        "linkedin_url": lead.linkedin_url,
+        "company_website": lead.company_website,
+        "notes": lead.notes,
+    }
 
 
 # ============================================================================

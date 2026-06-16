@@ -12,6 +12,14 @@ export async function updateLeadCrmStatus(leadId, crmStatus) {
   return data;
 }
 
+/** Update a lead's contact info / details (email, name, company,
+ *  job_title, phone, linkedin_url, company_website, notes). PATCH —
+ *  only the keys you pass are changed. */
+export async function updateLeadFields(leadId, payload) {
+  const { data } = await client.patch(`/crm/leads/${leadId}`, payload);
+  return data;
+}
+
 /** Convert a lead → opportunity. Carries the contact snapshot; flips
  *  the lead to crm_status=converted. 409 when already converted. */
 export async function convertLead(leadId, payload = {}) {

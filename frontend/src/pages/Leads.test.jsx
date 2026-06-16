@@ -21,6 +21,7 @@ vi.mock('../api/signals.js', () => ({
 vi.mock('../api/crm.js', () => ({
   createCrmLead: vi.fn(),
   updateLeadCrmStatus: vi.fn(),
+  updateLeadFields: vi.fn(),
   convertLead: vi.fn(),
   listActivities: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, total_pages: 0 }),
   createActivity: vi.fn(),
@@ -206,6 +207,39 @@ describe('Leads page', () => {
     expect(within(contact).getByText(/acme\.io/)).toBeInTheDocument();
     expect(within(contact).getByText('SaaS')).toBeInTheDocument();
     expect(within(contact).getByText('growth')).toBeInTheDocument();
+  });
+
+  it('edits and saves contact details via updateLeadFields', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([
+      { id: 'l9', campaign_id: null, first_name: 'J', last_name: 'Doe',
+        email: 'j@x.com', company: 'Acme', send_status: 'pending',
+        has_notes: false, notes: null },
+    ]));
+    api.getLeadById.mockResolvedValue({
+      id: 'l9', campaign_id: null, first_name: 'J', last_name: 'Doe',
+      email: 'j@x.com', company: 'Acme', job_title: 'CFO',
+      phone: '', linkedin_url: '', company_website: '',
+      notes: '', history: [], history_counts: {}, research_summary: {},
+    });
+    crmApi.updateLeadFields.mockResolvedValue({ id: 'l9', company: 'NewCo' });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('lead-row-l9'));
+    const modal = await screen.findByTestId('lead-crm-modal');
+    await user.click(within(modal).getByTestId('lead-edit-contact-btn'));
+    const company = within(modal).getByTestId('lead-edit-company');
+    await user.clear(company);
+    await user.type(company, 'NewCo');
+    await user.click(within(modal).getByTestId('lead-edit-save-btn'));
+    await waitFor(() => {
+      expect(crmApi.updateLeadFields).toHaveBeenCalled();
+      const [id, payload] = crmApi.updateLeadFields.mock.calls[0];
+      expect(id).toBe('l9');
+      expect(payload.company).toBe('NewCo');
+      expect(payload.email).toBe('j@x.com');   // unchanged fields still sent
+      expect(payload.job_title).toBe('CFO');
+    });
   });
 
   it('renders the activity history list with one row per event', async () => {
