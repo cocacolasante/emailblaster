@@ -451,3 +451,67 @@ describe('Signal detail → contact & website info', () => {
     expect(within(modal).queryByTestId('signal-contact-info')).toBeNull();
   });
 });
+
+describe('Signal draft → configurable prompt + signature', () => {
+  it('draft sends the configured prompt + tone', async () => {
+    api.draftSignalEmail.mockResolvedValue({
+      to_email: 'jane@acme.com', to_name: 'Jane', subject: 'S', body: 'B',
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s1'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    await user.type(within(modal).getByTestId('signal-prompt'), 'focus on the grant');
+    await user.type(within(modal).getByTestId('signal-tone'), 'casual');
+    await user.click(within(modal).getByTestId('signal-draft-btn'));
+    await waitFor(() => {
+      const [id, payload] = api.draftSignalEmail.mock.calls[0];
+      expect(id).toBe('s1');
+      expect(payload).toEqual({ goal: 'focus on the grant', tone: 'casual' });
+    });
+  });
+
+  it('send includes an edited signature override', async () => {
+    api.draftSignalEmail.mockResolvedValue({
+      to_email: 'jane@acme.com', to_name: 'Jane', subject: 'S', body: 'B',
+    });
+    api.sendSignalEmail.mockResolvedValue({
+      message_id: 'm1', crm_activity_logged: false, signal_status: 'actioned',
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s1'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    await user.click(within(modal).getByTestId('signal-draft-btn'));
+    const sig = await within(modal).findByTestId('signal-signature');
+    // Pre-filled from the account ('Anthony'), then overridden.
+    expect(sig).toHaveValue('Anthony');
+    await user.clear(sig);
+    await user.type(sig, 'Custom Sig\nGrantMind');
+    await user.click(within(modal).getByTestId('signal-send-btn'));
+    await waitFor(() => {
+      const payload = api.sendSignalEmail.mock.calls[0][1];
+      expect(payload.signature).toBe('Custom Sig\nGrantMind');
+    });
+  });
+
+  it('send omits signature when the account default is left untouched', async () => {
+    api.draftSignalEmail.mockResolvedValue({
+      to_email: 'jane@acme.com', to_name: 'Jane', subject: 'S', body: 'B',
+    });
+    api.sendSignalEmail.mockResolvedValue({
+      message_id: 'm1', crm_activity_logged: false, signal_status: 'actioned',
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('signal-card-s1'));
+    const modal = await screen.findByTestId('signal-detail-modal');
+    await user.click(within(modal).getByTestId('signal-draft-btn'));
+    await within(modal).findByTestId('signal-signature');
+    await user.click(within(modal).getByTestId('signal-send-btn'));
+    await waitFor(() => {
+      const payload = api.sendSignalEmail.mock.calls[0][1];
+      expect('signature' in payload).toBe(false);   // backend uses account default
+    });
+  });
+});

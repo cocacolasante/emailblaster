@@ -566,6 +566,9 @@ class SignalSendRequest(BaseModel):
     to_email: str | None = None          # defaults to the linked lead's email
     sender_email: str | None = None      # defaults to the workspace default sender
     sender_name: str | None = Field(default=None, max_length=120)
+    # Per-send signature override: None = use the sender account's signature,
+    # "" = send with no signature, text = use this signature verbatim.
+    signature: str | None = Field(default=None, max_length=10_000)
 
 
 class SignalSendResponse(BaseModel):
@@ -656,6 +659,7 @@ async def send_signal_email(
             body=payload.body,
             sender_name=sender_name,
             sender_email=payload.sender_email,
+            signature=payload.signature,      # None = account default
             lead=lead,                        # log against the staged lead
             campaign_tag="signal-outreach",
         )

@@ -200,6 +200,11 @@ function SignalDetailModal({ signal, onClose }) {
   const [toEmail, setToEmail] = useState('');
   const [fromEmail, setFromEmail] = useState('');   // '' = workspace default
   const [crmNote, setCrmNote] = useState(null);
+  // Draft-configuration: a free-text prompt steering the AI + an optional tone.
+  const [promptGoal, setPromptGoal] = useState('');
+  const [promptTone, setPromptTone] = useState('');
+  // Per-send signature override: null = use the sender account's signature.
+  const [sigOverride, setSigOverride] = useState(null);
   const [enrichedLeadId, setEnrichedLeadId] = useState(null);
   const [enrichedEmailable, setEnrichedEmailable] = useState(false);
   const hasLead = !!(signal.lead_id || enrichedLeadId);
@@ -215,12 +220,18 @@ function SignalDetailModal({ signal, onClose }) {
   const resolvedAccount = fromEmail
     ? accounts.find((a) => a.email_address === fromEmail)
     : accounts.find((a) => a.is_default_sender);
-  const signaturePreview = (resolvedAccount?.signature || '').trim();
+  const accountSignature = resolvedAccount?.signature || '';
+  // Effective signature shown/sent: the override if the user edited it,
+  // otherwise the resolved account's signature.
+  const effectiveSignature = sigOverride === null ? accountSignature : sigOverride;
 
   const detail = signal.detail || {};
 
   const draftMut = useMutation({
-    mutationFn: () => draftSignalEmail(signal.id, {}),
+    mutationFn: () => draftSignalEmail(signal.id, {
+      ...(promptGoal.trim() ? { goal: promptGoal.trim() } : {}),
+      ...(promptTone.trim() ? { tone: promptTone.trim() } : {}),
+    }),
     onSuccess: (d) => {
       setToEmail(d.to_email);
       setSubject(d.subject);
@@ -235,6 +246,9 @@ function SignalDetailModal({ signal, onClose }) {
       subject,
       body,
       ...(fromEmail ? { sender_email: fromEmail } : {}),
+      // Only send a signature override when the user actually edited it;
+      // otherwise the backend uses the sender account's signature.
+      ...(sigOverride === null ? {} : { signature: sigOverride }),
     }),
     onSuccess: (d) => {
       setStage('sent');
@@ -453,15 +467,57 @@ function SignalDetailModal({ signal, onClose }) {
             </button>
           </div>
         ) : stage === 'idle' ? (
-          <button
-            type="button"
-            data-testid="signal-draft-btn"
-            onClick={() => draftMut.mutate()}
-            disabled={draftMut.isPending}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
-          >
-            {draftMut.isPending ? 'Drafting…' : '✦ Draft email'}
-          </button>
+          <div className="space-y-3">
+            <label className="block text-sm">
+              <span className="text-slate-600">Prompt — what should this email focus on? (optional)</span>
+              <textarea
+                data-testid="signal-prompt"
+                value={promptGoal}
+                onChange={(e) => setPromptGoal(e.target.value)}
+                rows={2}
+                placeholder="e.g. Congratulate them on the grant and offer a 15-min call about grant-writing AI"
+                className="mt-1 block w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-sm">
+                <span className="text-slate-600">Tone (optional)</span>
+                <input
+                  type="text"
+                  data-testid="signal-tone"
+                  value={promptTone}
+                  onChange={(e) => setPromptTone(e.target.value)}
+                  placeholder="warm and professional"
+                  className="mt-1 block w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-slate-600">Send from</span>
+                <select
+                  data-testid="signal-from-picker"
+                  value={fromEmail}
+                  onChange={(e) => setFromEmail(e.target.value)}
+                  className="mt-1 block w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm bg-white"
+                >
+                  <option value="">Workspace default sender</option>
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.email_address}>
+                      {a.label} ({a.email_address})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <button
+              type="button"
+              data-testid="signal-draft-btn"
+              onClick={() => draftMut.mutate()}
+              disabled={draftMut.isPending}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+            >
+              {draftMut.isPending ? 'Drafting…' : '✦ Draft email'}
+            </button>
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="text-sm text-slate-600" data-testid="signal-to">
@@ -497,13 +553,36 @@ function SignalDetailModal({ signal, onClose }) {
               rows={9}
               className="block w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
             />
-            {signaturePreview && (
+            <label className="block text-sm">
+              <span className="text-slate-600">
+                Signature {sigOverride === null ? '(from your account — editable)' : '(custom for this send)'}
+              </span>
+              <textarea
+                data-testid="signal-signature"
+                value={effectiveSignature}
+                onChange={(e) => setSigOverride(e.target.value)}
+                rows={4}
+                placeholder="No signature — add one here, or set a default on the account in Settings."
+                className="mt-1 block w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-[inherit]"
+              />
+              {sigOverride !== null && (
+                <button
+                  type="button"
+                  data-testid="signal-signature-reset"
+                  onClick={() => setSigOverride(null)}
+                  className="mt-1 text-xs text-blue-600 hover:underline"
+                >
+                  Reset to account signature
+                </button>
+              )}
+            </label>
+            {effectiveSignature.trim() && (
               <div className="text-xs text-slate-400">
-                <span className="block mb-1">Signature appended:</span>
+                <span className="block mb-1">Preview:</span>
                 <div
                   data-testid="signal-signature-preview"
                   className="border border-slate-200 rounded-lg p-2 text-slate-600"
-                  dangerouslySetInnerHTML={{ __html: signatureToPreviewHtml(signaturePreview) }}
+                  dangerouslySetInnerHTML={{ __html: signatureToPreviewHtml(effectiveSignature.trim()) }}
                 />
               </div>
             )}

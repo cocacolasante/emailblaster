@@ -66,12 +66,15 @@ async def send_and_track(
     sender_name: str,
     to_name: str | None = None,
     sender_email: str | None = None,
+    signature: str | None = None,
     lead: Lead | None = None,
     campaign_tag: str = "research-client",
 ) -> OutreachResult:
     """Send + CRM-track.  ``lead`` pre-resolves the CRM lead to log
     against (e.g. a signal's already-staged lead); when None we
-    find-or-create by email.  Raises ``OutreachSendError`` on send
+    find-or-create by email.  ``signature`` overrides the sender account's
+    signature for this one send (``""`` = send no signature; ``None`` =
+    fall back to the account's).  Raises ``OutreachSendError`` on send
     failure; CRM tracking failures are swallowed (logged + rolled back)."""
     if not settings.BREVO_API_KEY:
         raise OutreachSendError(
@@ -100,9 +103,13 @@ async def send_and_track(
             else settings.BREVO_SENDER_EMAIL
         )
 
-    html_body, text_body = render_email_with_signature(
-        body, sender_account.signature if sender_account else None,
+    # Explicit per-send signature override wins (incl. "" = no signature);
+    # None falls back to the sender account's signature.
+    effective_signature = (
+        signature if signature is not None
+        else (sender_account.signature if sender_account else None)
     )
+    html_body, text_body = render_email_with_signature(body, effective_signature)
 
     try:
         message_id = await brevo.send_email(

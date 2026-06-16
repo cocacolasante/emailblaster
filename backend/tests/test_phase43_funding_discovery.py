@@ -726,6 +726,37 @@ async def test_signal_send_passes_chosen_sender(client, db_session, monkeypatch)
     assert "CSuite" in kwargs["html_body"]
 
 
+async def test_signal_send_signature_override(client, db_session, monkeypatch):
+    """A per-send signature override replaces the account's signature."""
+    from app.models import ConnectedAccount
+    from app.services import encryption
+
+    signal, lead = await _signal_with_staged_lead(db_session, email="ed3@hh.org")
+    acc = ConnectedAccount(
+        label="Outreach", email_address="me@csuitecode.com",
+        imap_host="h", username="me@csuitecode.com",
+        password_encrypted=encryption.encrypt("pw"),
+        signature="Account Default Sig",
+    )
+    db_session.add(acc)
+    await db_session.commit()
+
+    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    send_mock = AsyncMock(return_value="msg-ovr")
+    monkeypatch.setattr("app.services.outreach.brevo.send_email", send_mock)
+
+    resp = await client.post(f"/signals/{signal.id}/send", json={
+        "subject": "Hi", "body": "Body here",
+        "sender_email": "me@csuitecode.com", "sender_name": "Anthony",
+        "signature": "Custom Override\nGrantMind Pro",
+    })
+    assert resp.status_code == 200, resp.text
+    html = send_mock.call_args.kwargs["html_body"]
+    assert "Custom Override" in html
+    assert "GrantMind Pro" in html
+    assert "Account Default Sig" not in html        # override wins
+
+
 async def test_signal_send_brevo_failure_502(client, db_session, monkeypatch):
     import httpx as _httpx
 
