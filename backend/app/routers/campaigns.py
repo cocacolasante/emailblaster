@@ -64,6 +64,40 @@ async def _get_or_404(db: AsyncSession, campaign_id: uuid.UUID) -> Campaign:
     return c
 
 
+_NODE_KIND_LABEL = {
+    "email": "Email",
+    "email_reply": "Email reply",
+    "wait": "Wait",
+    "linkedin_view_profile": "LinkedIn: view",
+    "linkedin_follow_profile": "LinkedIn: follow",
+    "linkedin_react_post": "LinkedIn: react",
+    "linkedin_comment_post": "LinkedIn: comment",
+    "linkedin_connect": "LinkedIn: connect",
+    "linkedin_dm": "LinkedIn: DM",
+    "linkedin_inmail": "LinkedIn: InMail",
+    "linkedin_invite_to_page": "LinkedIn: page invite",
+}
+
+
+def _stage_label(state: LeadSequenceState | None, node: SequenceNode | None) -> str:
+    """Human label for where a lead sits in its sequence."""
+    if state is None:
+        return "Not enrolled"
+    status = state.status
+    if status == LeadSequenceStatus.COMPLETED:
+        return "Completed"
+    if status == LeadSequenceStatus.HALTED:
+        return "Halted"
+    if status == LeadSequenceStatus.PENDING:
+        return "Not started"
+    # ACTIVE — name the current node (builder title wins, else kind label).
+    if node is None:
+        return "In progress"
+    kind = node.kind.value if hasattr(node.kind, "value") else node.kind
+    title = (node.config or {}).get("title")
+    return title or _NODE_KIND_LABEL.get(kind, kind)
+
+
 def _rate(numer: int, denom: int) -> float | None:
     if denom <= 0:
         return None
@@ -449,12 +483,29 @@ async def list_campaign_leads(
         .offset((page - 1) * page_size)
     )
     rows = (await db.execute(rows_q)).scalars().all()
+
+    # Batch-load each lead's sequence state + current node so the table can
+    # show the stage without a per-row query.
+    lead_ids = [l.id for l in rows]
+    state_map: dict[uuid.UUID, tuple[LeadSequenceState, SequenceNode | None]] = {}
+    if lead_ids:
+        state_rows = (await db.execute(
+            select(LeadSequenceState, SequenceNode)
+            .outerjoin(SequenceNode, SequenceNode.id == LeadSequenceState.current_node_id)
+            .where(LeadSequenceState.lead_id.in_(lead_ids))
+        )).all()
+        for st, node in state_rows:
+            state_map[st.lead_id] = (st, node)
+
     items: list[LeadSummary] = []
     for l in rows:
         s = LeadSummary.model_validate(l)
         s.has_notes = bool(l.notes)
         if s.notes and len(s.notes) > 280:
             s.notes = s.notes[:277] + "…"
+        st, node = state_map.get(l.id, (None, None))
+        s.sequence_status = st.status.value if st else None
+        s.sequence_stage = _stage_label(st, node)
         items.append(s)
 
     return PaginatedLeads(

@@ -35,6 +35,12 @@ class LeadSummary(BaseModel):
     # CRM fields (migration 0025).
     crm_status: str = "new"
     converted_opportunity_id: uuid.UUID | None = None
+    # Where the lead is in the campaign's sequence right now.
+    #   sequence_status: active | halted | completed | pending | None
+    #   sequence_stage:  human label of the current step (node title / kind),
+    #                    or a status word (Completed / Halted / Not started).
+    sequence_status: str | None = None
+    sequence_stage: str | None = None
 
 
 class LeadEmailUpdate(BaseModel):

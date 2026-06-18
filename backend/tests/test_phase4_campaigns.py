@@ -1423,3 +1423,52 @@ async def test_leads_pagination_and_filter_and_search(client, db_session):
 async def test_leads_endpoint_404_for_unknown_campaign(client):
     resp = await client.get(f"/campaigns/{uuid.uuid4()}/leads")
     assert resp.status_code == 404
+
+
+# ---------- per-lead sequence stage in the leads list ----------
+
+from app.models import LeadSequenceState, LeadSequenceStatus  # noqa: E402
+from app.services.sequence_service import ensure_default_sequence, enroll_leads  # noqa: E402
+
+
+async def test_campaign_leads_show_active_sequence_stage(client, db_session):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    campaign = await db_session.get(Campaign, cid)
+    await ensure_default_sequence(db_session, campaign)   # entry email node
+    lead = Lead(campaign_id=cid, email="stage@x.com",
+                compose_status=ComposeStatus.DONE, send_status=SendStatus.SENT)
+    db_session.add(lead)
+    await db_session.flush()
+    await enroll_leads(db_session, cid, [lead.id])
+    await db_session.commit()
+
+    resp = await client.get(f"/campaigns/{created['id']}/leads")
+    assert resp.status_code == 200, resp.text
+    item = next(i for i in resp.json()["items"] if i["email"] == "stage@x.com")
+    assert item["sequence_status"] == "active"
+    assert item["sequence_stage"] == "Email"          # entry email, no title
+
+
+async def test_campaign_leads_stage_completed_and_not_enrolled(client, db_session):
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    campaign = await db_session.get(Campaign, cid)
+    seq = await ensure_default_sequence(db_session, campaign)
+
+    done = Lead(campaign_id=cid, email="done@x.com", send_status=SendStatus.SENT)
+    bare = Lead(campaign_id=cid, email="bare@x.com")
+    db_session.add_all([done, bare])
+    await db_session.flush()
+    db_session.add(LeadSequenceState(
+        lead_id=done.id, sequence_id=seq.id, current_node_id=None,
+        status=LeadSequenceStatus.COMPLETED,
+    ))
+    await db_session.commit()
+
+    items = {i["email"]: i for i in (await client.get(f"/campaigns/{created['id']}/leads")).json()["items"]}
+    assert items["done@x.com"]["sequence_status"] == "completed"
+    assert items["done@x.com"]["sequence_stage"] == "Completed"
+    # No state row → not enrolled.
+    assert items["bare@x.com"]["sequence_status"] is None
+    assert items["bare@x.com"]["sequence_stage"] == "Not enrolled"

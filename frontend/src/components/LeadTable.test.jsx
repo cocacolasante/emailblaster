@@ -12,8 +12,8 @@ import * as api from '../api/campaigns.js';
 
 const LEADS_PAGE = {
   items: [
-    { id: 'l1', email: 'a@x.com', first_name: 'Alice', last_name: 'Apple', company: 'Acme', send_status: 'sent', created_at: '2026-05-12T10:00:00Z' },
-    { id: 'l2', email: 'b@x.com', first_name: 'Bob', last_name: 'Banana', company: 'Beeco', send_status: 'pending', created_at: '2026-05-12T11:00:00Z' },
+    { id: 'l1', email: 'a@x.com', first_name: 'Alice', last_name: 'Apple', company: 'Acme', send_status: 'sent', created_at: '2026-05-12T10:00:00Z', sequence_status: 'active', sequence_stage: 'Email reply' },
+    { id: 'l2', email: 'b@x.com', first_name: 'Bob', last_name: 'Banana', company: 'Beeco', send_status: 'pending', created_at: '2026-05-12T11:00:00Z', sequence_status: 'completed', sequence_stage: 'Completed' },
   ],
   total: 2,
   page: 1,
@@ -42,6 +42,13 @@ describe('LeadTable', () => {
       expect(screen.getByText('Alice Apple')).toBeInTheDocument();
       expect(screen.getByText('Bob Banana')).toBeInTheDocument();
     });
+  });
+
+  it('shows each lead\'s sequence stage', async () => {
+    renderTable();
+    await screen.findByText('Alice Apple');
+    const stages = screen.getAllByTestId('row-sequence-stage');
+    expect(stages.map((s) => s.textContent)).toEqual(['Email reply', 'Completed']);
   });
 
   it('search input refetches with search param', async () => {

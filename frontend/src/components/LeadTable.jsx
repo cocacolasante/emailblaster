@@ -23,6 +23,27 @@ function StatusPill({ value }) {
   );
 }
 
+const STAGE_PILL = {
+  active:    'bg-blue-100 text-blue-700',
+  completed: 'bg-emerald-100 text-emerald-700',
+  halted:    'bg-red-100 text-red-600',
+  pending:   'bg-slate-100 text-slate-500',
+};
+
+function StagePill({ status, label }) {
+  if (!label) return <span className="text-slate-400">—</span>;
+  const cls = STAGE_PILL[status] || 'bg-slate-100 text-slate-600';
+  return (
+    <span
+      data-testid="row-sequence-stage"
+      title={status ? `Sequence: ${status}` : undefined}
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
 function toCsv(rows) {
   const headers = ['email', 'first_name', 'last_name', 'company', 'job_title', 'research_status', 'compose_status', 'send_status', 'created_at'];
   const lines = [headers.join(',')];
@@ -122,14 +143,15 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Research</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Compose</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Send</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Stage</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200"></th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={7} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
+              <tr><td colSpan={8} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
             ) : data?.items?.length === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
             ) : (
               data?.items?.map((lead) => (
                 <tr key={lead.id} className="hover:bg-slate-50">
@@ -150,6 +172,9 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
                     <span data-testid="row-send-status">
                       <StatusPill value={lead.send_status} />
                     </span>
+                  </td>
+                  <td className="px-4 py-3 border-b border-slate-100">
+                    <StagePill status={lead.sequence_status} label={lead.sequence_stage} />
                   </td>
                   <td className="px-4 py-3 border-b border-slate-100 text-right">
                     <div className="flex items-center justify-end gap-3">
