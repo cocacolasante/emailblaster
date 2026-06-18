@@ -19,13 +19,14 @@ from typing import Any
 
 import pytz
 import redis.asyncio as aioredis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.models import (
     Campaign,
     CampaignStatus,
+    ComposeStatus,
     ConnectedAccount,
     EmailEvent,
     EmailEventType,
@@ -556,26 +557,105 @@ def send_lead(self, lead_id: str) -> dict[str, Any]:  # noqa: D401
             asyncio.run(_mark_send_failed(lead_id))
             return {"status": "failed", "error": str(exc)}
 
-    status = result.get("status")
-    if status == "paused":
-        # Hard stop: pause means stop the queue.  We don't self-re-enqueue
-        # (the old behaviour was a 5-min loop that kept the queue churning
-        # for every paused lead) — `resume_campaign` re-enqueues every
-        # composed PENDING+SCHEDULED lead, so the resume IS the trigger.
-        # Lead's send_status is whatever the gate left it (PENDING for the
-        # legacy first-email, possibly SCHEDULED if a prior pass deferred
-        # it on the schedule window); either way resume picks it up.
-        return result
-    if status == "scheduled":
-        eta_str = result.get("eta")
-        if eta_str:
-            send_lead.apply_async(args=[lead_id], eta=datetime.fromisoformat(eta_str))
-    elif status == "rate_limited":
-        retry_at = result.get("retry_at")
-        if retry_at:
-            send_lead.apply_async(args=[lead_id], eta=datetime.fromisoformat(retry_at))
-        else:
-            countdown = int(result.get("retry_in") or 60)
-            send_lead.apply_async(args=[lead_id], countdown=countdown)
-
+    # No self-re-enqueue.  Deferrals (paused / scheduled / rate_limited) are
+    # re-fed by the beat-driven ``pace_first_emails`` pacer, which releases
+    # pending/scheduled first-email leads at the rate the caps allow.  The old
+    # ``apply_async(eta=...)`` here piled far-future-eta tasks (a daily-cap
+    # defer retried at next local midnight, ~hours away) that the broker
+    # (``visibility_timeout=300s``) redelivered every 5 minutes — amplifying a
+    # ~1k-lead backlog into a 10k+ churning-task storm.  The lead's
+    # send_status is left as the gate set it (PENDING, or SCHEDULED on a
+    # window defer); the pacer picks both up.
     return result
+
+
+# --------------------------------------------------------------------------
+# First-email pacer (beat)
+# --------------------------------------------------------------------------
+
+# When a campaign has NO min-delay, the gate can't pace it, so feed a small
+# batch per tick bounded by the hourly headroom (the caps are the backstop).
+PACE_NO_DELAY_BATCH = 10
+
+
+async def _pace_first_emails_async() -> dict[str, int]:
+    """Feed each RUNNING campaign's pending first-email backlog at the rate
+    the caps allow — the paced replacement for the old self-re-enqueue storm.
+
+    Per campaign, per 60s tick: skip if outside the send window or at the
+    hourly/daily cap; when a min-delay is set, feed exactly one lead and only
+    while the atomic min-gate is open (``send_lead`` claims it); with no
+    min-delay, feed a small headroom-bounded batch.  ``send_lead`` does the
+    actual send + counter bump and no longer re-enqueues, so a deferred lead
+    simply stays PENDING/SCHEDULED and is re-fed next tick.  Leads with no
+    composed body (non-email entry node) or on the suppression list are
+    excluded so a gate slot is never spent on a lead that can't send.
+    """
+    engine = create_async_engine(settings.DATABASE_URL)
+    redis_client = _new_redis()
+    counts = {"campaigns": 0, "dispatched": 0}
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            campaigns = (await session.execute(
+                select(Campaign).where(Campaign.status == CampaignStatus.RUNNING)
+            )).scalars().all()
+
+            for campaign in campaigns:
+                if compute_next_send_window(campaign) is not None:
+                    continue  # outside the send window
+
+                cid = str(campaign.id)
+                hour = 0
+                if campaign.max_per_day is not None:
+                    day = int(await redis_client.get(f"rate:{cid}:day") or 0)
+                    if day >= campaign.max_per_day:
+                        continue
+                if campaign.max_per_hour is not None:
+                    hour = int(await redis_client.get(f"rate:{cid}:hour") or 0)
+                    if hour >= campaign.max_per_hour:
+                        continue
+
+                min_delay = campaign.min_delay_seconds or 0
+                if min_delay > 0:
+                    if await redis_client.exists(f"rate:{cid}:min_gate"):
+                        continue  # a send is mid-window; one per window
+                    limit = 1
+                else:
+                    limit = PACE_NO_DELAY_BATCH
+                    if campaign.max_per_hour is not None:
+                        limit = max(min(limit, campaign.max_per_hour - hour), 1)
+
+                suppressed = select(Suppression.email)
+                lead_ids = (await session.execute(
+                    select(Lead.id)
+                    .where(
+                        Lead.campaign_id == campaign.id,
+                        Lead.compose_status == ComposeStatus.DONE,
+                        Lead.send_status.in_(
+                            (SendStatus.PENDING, SendStatus.SCHEDULED)
+                        ),
+                        Lead.composed_body.isnot(None),
+                        func.length(func.trim(Lead.composed_body)) > 0,
+                        Lead.email.isnot(None),
+                        func.lower(Lead.email).notin_(suppressed),
+                    )
+                    .order_by(Lead.created_at.asc())
+                    .limit(limit)
+                )).scalars().all()
+
+                if not lead_ids:
+                    continue
+                counts["campaigns"] += 1
+                for lid in lead_ids:
+                    send_lead.delay(str(lid))
+                    counts["dispatched"] += 1
+    finally:
+        await engine.dispose()
+        await redis_client.aclose()
+    return counts
+
+
+@celery_app.task(name="send.pace_first_emails", acks_late=False)
+def pace_first_emails() -> dict[str, int]:  # noqa: D401
+    """Beat entry point for the first-email pacer (every 60s)."""
+    return asyncio.run(_pace_first_emails_async())

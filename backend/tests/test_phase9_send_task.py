@@ -402,7 +402,11 @@ async def test_celery_wrapper_does_not_reenqueue_on_paused(db_session, fake_redi
     enqueue.assert_not_called()
 
 
-async def test_celery_wrapper_reenqueues_on_scheduled(db_session, fake_redis):
+async def test_celery_wrapper_does_not_reenqueue_on_scheduled(db_session, fake_redis):
+    """The wrapper no longer self-re-enqueues an out-of-window (scheduled)
+    send — the beat-driven ``pace_first_emails`` pacer re-feeds the lead when
+    the window opens.  Self-re-enqueue with a far-future eta was the storm
+    source (broker redelivers past visibility_timeout)."""
     import asyncio as _asyncio
     c = Campaign(
         name="x", goal="x", tone="x",
@@ -424,7 +428,93 @@ async def test_celery_wrapper_reenqueues_on_scheduled(db_session, fake_redis):
     with patch.object(send_mod, "compute_next_send_window", return_value=fake_eta):
         rp, bp = _patch_send_pipeline(fake_redis)
         with rp, bp, patch.object(send_mod.send_lead, "apply_async") as enqueue:
-            await _asyncio.to_thread(send_mod.send_lead.run, lead_id)
+            result = await _asyncio.to_thread(send_mod.send_lead.run, lead_id)
 
-    enqueue.assert_called_once()
-    assert enqueue.call_args.kwargs["eta"] == fake_eta
+    # Lead is marked SCHEDULED (so the pacer picks it up) but NOT re-enqueued.
+    assert result["status"] == "scheduled"
+    enqueue.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# First-email pacer (pace_first_emails)
+# --------------------------------------------------------------------------
+
+
+async def test_pacer_feeds_one_lead_per_window_when_gate_open(db_session, fake_redis):
+    """With a min-delay and the gate open, the pacer feeds exactly ONE lead
+    (the gate admits one per window); the rest wait for the next tick."""
+    c = await _make_campaign(db_session, min_delay_seconds=240, max_per_day=100, max_per_hour=15)
+    for i in range(3):
+        await _make_lead(db_session, c, email=f"p{i}@x.com")
+
+    rp, _ = _patch_send_pipeline(fake_redis)
+    with rp, patch.object(send_mod.send_lead, "delay") as dispatch:
+        result = await send_mod._pace_first_emails_async()
+
+    assert dispatch.call_count == 1
+    assert result["dispatched"] == 1
+
+
+async def test_pacer_skips_when_min_gate_held(db_session, fake_redis):
+    """When a send is mid-window (min_gate set), the pacer feeds nothing."""
+    c = await _make_campaign(db_session, min_delay_seconds=240)
+    await _make_lead(db_session, c)
+    await fake_redis.set(f"rate:{c.id}:min_gate", str(time.time()), ex=240)
+
+    rp, _ = _patch_send_pipeline(fake_redis)
+    with rp, patch.object(send_mod.send_lead, "delay") as dispatch:
+        await send_mod._pace_first_emails_async()
+
+    dispatch.assert_not_called()
+
+
+async def test_pacer_skips_at_daily_cap(db_session, fake_redis):
+    c = await _make_campaign(db_session, min_delay_seconds=240, max_per_day=100)
+    await _make_lead(db_session, c)
+    await fake_redis.set(f"rate:{c.id}:day", "100")
+
+    rp, _ = _patch_send_pipeline(fake_redis)
+    with rp, patch.object(send_mod.send_lead, "delay") as dispatch:
+        await send_mod._pace_first_emails_async()
+
+    dispatch.assert_not_called()
+
+
+async def test_pacer_no_delay_feeds_batch_bounded_by_hourly_headroom(db_session, fake_redis):
+    """No min-delay → feed a small batch, but never more than the hourly cap
+    headroom (so the cap can't be blown by one tick)."""
+    c = await _make_campaign(db_session, min_delay_seconds=0, max_per_hour=5)
+    for i in range(20):
+        await _make_lead(db_session, c, email=f"b{i}@x.com")
+    await fake_redis.set(f"rate:{c.id}:hour", "3")  # 2 slots left this hour
+
+    rp, _ = _patch_send_pipeline(fake_redis)
+    with rp, patch.object(send_mod.send_lead, "delay") as dispatch:
+        await send_mod._pace_first_emails_async()
+
+    assert dispatch.call_count == 2
+
+
+async def test_pacer_excludes_unsendable_and_non_running(db_session, fake_redis):
+    """Pacer skips: empty-body leads (non-email entry), suppressed leads, and
+    leads on paused campaigns."""
+    # Paused campaign → never fed.
+    paused = await _make_campaign(db_session, status=CampaignStatus.PAUSED, min_delay_seconds=0)
+    await _make_lead(db_session, paused, email="paused@x.com")
+
+    # Running campaign with a mix of sendable / unsendable leads.
+    c = await _make_campaign(db_session, min_delay_seconds=0, max_per_hour=50)
+    good = await _make_lead(db_session, c, email="good@x.com")
+    # Empty composed body (e.g. non-email entry node) → excluded.
+    await _make_lead(db_session, c, email="empty@x.com", composed_body="")
+    # Suppressed → excluded.
+    await _make_lead(db_session, c, email="supp@x.com")
+    db_session.add(Suppression(email="supp@x.com", reason=SuppressionReason.MANUAL))
+    await db_session.commit()
+
+    rp, _ = _patch_send_pipeline(fake_redis)
+    with rp, patch.object(send_mod.send_lead, "delay") as dispatch:
+        await send_mod._pace_first_emails_async()
+
+    dispatched = {call.args[0] for call in dispatch.call_args_list}
+    assert dispatched == {str(good.id)}

@@ -445,39 +445,14 @@ async def resume_campaign(
 
     clear_stop(c.id)
 
-    # Re-enqueue every composed lead that hasn't sent yet.  Without this,
-    # leads that hit the paused / out-of-window gate during the pause window
-    # are orphaned in send_status=SCHEDULED — their send tasks were acked
-    # when they returned `{status: paused}` and nothing else dispatches them
-    # (the sequencer beat defers on entry-email nodes waiting for the legacy
-    # pipeline; nothing reads `scheduled_send_at`).  Snapshot the IDs before
-    # commit so the rowset is captured even after the transaction closes.
-    pending_ids = list((await db.execute(
-        select(Lead.id).where(
-            Lead.campaign_id == c.id,
-            Lead.compose_status == ComposeStatus.DONE,
-            Lead.send_status.in_((SendStatus.PENDING, SendStatus.SCHEDULED)),
-        )
-    )).scalars().all())
-
+    # No re-dispatch here.  Once the campaign is RUNNING again, the
+    # beat-driven ``pace_first_emails`` pacer re-feeds every composed
+    # PENDING/SCHEDULED first-email lead at the rate the caps allow, and the
+    # sequencer beat resumes follow-up steps.  The old eta-staggered
+    # re-enqueue here piled far-future-eta tasks the broker redelivered every
+    # ``visibility_timeout`` (300s), storming the queue.
     await db.commit()
     await db.refresh(c)
-
-    # Stagger by min_delay so we don't fire the whole batch at once and
-    # rely on the rate gate to bounce the losers — same pattern as
-    # _kick_off_full_campaign in routers/preview.py.
-    if pending_ids:
-        from app.workers.send import send_lead
-
-        min_delay = max(c.min_delay_seconds or 0, 0)
-        base = datetime.now(timezone.utc)
-        for i, lid in enumerate(pending_ids):
-            if min_delay:
-                send_lead.apply_async(
-                    args=[str(lid)], eta=base + timedelta(seconds=i * min_delay)
-                )
-            else:
-                send_lead.delay(str(lid))
 
     return await _build_response(db, c)
 

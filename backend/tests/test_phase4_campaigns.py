@@ -1223,10 +1223,12 @@ async def test_resume_only_works_when_paused(client, db_session):
     assert resp.json()["status"] == "running"
 
 
-async def test_resume_re_enqueues_pending_and_scheduled_leads_staggered(client, db_session):
-    """Resume should fire `send_lead.apply_async` for every composed lead that
-    hasn't sent yet (PENDING + SCHEDULED), spaced by min_delay.  Without this,
-    leads orphaned in SCHEDULED during a pause window never get re-dispatched."""
+async def test_resume_transitions_running_without_self_dispatch(client, db_session):
+    """Resume flips the campaign to RUNNING but does NOT re-dispatch sends
+    itself — the beat-driven pace_first_emails pacer re-feeds every composed
+    PENDING/SCHEDULED first-email lead at the rate the caps allow.  The old
+    eta-staggered re-enqueue here piled far-future-eta tasks the broker
+    redelivered into a storm."""
     created = (await client.post(
         "/campaigns/", json=_campaign_payload(min_delay_seconds=240)
     )).json()
@@ -1237,9 +1239,6 @@ async def test_resume_re_enqueues_pending_and_scheduled_leads_staggered(client, 
     c.status = CampaignStatus.PAUSED
     await db_session.commit()
 
-    # Two PENDING-composed, two SCHEDULED (orphans), one SENT, one FAILED, one
-    # whose compose hasn't finished — only the first four should re-enqueue.
-    composed = []
     for i, status_ in enumerate([
         SendStatus.PENDING, SendStatus.PENDING,
         SendStatus.SCHEDULED, SendStatus.SCHEDULED,
@@ -1250,12 +1249,6 @@ async def test_resume_re_enqueues_pending_and_scheduled_leads_staggered(client, 
             compose_status=ComposeStatus.DONE,
             composed_subject="Hi", composed_body="Body",
         ))
-        composed.append(status_)
-    # Compose-not-done lead — should be skipped even though pending.
-    db_session.add(Lead(
-        campaign_id=cid, email="notyet@x.com",
-        send_status=SendStatus.PENDING, compose_status=ComposeStatus.RUNNING,
-    ))
     await db_session.commit()
 
     with patch("app.workers.send.send_lead.apply_async") as enqueue, \
@@ -1264,15 +1257,9 @@ async def test_resume_re_enqueues_pending_and_scheduled_leads_staggered(client, 
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "running"
-
-    # Only the 4 composed PENDING+SCHEDULED leads got dispatched.
+    # Resume no longer dispatches — the pacer does.
+    enqueue.assert_not_called()
     delay_mock.assert_not_called()
-    assert enqueue.call_count == 4, [c.kwargs for c in enqueue.call_args_list]
-
-    # Sends are spaced exactly min_delay apart.
-    etas = sorted(call.kwargs["eta"] for call in enqueue.call_args_list)
-    gaps = [(etas[i + 1] - etas[i]).total_seconds() for i in range(len(etas) - 1)]
-    assert all(g == 240 for g in gaps), gaps
 
 
 async def test_resume_with_no_pending_leads_is_a_noop_dispatch(client, db_session):

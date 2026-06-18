@@ -283,7 +283,11 @@ async def test_approve_all_transitions_to_running_and_dispatches_composed(
         compose_status=ComposeStatus.PENDING,
     )
 
-    with patch("app.routers.preview.send_lead.delay") as enqueue:
+    # Approve-all transitions to RUNNING and reports the composed count, but
+    # does NOT dispatch sends itself — the beat-driven pace_first_emails pacer
+    # feeds them at the rate the caps allow.
+    with patch("app.workers.send.send_lead.delay") as enqueue, \
+         patch("app.workers.send.send_lead.apply_async") as enqueue_eta:
         resp = await client.post(f"/campaigns/{campaign.id}/preview/approve-all")
 
     assert resp.status_code == 200
@@ -291,9 +295,8 @@ async def test_approve_all_transitions_to_running_and_dispatches_composed(
     assert body["status"] == "running"
     assert body["samples_approved"] == 1
     assert body["leads_dispatched_to_send"] == 2  # 1 sample + 1 composed non-sample
-
-    dispatched = {call.args[0] for call in enqueue.call_args_list}
-    assert dispatched == {str(sample.id), str(composed_non_sample.id)}
+    enqueue.assert_not_called()
+    enqueue_eta.assert_not_called()
 
     # Sample is now marked approved.
     refreshed = await db_session.scalar(select(Lead).where(Lead.id == sample.id))
@@ -303,11 +306,16 @@ async def test_approve_all_transitions_to_running_and_dispatches_composed(
     refreshed_c = await db_session.get(Campaign, campaign.id)
     await db_session.refresh(refreshed_c)
     assert refreshed_c.status == CampaignStatus.RUNNING
+    # The composed non-sample stays PENDING for the pacer to pick up.
+    refreshed_n = await db_session.get(Lead, composed_non_sample.id)
+    await db_session.refresh(refreshed_n)
+    assert refreshed_n.send_status == SendStatus.PENDING
 
 
-async def test_approve_all_staggers_dispatch_by_min_delay(client, db_session):
-    """With a min_delay, approve-all schedules sends spaced by min_delay (via
-    apply_async eta) instead of firing the whole batch at once."""
+async def test_approve_all_does_not_self_dispatch(client, db_session):
+    """Approve-all no longer eta-staggers the whole composed batch (that piled
+    far-future-eta tasks the broker redelivered into a storm).  It just goes
+    RUNNING; the pacer dispatches."""
     campaign = await _make_campaign(db_session, min_delay_seconds=120)
     for i in range(3):
         await _make_lead(
@@ -316,24 +324,19 @@ async def test_approve_all_staggers_dispatch_by_min_delay(client, db_session):
             composed_subject="Hi", composed_body="Body",
         )
 
-    with patch("app.routers.preview.send_lead.apply_async") as enqueue, \
-         patch("app.routers.preview.send_lead.delay") as delay_mock:
+    with patch("app.workers.send.send_lead.apply_async") as enqueue, \
+         patch("app.workers.send.send_lead.delay") as delay_mock:
         resp = await client.post(f"/campaigns/{campaign.id}/preview/approve-all")
 
     assert resp.status_code == 200
-    # All sends went through apply_async (staggered), none through bare delay.
+    assert resp.json()["leads_dispatched_to_send"] == 3
+    enqueue.assert_not_called()
     delay_mock.assert_not_called()
-    assert enqueue.call_count == 3
-    etas = sorted(call.kwargs["eta"] for call in enqueue.call_args_list)
-    # Consecutive etas are exactly min_delay apart.
-    gaps = [(etas[i + 1] - etas[i]).total_seconds() for i in range(len(etas) - 1)]
-    assert all(g == 120 for g in gaps), gaps
 
 
 async def test_approve_all_only_allowed_when_previewing(client, db_session):
     campaign = await _make_campaign(db_session, status=CampaignStatus.DRAFT)
-    with patch("app.routers.preview.send_lead.delay"):
-        resp = await client.post(f"/campaigns/{campaign.id}/preview/approve-all")
+    resp = await client.post(f"/campaigns/{campaign.id}/preview/approve-all")
     assert resp.status_code == 409
 
 

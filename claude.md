@@ -22,7 +22,51 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Fixed: re-publishing a sequence restarted every
+- **Last completed:** **Beat-driven first-email pacer — killed the
+  self-re-enqueue send storm.**  Diagnosed a campaign with ~1000 first
+  emails "stuck": the broker held **10.6k `send.send_lead` tasks** all
+  bouncing on the rate gate.  Root cause: the legacy first email is sent
+  via `compose → send_lead.delay()` (immediate, unstaggered), and on a
+  rate-limit defer the `send_lead` wrapper **self-re-enqueued with a
+  far-future eta** (daily-cap defer retried at next local midnight,
+  ~hours out).  The broker `visibility_timeout` is **300s**, so every
+  long-eta task got **redelivered every 5 min**, multiplying ~1k pending
+  leads into a 10k+ churning-task storm (≈1 send per 168 `rate_limited`
+  bounces).  `_kick_off_full_campaign` (approve-all) and `resume_campaign`
+  made it worse — they eta-staggered the whole composed batch
+  (`i * min_delay`), also producing far-future-eta tasks.
+  - **Fix — a paced dispatcher** (`send.pace_first_emails`, beat every
+    60s, `acks_late=False`).  Per RUNNING campaign: skip if outside the
+    send window or at the hourly/daily cap; with a min-delay, feed exactly
+    ONE lead and only while the atomic `min_gate` is open (so near-zero
+    wasted dispatches); with no min-delay, feed a small headroom-bounded
+    batch.  Excludes empty-body (non-email-entry) + suppressed leads so a
+    gate slot is never spent on a lead that can't send.  `send_lead` does
+    the actual send + counter bump.
+  - **`send_lead` wrapper no longer self-re-enqueues** (rate_limited /
+    scheduled just return; the lead stays PENDING/SCHEDULED and the pacer
+    re-feeds it).  **`_kick_off_full_campaign` + `resume_campaign` no
+    longer eta-dispatch** — they transition to RUNNING and let the pacer
+    drain.  This removes every far-future-eta source, so the redelivery
+    storm can't form.
+  - **Live remediation:** restarted worker + beat (cleared the stale
+    `celerybeat-schedule` shelve so the new beat entry registered),
+    purged the **10,547** unacked `send.send_lead` messages from the
+    broker.  Verified: pacer feeds 1/window, `send_lead` returns clean
+    `sent` (no `rate_limited` churn), `unacked_index` holds at 0.  Caps
+    kept at 15/hr · 100/day (user's choice — safest deliverability;
+    ~10 days to clear ~1000 leads).
+  - **Gotcha worth remembering:** any `apply_async(eta=…)` more than
+    `visibility_timeout` (300s) in the future gets **redelivered** by the
+    Redis broker, spawning duplicates — never schedule far-future sends
+    that way.  Pace with a beat dispatching IMMEDIATE tasks instead (the
+    sequencer already does this for follow-up/LinkedIn steps).
+  - Tests: 5 backend (`test_phase9_send_task.py`: pacer feeds-one /
+    skips-on-gate / skips-at-cap / no-delay-batch-headroom /
+    excludes-unsendable-and-non-running) + 3 updated (send wrapper no
+    longer re-enqueues; approve-all + resume no longer self-dispatch).
+    Tests: **backend 1084, frontend 376**.
+- **Previously:** **Fixed: re-publishing a sequence restarted every
   lead's `days_since_entered_node` clock (follow-up replies never fired).**
   Diagnosed a live campaign whose `email_reply` node ("reply 2 days after
   the first email", edge `days_since_entered_node >= 2`) wasn't firing even
@@ -2595,7 +2639,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1079 passing**.  Frontend tests: **376 passing**._
+_Backend tests: **1084 passing**.  Frontend tests: **376 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

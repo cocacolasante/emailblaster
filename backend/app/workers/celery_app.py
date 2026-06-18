@@ -58,6 +58,13 @@ celery_app.conf.beat_schedule = {
         "task": "sequencer.advance_sequences",
         "schedule": 60.0,
     },
+    "pace-first-emails": {
+        # Paced dispatcher for the legacy first email: feeds each running
+        # campaign's pending backlog at the rate the caps allow, instead of
+        # every lead self-re-enqueuing (which storms the broker).
+        "task": "send.pace_first_emails",
+        "schedule": 60.0,
+    },
     "linkedin-poll": {
         "task": "linkedin_poller.poll_all",
         "schedule": float(settings.LINKEDIN_POLL_INTERVAL_MINUTES * 60),
