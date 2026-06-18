@@ -22,7 +22,49 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM extension Phase 1 — data-model foundation
+- **Last completed:** **CRM extension Phase 2 — drag-and-drop
+  opportunity Kanban (logged stage moves) + list view.**  Builds on the
+  Phase 1 configurable-pipeline schema.
+  - **New dependency (approved):** `@dnd-kit/core` + `/sortable` +
+    `/utilities` (keyboard-accessible DnD — `KeyboardSensor` +
+    `sortableKeyboardCoordinates`; satisfies Phase 6 keyboard moves).  No
+    `framer-motion` — spring/transform motion comes from @dnd-kit + CSS,
+    gated by a new `utils/useReducedMotion.js` hook
+    (`prefers-reduced-motion`).
+  - **Backend** (`routers/crm.py`): `GET /crm/pipelines/default` returns
+    the configurable, ordered, active stages that drive the board columns
+    (`PipelineResponse`/`StageResponse`).  Stage moves are **logged**:
+    `update_opportunity` is the single mutation point (board drag AND the
+    detail stepper both PATCH here) — on a stage change it dual-writes
+    `stage_id` (resolved from the configurable stages) AND appends an
+    `opportunity_stage_changes` audit row (`from`/`to` stage id+key,
+    `source='user'`, `changed_by=owner_id`).  `create_opportunity` +
+    `convert_lead` also dual-write `stage_id`/`pipeline_id`.  New
+    `GET /crm/opportunities/{id}/stage-history` (newest-first audit).
+    `OpportunityResponse` now exposes `pipeline_id`/`stage_id`/`account_id`/
+    `contact_id`/`owner_id`.  **Back-compat:** `_resolve_stage` returns
+    None when no pipeline is seeded → `stage_id` stays NULL and the legacy
+    enum still drives behavior (an audit row is still written).
+  - **Frontend** (`pages/Opportunities.jsx`): board rebuilt as a
+    `DndContext` Kanban — columns from the configurable pipeline (fallback
+    to the `STAGES` enum if the endpoint 404s), draggable/sortable cards
+    (name, company/contact, amount, close date, open-tasks).  Drag →
+    **optimistic** cache move (TanStack `onMutate`) → `PATCH` stage → on
+    error **roll back** the snapshot + toast.  Per-column count + summed
+    amount computed from the cards (live under optimistic moves).  New
+    **Board / List** view toggle (dense table fallback).  Click a card →
+    detail page (coexists with drag via a 6px pointer activation
+    constraint).  `STAGES`/`fmtAmount` exports kept (Reports.jsx imports
+    them); new pure `resolveDropTarget` export for unit-testing the drag
+    logic without simulating native drag.
+  - Tests: 7 backend (`test_phase39_crm_pipeline.py`: default-pipeline
+    endpoint, 404 unseeded, create/stage-change dual-write + audit,
+    stage-history order, no-op writes no audit, unseeded back-compat) + 10
+    frontend (`Opportunities.test.jsx`: `resolveDropTarget` unit,
+    fmtAmount, columns-from-pipeline, closed toggle, click-navigates, list
+    view, enum fallback, create).  Tests: **backend 1098, frontend 382**.
+  - **Checkpoint: awaiting approval before Phase 3 (report builder).**
+- **Previously:** **CRM extension Phase 1 — data-model foundation
   (migration 0038, additive + reversible).**  First of a multi-phase CRM
   build (Kanban pipeline + custom report builder + unified analytics; full
   plan in `docs/crm-extension-audit.md`).  Schema only — NO UI/endpoints
@@ -2671,7 +2713,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1091 passing**.  Frontend tests: **376 passing**._
+_Backend tests: **1098 passing**.  Frontend tests: **382 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -59,6 +59,18 @@ export async function getPipelineSummary() {
   return data;
 }
 
+/** The default pipeline + its configurable, ordered stages (Kanban columns). */
+export async function getDefaultPipeline() {
+  const { data } = await client.get('/crm/pipelines/default');
+  return data;
+}
+
+/** Append-only stage-move audit for one opportunity (newest first). */
+export async function getStageHistory(oppId) {
+  const { data } = await client.get(`/crm/opportunities/${oppId}/stage-history`);
+  return data;
+}
+
 // ---------- Activities ----------
 
 export async function listActivities(params = {}) {

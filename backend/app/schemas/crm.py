@@ -165,6 +165,12 @@ class OpportunityResponse(BaseModel):
     job_title: str | None
     linkedin_url: str | None
     source_lead_id: uuid.UUID | None
+    # Phase 1 graph (migration 0038) — all nullable / design-ready.
+    pipeline_id: uuid.UUID | None = None
+    stage_id: uuid.UUID | None = None
+    account_id: uuid.UUID | None = None
+    contact_id: uuid.UUID | None = None
+    owner_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
     # Denormalised roll-up for list cards.
@@ -186,6 +192,47 @@ class PipelineSummary(BaseModel):
     stage: OpportunityStage
     count: int
     total_amount: float
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: configurable stages (board columns) + stage-change audit
+# ---------------------------------------------------------------------------
+
+
+class StageResponse(BaseModel):
+    """A configurable pipeline stage — drives the Kanban columns."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    key: str
+    name: str
+    sort_order: int
+    default_probability: int | None
+    is_won: bool
+    is_lost: bool
+
+
+class PipelineResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    is_default: bool
+    stages: list[StageResponse]
+
+
+class StageChangeResponse(BaseModel):
+    """One row of an opportunity's stage-move audit trail."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    opportunity_id: uuid.UUID
+    from_stage_key: str | None
+    to_stage_key: str | None
+    source: str
+    changed_by: uuid.UUID | None
+    note: str | None
+    created_at: datetime
 
 
 class ConvertLeadResponse(BaseModel):

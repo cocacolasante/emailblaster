@@ -11,6 +11,8 @@ vi.mock('../api/crm.js', () => ({
   updateOpportunity: vi.fn(),
   deleteOpportunity: vi.fn(),
   getPipelineSummary: vi.fn(),
+  getDefaultPipeline: vi.fn(),
+  getStageHistory: vi.fn(),
   listActivities: vi.fn(),
   createActivity: vi.fn(),
   updateActivity: vi.fn(),
@@ -18,7 +20,7 @@ vi.mock('../api/crm.js', () => ({
 }));
 
 import * as api from '../api/crm.js';
-import Opportunities from './Opportunities.jsx';
+import Opportunities, { resolveDropTarget, fmtAmount } from './Opportunities.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
 function renderPage() {
@@ -48,6 +50,18 @@ const OPP = {
   activity_count: 1, open_task_count: 2,
 };
 
+const PIPELINE = {
+  id: 'p1', name: 'Default', is_default: true,
+  stages: [
+    { id: 's0', key: 'prospecting', name: 'Prospecting', sort_order: 0, default_probability: 10, is_won: false, is_lost: false },
+    { id: 's1', key: 'qualification', name: 'Qualification', sort_order: 1, default_probability: 25, is_won: false, is_lost: false },
+    { id: 's2', key: 'proposal', name: 'Proposal', sort_order: 2, default_probability: 50, is_won: false, is_lost: false },
+    { id: 's3', key: 'negotiation', name: 'Negotiation', sort_order: 3, default_probability: 75, is_won: false, is_lost: false },
+    { id: 's4', key: 'closed_won', name: 'Closed Won', sort_order: 4, default_probability: 100, is_won: true, is_lost: false },
+    { id: 's5', key: 'closed_lost', name: 'Closed Lost', sort_order: 5, default_probability: 0, is_won: false, is_lost: true },
+  ],
+};
+
 function paged(items) {
   return { items, total: items.length, page: 1, page_size: 500, total_pages: 1 };
 }
@@ -55,27 +69,44 @@ function paged(items) {
 beforeEach(() => {
   vi.clearAllMocks();
   api.listOpportunities.mockResolvedValue(paged([OPP]));
-  api.getPipelineSummary.mockResolvedValue([
-    { stage: 'prospecting', count: 0, total_amount: 0 },
-    { stage: 'qualification', count: 1, total_amount: 25000 },
-    { stage: 'proposal', count: 0, total_amount: 0 },
-    { stage: 'negotiation', count: 0, total_amount: 0 },
-    { stage: 'closed_won', count: 0, total_amount: 0 },
-    { stage: 'closed_lost', count: 0, total_amount: 0 },
-  ]);
+  api.getDefaultPipeline.mockResolvedValue(PIPELINE);
+  api.getPipelineSummary.mockResolvedValue([]);
   api.listActivities.mockResolvedValue(paged([]));
 });
 
-describe('Opportunities page', () => {
-  it('renders the pipeline board with the deal card in its stage column', async () => {
+describe('resolveDropTarget', () => {
+  const stageKeys = ['prospecting', 'qualification', 'proposal'];
+  const cardStage = { o1: 'qualification', o2: 'proposal' };
+
+  it('returns the stage key when dropped on a column', () => {
+    expect(resolveDropTarget('proposal', stageKeys, cardStage)).toBe('proposal');
+  });
+  it('maps a card id to its current stage when dropped on a card', () => {
+    expect(resolveDropTarget('o2', stageKeys, cardStage)).toBe('proposal');
+  });
+  it('returns null for unknown / missing targets', () => {
+    expect(resolveDropTarget(null, stageKeys, cardStage)).toBeNull();
+    expect(resolveDropTarget('nope', stageKeys, cardStage)).toBeNull();
+  });
+});
+
+describe('fmtAmount', () => {
+  it('formats currency and handles null', () => {
+    expect(fmtAmount(25000)).toMatch(/\$25,000/);
+    expect(fmtAmount(null)).toBe('—');
+  });
+});
+
+describe('Opportunities board', () => {
+  it('renders columns from the configurable pipeline with the card in its stage', async () => {
     renderPage();
     const col = await screen.findByTestId('stage-column-qualification');
     const card = within(col).getByTestId('opp-card-o1');
     expect(within(card).getByText('Acme — managed IT')).toBeInTheDocument();
     expect(within(card).getByText(/\$25,000/)).toBeInTheDocument();
     expect(within(card).getByText(/2 open tasks/)).toBeInTheDocument();
-    // Stage header shows the pipeline roll-up.
-    expect(within(col).getByText(/1 · \$25,000/)).toBeInTheDocument();
+    // Per-column total computed from the cards (live under optimistic moves).
+    expect(within(col).getByTestId('stage-total-qualification')).toHaveTextContent('1 · $25,000');
   });
 
   it('closed columns hidden by default; toggle shows them', async () => {
@@ -91,8 +122,27 @@ describe('Opportunities page', () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByTestId('opp-card-o1'));
-    // The card routes to /opportunities/:id — full record page, not a modal.
     expect(await screen.findByTestId('detail-page')).toBeInTheDocument();
+  });
+
+  it('list view renders a table; row click navigates', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId('pipeline-board');
+    await user.click(screen.getByTestId('view-list'));
+    const table = await screen.findByTestId('opportunity-list');
+    expect(within(table).getByText('Acme — managed IT')).toBeInTheDocument();
+    expect(within(table).getByText('Qualification')).toBeInTheDocument();
+    await user.click(screen.getByTestId('opp-row-o1'));
+    expect(await screen.findByTestId('detail-page')).toBeInTheDocument();
+  });
+
+  it('falls back to the enum stages when the pipeline endpoint fails', async () => {
+    api.getDefaultPipeline.mockRejectedValue(new Error('404'));
+    renderPage();
+    // Board still renders all non-closed columns from the STAGES fallback.
+    expect(await screen.findByTestId('stage-column-qualification')).toBeInTheDocument();
+    expect(screen.getByTestId('stage-column-prospecting')).toBeInTheDocument();
   });
 
   it('creates a new opportunity via the modal', async () => {

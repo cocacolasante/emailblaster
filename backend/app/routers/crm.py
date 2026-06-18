@@ -16,6 +16,8 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from sqlalchemy.orm import selectinload
+
 from app.models import (
     CLOSED_STAGES,
     STAGE_DEFAULT_PROBABILITY,
@@ -27,6 +29,9 @@ from app.models import (
     Opportunity,
     OpportunityProduct,
     OpportunityStage,
+    OpportunityStageChange,
+    Pipeline,
+    PipelineStage,
 )
 from app.schemas.crm import (
     ActivityCreate,
@@ -42,11 +47,13 @@ from app.schemas.crm import (
     OpportunityUpdate,
     PaginatedActivities,
     PaginatedOpportunities,
+    PipelineResponse,
     PipelineSummary,
     ProductCreate,
     ProductListResponse,
     ProductResponse,
     ProductUpdate,
+    StageChangeResponse,
 )
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -54,6 +61,38 @@ router = APIRouter(prefix="/crm", tags=["crm"])
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Configurable-pipeline helpers (migration 0038).  The legacy ``stage`` enum
+# is dual-written with ``stage_id``; seeded stage keys == enum values.
+# ---------------------------------------------------------------------------
+
+
+async def _default_pipeline_id(db: AsyncSession) -> uuid.UUID | None:
+    return (await db.execute(
+        select(Pipeline.id)
+        .where(Pipeline.is_default.is_(True))
+        .order_by(Pipeline.created_at)
+        .limit(1)
+    )).scalars().first()
+
+
+async def _resolve_stage(
+    db: AsyncSession, pipeline_id: uuid.UUID | None, stage_key: str,
+) -> PipelineStage | None:
+    """The PipelineStage matching ``stage_key`` within ``pipeline_id`` (or the
+    default pipeline when None).  Returns None if no pipeline is seeded yet —
+    callers leave ``stage_id`` NULL and the legacy enum still drives behavior."""
+    pid = pipeline_id or await _default_pipeline_id(db)
+    if pid is None:
+        return None
+    return (await db.execute(
+        select(PipelineStage).where(
+            PipelineStage.pipeline_id == pid,
+            PipelineStage.key == stage_key,
+        ).limit(1)
+    )).scalars().first()
 
 
 # ============================================================================
@@ -195,6 +234,12 @@ async def convert_lead(
         linkedin_url=lead.linkedin_url,
         source_lead_id=lead.id,
     )
+    # Dual-write the configurable stage graph (back-compat: NULL when no
+    # pipeline is seeded — the enum still drives behavior).
+    _stage_obj = await _resolve_stage(db, None, payload.stage.value)
+    if _stage_obj is not None:
+        opp.stage_id = _stage_obj.id
+        opp.pipeline_id = _stage_obj.pipeline_id
     db.add(opp)
     await db.flush()
 
@@ -278,6 +323,10 @@ async def create_opportunity(
     )
     if payload.stage in CLOSED_STAGES:
         opp.closed_at = _now()
+    _stage_obj = await _resolve_stage(db, None, payload.stage.value)
+    if _stage_obj is not None:
+        opp.stage_id = _stage_obj.id
+        opp.pipeline_id = _stage_obj.pipeline_id
     db.add(opp)
     await db.commit()
     await db.refresh(opp)
@@ -349,6 +398,26 @@ async def pipeline_summary(db: AsyncSession = Depends(get_db)) -> list[PipelineS
     ]
 
 
+@router.get("/pipelines/default", response_model=PipelineResponse)
+async def get_default_pipeline(db: AsyncSession = Depends(get_db)) -> PipelineResponse:
+    """The default pipeline + its active stages, ordered — drives the Kanban
+    board columns.  Stages are configurable data (migration 0038), so the
+    board reflects them rather than the hard-coded enum."""
+    p = (await db.execute(
+        select(Pipeline)
+        .options(selectinload(Pipeline.stages))
+        .where(Pipeline.is_default.is_(True))
+        .order_by(Pipeline.created_at)
+        .limit(1)
+    )).scalars().first()
+    if p is None:
+        raise HTTPException(status_code=404, detail="No default pipeline configured")
+    active = [s for s in p.stages if s.is_active]  # relationship is sort_order-ordered
+    return PipelineResponse(
+        id=p.id, name=p.name, is_default=p.is_default, stages=active,
+    )
+
+
 @router.get("/opportunities/{opp_id}", response_model=OpportunityResponse)
 async def get_opportunity(
     opp_id: uuid.UUID,
@@ -374,6 +443,8 @@ async def update_opportunity(
 
     new_stage = updates.get("stage")
     if new_stage is not None and new_stage != opp.stage:
+        old_stage = opp.stage
+        old_stage_id = opp.stage_id
         opp.stage = new_stage
         if new_stage in CLOSED_STAGES:
             opp.closed_at = _now()
@@ -383,6 +454,26 @@ async def update_opportunity(
         # Probability follows the stage default unless explicitly set.
         if "probability" not in updates:
             opp.probability = STAGE_DEFAULT_PROBABILITY.get(new_stage)
+        # Dual-write the configurable stage graph + log the move.  This is the
+        # single mutation point for stage changes (board drag AND the detail
+        # stepper both PATCH here), so the audit is centralized.
+        new_stage_obj = await _resolve_stage(db, opp.pipeline_id, new_stage.value)
+        if new_stage_obj is not None:
+            opp.stage_id = new_stage_obj.id
+            if opp.pipeline_id is None:
+                opp.pipeline_id = new_stage_obj.pipeline_id
+        else:
+            opp.stage_id = None
+        db.add(OpportunityStageChange(
+            opportunity_id=opp.id,
+            tenant_id=opp.tenant_id,
+            from_stage_id=old_stage_id,
+            to_stage_id=opp.stage_id,
+            from_stage_key=old_stage.value if old_stage is not None else None,
+            to_stage_key=new_stage.value,
+            source="user",                 # human-initiated drag/stepper
+            changed_by=opp.owner_id,        # design-ready (no users table yet)
+        ))
     updates.pop("stage", None)
 
     if "email" in updates and updates["email"]:
@@ -394,6 +485,25 @@ async def update_opportunity(
     await db.refresh(opp)
     counts = await _activity_counts(db, [opp.id])
     return _opportunity_response(opp, *counts.get(opp.id, (0, 0)))
+
+
+@router.get(
+    "/opportunities/{opp_id}/stage-history",
+    response_model=list[StageChangeResponse],
+)
+async def opportunity_stage_history(
+    opp_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> list[StageChangeResponse]:
+    """Append-only stage-move audit for one opportunity (newest first).
+    Captures old/new stage, source (user|agent), actor, and timestamp."""
+    await _get_opp_or_404(db, opp_id)
+    rows = (await db.execute(
+        select(OpportunityStageChange)
+        .where(OpportunityStageChange.opportunity_id == opp_id)
+        .order_by(OpportunityStageChange.created_at.desc())
+    )).scalars().all()
+    return [StageChangeResponse.model_validate(r) for r in rows]
 
 
 @router.delete("/opportunities/{opp_id}", status_code=204, response_model=None)
