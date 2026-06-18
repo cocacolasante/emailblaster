@@ -17,8 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.config import settings
 from app.models import Campaign, Lead, ResearchMode, ResearchStatus
 from app.services import apollo, hunter, research_cache, web_research
+from app.services.campaign_stop import stop_requested
 from app.workers.celery_app import celery_app
 from app.workers.compose import compose_lead
+
+try:  # pragma: no cover — import-time only
+    import redis as _redis_sync
+except Exception:  # noqa: BLE001
+    _redis_sync = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +75,20 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             if campaign is None:
                 logger.warning("research_lead: campaign for lead %s missing", lead_id)
                 return {"status": "not_found"}
+
+            # Cooperative stop check — covers the window where the kill
+            # races a redelivery: if the user hit Stop, the campaign's
+            # ``campaign:stop:<id>`` Redis key is set and we bail BEFORE
+            # the first Anthropic / Apollo / Hunter call.  Cheap probe.
+            if _redis_sync is not None:
+                try:
+                    r = _redis_sync.Redis.from_url(celery_app.conf.broker_url)
+                    if stop_requested(r, lead.campaign_id):
+                        lead.research_status = ResearchStatus.PENDING
+                        await session.commit()
+                        return {"status": "stopped", "reason": "campaign_stopped"}
+                except Exception:  # noqa: BLE001
+                    pass  # flag check is best-effort; never block research on Redis
 
             lead.research_status = ResearchStatus.RUNNING
             await session.commit()

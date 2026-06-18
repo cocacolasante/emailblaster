@@ -60,6 +60,11 @@ class PreviewProgress(BaseModel):
     # both first-time composes and goal-change rewrites — the UI shows
     # this as a "(N composing)" sub-hint on the rewrite card.
     composing: int = 0
+    # True when at least one lead still has research or compose work
+    # pending/running — i.e. the AI pipeline is active and the
+    # "Stop research & compose" button can do something.  False once
+    # everything is composed (or terminally failed): the button greys out.
+    pipeline_active: bool = False
     # When the goal was last edited on a non-draft campaign.  NULL means
     # the rewrite card stays hidden — nothing to track.
     goal_updated_at: datetime | None = None

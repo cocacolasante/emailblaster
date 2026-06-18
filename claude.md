@@ -22,7 +22,34 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Preview the follow-up reply draft before it
+- **Last completed:** **"Stop research & compose" button greys out
+  when the pipeline is idle.**  The red Stop button on the campaign
+  Overview is now only red + clickable while research or compose is
+  actually pending/running; once everything is composed (or terminally
+  failed) it greys out (disabled, "nothing to stop" tooltip) — so the
+  user can't fire a no-op stop on a finished campaign.
+  - **New `PreviewProgress.pipeline_active`** (`schemas/preview.py`),
+    computed in `GET /campaigns/{id}/preview/progress`
+    (`routers/preview.py`): True when any lead has `research_status IN
+    (pending, running)` OR (`research_status == done` AND
+    `compose_status IN (pending, running)`).  The research-DONE guard on
+    the compose half matters — a **research-FAILED** lead also sits at
+    `compose_status=pending` but will never compose, so it's terminal,
+    not active (otherwise the button would stay red forever on a
+    partially-failed campaign).
+  - **Frontend** (`CampaignDetail.jsx` `OverviewTab`):
+    `pipelineActive = !!progress?.pipeline_active`; the button is
+    `disabled` + slate-styled when false, red when true.  The
+    progress query is already enabled for exactly the previewing/
+    running/paused statuses the button shows on, so it's always
+    fetched when the button is visible.
+  - Tests: 2 backend (`test_phase8_preview.py`: inactive-when-all-
+    composed incl. a research-failed lead, active-while-composing) + 1
+    assertion on the existing counts test + 2 frontend
+    (`CampaignDetail.test.jsx`: greyed+disabled when inactive,
+    enabled while active) + 3 existing stop-button tests updated to
+    await the enabled state.  Tests: **backend 1077, frontend 373**.
+- **Previously:** **Preview the follow-up reply draft before it
   sends.**  The campaign Leads "View email" modal now has a *Preview
   follow-up reply* button that composes — **without sending** — the
   draft an `email_reply` node would deliver for that lead, so the user
@@ -2491,7 +2518,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1057 passing**.  Frontend tests: **366 passing**._
+_Backend tests: **1077 passing**.  Frontend tests: **373 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -34,6 +34,14 @@ export async function resumeCampaign(id) {
   return data;
 }
 
+export async function stopCampaignPipeline(id) {
+  // Hard-stop research + compose mid-flight.  Pauses the campaign,
+  // revokes in-flight tasks, and raises a Redis flag so any
+  // redelivered task bails before its next Anthropic call.
+  const { data } = await client.post(`/campaigns/${id}/stop-pipeline`);
+  return data;
+}
+
 export async function listCampaignLeads(id, params = {}) {
   const { data } = await client.get(`/campaigns/${id}/leads`, { params });
   return data;

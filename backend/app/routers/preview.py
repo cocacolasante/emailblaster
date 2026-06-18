@@ -322,6 +322,28 @@ async def get_progress(
         )
     )).scalar_one()
 
+    # The AI pipeline is "active" while any lead still has research or
+    # compose work queued (PENDING) or in flight (RUNNING).  Compose-PENDING
+    # only counts when research actually finished (DONE) — a research-FAILED
+    # lead also sits at compose-PENDING but will never compose, so it's
+    # terminal, not active.  Once this hits 0 there's nothing left to stop.
+    pipeline_pending = (await db.execute(
+        select(func.count()).select_from(Lead).where(
+            Lead.campaign_id == campaign_id,
+            (
+                Lead.research_status.in_(
+                    (ResearchStatus.PENDING, ResearchStatus.RUNNING)
+                )
+                | (
+                    (Lead.research_status == ResearchStatus.DONE)
+                    & Lead.compose_status.in_(
+                        (ComposeStatus.PENDING, ComposeStatus.RUNNING)
+                    )
+                )
+            ),
+        )
+    )).scalar_one()
+
     sent = (await db.execute(
         select(func.count()).select_from(Lead).where(
             Lead.campaign_id == campaign_id,
@@ -379,6 +401,7 @@ async def get_progress(
         sent=sent,
         failed=failed,
         composing=composing,
+        pipeline_active=pipeline_pending > 0,
         goal_updated_at=campaign.goal_updated_at,
         rewrite_total=rewrite_total,
         rewrite_done=rewrite_done,

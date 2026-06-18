@@ -32,6 +32,7 @@ vi.mock('../api/campaigns.js', () => ({
   getDeliverability: vi.fn(),
   getCopyInsights: vi.fn(),
   getPreviewProgress: vi.fn(),
+  stopCampaignPipeline: vi.fn(),
 }));
 
 // Recharts stub
@@ -100,7 +101,8 @@ beforeEach(() => {
   });
   api.getPreviewProgress.mockResolvedValue({
     total_leads: 100, researched: 100, composed: 100, sent: 50, failed: 0,
-    composing: 0, goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
+    composing: 0, pipeline_active: true,
+    goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
   });
 });
 
@@ -446,6 +448,104 @@ describe('CampaignDetail', () => {
     renderPage();
     await screen.findByTestId('campaign-name');
     expect(screen.queryByTestId('goal-rewrite-card')).not.toBeInTheDocument();
+  });
+
+  it('Stop button is greyed + disabled when nothing is researching/composing', async () => {
+    api.getPreviewProgress.mockResolvedValue({
+      total_leads: 100, researched: 100, composed: 100, sent: 50, failed: 0,
+      composing: 0, pipeline_active: false,
+      goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
+    });
+    renderPage();
+    const btn = await screen.findByTestId('stop-pipeline-button');
+    await waitFor(() => expect(btn).toBeDisabled());
+    // Clicking a disabled button never opens the confirm modal.
+    fireEvent.click(btn);
+    expect(screen.queryByTestId('stop-confirm-modal')).not.toBeInTheDocument();
+  });
+
+  it('Stop button is enabled while research/compose is active', async () => {
+    api.getPreviewProgress.mockResolvedValue({
+      total_leads: 100, researched: 60, composed: 40, sent: 0, failed: 0,
+      composing: 5, pipeline_active: true,
+      goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
+    });
+    renderPage();
+    const btn = await screen.findByTestId('stop-pipeline-button');
+    await waitFor(() => expect(btn).toBeEnabled());
+  });
+
+  it('Stop button opens a confirm modal that explains what will be halted', async () => {
+    renderPage();
+    const btn = await screen.findByTestId('stop-pipeline-button');
+    await waitFor(() => expect(btn).toBeEnabled());
+    fireEvent.click(btn);
+    const modal = await screen.findByTestId('stop-confirm-modal');
+    expect(within(modal).getByText(/Anthropic \+ Apollo \+ Hunter/)).toBeInTheDocument();
+    expect(within(modal).getByTestId('stop-confirm-btn')).toHaveTextContent('Yes, stop it');
+    expect(within(modal).getByTestId('stop-cancel-btn')).toHaveTextContent('Cancel');
+  });
+
+  it('Confirming Stop calls the API and shows a per-stage success toast', async () => {
+    api.stopCampaignPipeline.mockResolvedValue({
+      campaign_id: 'c1',
+      terminated: 8,
+      terminated_by_kind: { research: 5, compose: 3, send: 0 },
+      purged_queued: 0,
+      purged_unacked: 42,
+    });
+    renderPage();
+    const btn = await screen.findByTestId('stop-pipeline-button');
+    await waitFor(() => expect(btn).toBeEnabled());
+    fireEvent.click(btn);
+    fireEvent.click(await screen.findByTestId('stop-confirm-btn'));
+    await waitFor(() => expect(api.stopCampaignPipeline).toHaveBeenCalledWith('c1'));
+    expect(await screen.findByText(/Killed 5 research \+ 3 compose/)).toBeInTheDocument();
+    expect(screen.getByText(/purged 42 deferred/)).toBeInTheDocument();
+  });
+
+  it('Cancel closes the confirm modal without calling the API', async () => {
+    renderPage();
+    const btn = await screen.findByTestId('stop-pipeline-button');
+    await waitFor(() => expect(btn).toBeEnabled());
+    fireEvent.click(btn);
+    fireEvent.click(await screen.findByTestId('stop-cancel-btn'));
+    await waitFor(() => expect(screen.queryByTestId('stop-confirm-modal')).not.toBeInTheDocument());
+    expect(api.stopCampaignPipeline).not.toHaveBeenCalled();
+  });
+
+  it('Renders a "Stopped by you" banner instead of the deliverability breaker banner', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, status: 'paused',
+      auto_pause_reason: 'user_stopped',
+    });
+    renderPage();
+    expect(await screen.findByTestId('user-stopped-banner')).toHaveTextContent('Stopped by you');
+    expect(screen.queryByTestId('breaker-banner')).not.toBeInTheDocument();
+  });
+
+  it('Still shows the deliverability breaker banner when the reason is not user_stopped', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, status: 'paused',
+      auto_pause_reason: 'bounce rate 8% exceeded 5% threshold',
+    });
+    renderPage();
+    expect(await screen.findByTestId('breaker-banner')).toHaveTextContent('deliverability breaker');
+    expect(screen.queryByTestId('user-stopped-banner')).not.toBeInTheDocument();
+  });
+
+  it('Stop button is disabled when pipeline_active is false', async () => {
+    api.getPreviewProgress.mockResolvedValue({
+      total_leads: 100, researched: 100, composed: 100, sent: 50, failed: 0,
+      composing: 0, pipeline_active: false,
+      goal_updated_at: null, rewrite_total: 0, rewrite_done: 0,
+    });
+    renderPage();
+    const btn = await screen.findByTestId('stop-pipeline-button');
+    await waitFor(() => expect(btn).toBeDisabled());
+    expect(btn).toHaveAttribute(
+      'title', expect.stringContaining('Nothing to stop'),
+    );
   });
 });
 

@@ -426,6 +426,43 @@ async def test_progress_counts_each_status(client, db_session):
     assert body["goal_updated_at"] is None
     assert body["rewrite_total"] == 0
     assert body["rewrite_done"] == 0
+    # Leads c (compose pending) and d (all pending) still have research/compose
+    # work → the pipeline is active and the Stop button stays clickable.
+    assert body["pipeline_active"] is True
+
+
+async def test_progress_pipeline_inactive_when_all_composed(client, db_session):
+    """``pipeline_active`` is False once every lead is composed or terminally
+    failed — there's no research/compose work left to stop."""
+    campaign = await _make_campaign(db_session)
+    await _make_lead(db_session, campaign, email="a@x.com",
+                     research_status=ResearchStatus.DONE,
+                     compose_status=ComposeStatus.DONE,
+                     send_status=SendStatus.SENT)
+    await _make_lead(db_session, campaign, email="b@x.com",
+                     research_status=ResearchStatus.DONE,
+                     compose_status=ComposeStatus.DONE)  # composed, not yet sent
+    await _make_lead(db_session, campaign, email="c@x.com",
+                     research_status=ResearchStatus.FAILED)  # terminal failure
+
+    resp = await client.get(f"/campaigns/{campaign.id}/preview/progress")
+    assert resp.status_code == 200
+    assert resp.json()["pipeline_active"] is False
+
+
+async def test_progress_pipeline_active_while_composing(client, db_session):
+    """A lead mid-compose (RUNNING) keeps the pipeline active."""
+    campaign = await _make_campaign(db_session)
+    await _make_lead(db_session, campaign, email="a@x.com",
+                     research_status=ResearchStatus.DONE,
+                     compose_status=ComposeStatus.DONE,
+                     send_status=SendStatus.SENT)
+    await _make_lead(db_session, campaign, email="b@x.com",
+                     research_status=ResearchStatus.DONE,
+                     compose_status=ComposeStatus.RUNNING)
+
+    resp = await client.get(f"/campaigns/{campaign.id}/preview/progress")
+    assert resp.json()["pipeline_active"] is True
 
 
 async def test_progress_rewrite_counts_after_goal_change(client, db_session):

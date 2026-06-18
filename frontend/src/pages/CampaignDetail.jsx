@@ -15,6 +15,7 @@ import {
   previewLeadReply,
   reEnrollHalted,
   resumeCampaign,
+  stopCampaignPipeline,
   updateCampaign,
   updateLeadEmail,
 } from '../api/campaigns.js';
@@ -362,12 +363,21 @@ function DeliverabilityStrip({ campaignId }) {
 }
 
 
-function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch, launchLoading, linkedinAccounts, onSaveLinkedIn, savingLinkedIn }) {
+function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onStop, stopLoading, onLaunch, launchLoading, linkedinAccounts, onSaveLinkedIn, savingLinkedIn }) {
   const total = campaign.lead_counts?.total ?? 0;
   const sent = campaign.lead_counts?.sent ?? 0;
   const sendProgress = total > 0 ? Math.min(100, (sent / total) * 100) : 0;
 
   const showPipeline = ['previewing', 'running', 'paused'].includes(campaign.status);
+  // Stop button is visible while there's research / compose work potentially
+  // burning tokens — and even on a paused campaign because eta-deferred tasks
+  // can still wake up and resume (the cooperative flag bails them).
+  const showStop = ['previewing', 'running', 'paused'].includes(campaign.status);
+  // The Stop button is only red + clickable while research/compose is
+  // actually pending or running; once everything is composed it greys out
+  // (there's nothing left to halt).
+  const pipelineActive = !!progress?.pipeline_active;
+  const userStopped = campaign.auto_pause_reason === 'user_stopped';
 
   return (
     <div data-testid="overview-tab" className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -384,7 +394,7 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
 
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 className="text-base font-semibold text-slate-900 mb-4">Status</h2>
-          <div className="flex items-center gap-3 mb-4">
+          <div className="flex flex-wrap items-center gap-3 mb-4">
             <StatusBadge status={campaign.status} />
             {campaign.status === 'running' && (
               <button
@@ -408,13 +418,43 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onLaunch
                 Resume
               </button>
             )}
+            {showStop && (
+              <button
+                type="button"
+                onClick={onStop}
+                disabled={stopLoading || !pipelineActive}
+                title={
+                  pipelineActive
+                    ? 'Halt research + compose immediately. Pauses the campaign and revokes in-flight Anthropic calls. Resume re-arms them.'
+                    : 'Nothing to stop — every lead is already researched and composed.'
+                }
+                data-testid="stop-pipeline-button"
+                className={
+                  pipelineActive
+                    ? 'inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium border border-red-700 rounded-lg transition-colors disabled:opacity-50'
+                    : 'inline-flex items-center px-4 py-2 bg-slate-100 text-slate-400 text-sm font-medium border border-slate-200 rounded-lg cursor-not-allowed'
+                }
+              >
+                {stopLoading ? 'Stopping…' : '■ Stop research & compose'}
+              </button>
+            )}
             {campaign.status === 'paused' && campaign.auto_paused_until && (
               <span data-testid="auto-paused-note" className="text-xs text-amber-700">
                 Auto-paused (LinkedIn daily cap) — resumes {fmtDatetime(campaign.auto_paused_until)}
               </span>
             )}
           </div>
-          {campaign.status === 'paused' && campaign.auto_pause_reason && (
+          {campaign.status === 'paused' && userStopped && (
+            <div
+              data-testid="user-stopped-banner"
+              className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3"
+            >
+              <strong className="font-semibold">Stopped by you.</strong>{' '}
+              Research and compose are halted. Click <strong>Resume</strong> to
+              re-arm them — it will not resume on its own.
+            </div>
+          )}
+          {campaign.status === 'paused' && campaign.auto_pause_reason && !userStopped && (
             <div
               data-testid="breaker-banner"
               className="mb-4 bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg px-4 py-3"
@@ -1802,6 +1842,25 @@ export default function CampaignDetail() {
     },
     onError: (e) => toast.error(e?.response?.data?.detail || e.message || 'Resume failed'),
   });
+  const [confirmStop, setConfirmStop] = useState(false);
+  const stopMutation = useMutation({
+    mutationFn: () => stopCampaignPipeline(id),
+    onSuccess: (res) => {
+      const t = res?.terminated_by_kind || {};
+      const parts = [];
+      if (t.research) parts.push(`${t.research} research`);
+      if (t.compose) parts.push(`${t.compose} compose`);
+      if (t.send) parts.push(`${t.send} send`);
+      const killed = parts.length ? `Killed ${parts.join(' + ')}` : 'Stopped';
+      const purged = (res?.purged_queued || 0) + (res?.purged_unacked || 0);
+      const purgedNote = purged ? `, purged ${purged} deferred` : '';
+      toast.success(`${killed}${purgedNote}. Campaign paused — click Resume to re-arm.`);
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] });
+      queryClient.invalidateQueries({ queryKey: ['preview-progress', id] });
+      setConfirmStop(false);
+    },
+    onError: (e) => toast.error(e?.response?.data?.detail || e.message || 'Stop failed'),
+  });
 
   const launchMutation = useMutation({
     mutationFn: () => approveAllCampaign(id),
@@ -1908,6 +1967,8 @@ export default function CampaignDetail() {
           progress={progress}
           onPauseToggle={handlePauseResume}
           pauseLoading={pauseMutation.isPending || resumeMutation.isPending}
+          onStop={() => setConfirmStop(true)}
+          stopLoading={stopMutation.isPending}
           onLaunch={() => navigate(`/campaigns/${id}/preview`)}
           launchLoading={launchMutation.isPending}
           linkedinAccounts={linkedinAccounts}
@@ -1976,6 +2037,56 @@ export default function CampaignDetail() {
           lead={viewLead}
           onClose={() => setViewLead(null)}
         />
+      )}
+
+      {confirmStop && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => !stopMutation.isPending && setConfirmStop(false)}
+          data-testid="stop-confirm-modal"
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="m-0 text-lg font-semibold text-slate-900 mb-2">
+              Stop research &amp; compose?
+            </h2>
+            <p className="text-sm text-slate-700 mb-1">
+              This will <strong>immediately halt</strong>:
+            </p>
+            <ul className="text-sm text-slate-700 mb-3 ml-5 list-disc">
+              <li>every research call in flight (Anthropic + Apollo + Hunter)</li>
+              <li>every compose call in flight (Anthropic)</li>
+              <li>every queued send for this campaign</li>
+            </ul>
+            <p className="text-sm text-slate-700 mb-4">
+              The campaign will be <strong>paused</strong>. Click <strong>Resume</strong>
+              {' '}to re-arm research, compose, and sending. Already-sent emails are
+              left alone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmStop(false)}
+                disabled={stopMutation.isPending}
+                className="px-4 py-2 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                data-testid="stop-cancel-btn"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => stopMutation.mutate()}
+                disabled={stopMutation.isPending}
+                className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg disabled:opacity-50"
+                data-testid="stop-confirm-btn"
+              >
+                {stopMutation.isPending ? 'Stopping…' : 'Yes, stop it'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -399,6 +399,30 @@ async def pause_campaign(
     return await _build_response(db, c)
 
 
+@router.post("/{campaign_id}/stop-pipeline")
+async def stop_pipeline(
+    campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
+    """Hard-stop the research + compose pipeline for one campaign.
+
+    Pauses the campaign, raises a cooperative Redis stop flag so any
+    redelivered task bails before its first Anthropic call, revokes +
+    SIGKILLs every in-flight research/compose/send task whose lead is
+    in this campaign, and purges queued + unacked broker copies.
+    Resume clears the flag automatically.  Returns a per-stage count
+    breakdown so the UI toast can be specific.
+    """
+    c = await _get_or_404(db, campaign_id)
+    if c.status == CampaignStatus.COMPLETE:
+        raise HTTPException(
+            status_code=409, detail="Cannot stop a completed campaign",
+        )
+    from app.services.campaign_stop import stop_campaign_pipeline
+
+    result = await stop_campaign_pipeline(db, campaign_id)
+    return result
+
+
 @router.post("/{campaign_id}/resume", response_model=CampaignResponse)
 async def resume_campaign(
     campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db)
@@ -415,6 +439,11 @@ async def resume_campaign(
     # the marker + reason so the breaker can re-trip on fresh data.
     c.auto_paused_at = None
     c.auto_pause_reason = None
+    # If the user previously hit Stop, clear the cooperative flag now so
+    # newly-dispatched research/compose tasks aren't immediately no-op'd.
+    from app.services.campaign_stop import clear_stop
+
+    clear_stop(c.id)
 
     # Re-enqueue every composed lead that hasn't sent yet.  Without this,
     # leads that hit the paused / out-of-window gate during the pause window

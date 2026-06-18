@@ -31,6 +31,7 @@ from app.models import (
     ResearchMode,
     StyleCorrection,
 )
+from app.services.campaign_stop import stop_requested
 from app.services.sequence_service import campaign_sends_legacy_first_email
 from app.services.signature import apply_signature, resolve_campaign_signature
 from app.services import copy_insights
@@ -38,6 +39,11 @@ from app.services.template_render import build_merge_context, render_template
 from app.services.web_research import _extract_text, _parse_json
 from app.workers.celery_app import celery_app
 from app.workers.send import send_lead
+
+try:  # pragma: no cover — import-time only
+    import redis as _redis_sync
+except Exception:  # noqa: BLE001
+    _redis_sync = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +408,17 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             campaign = await session.get(Campaign, lead.campaign_id)
             if campaign is None:
                 return {"status": "not_found"}
+
+            # Cooperative stop check — bail BEFORE the (expensive) Anthropic
+            # call when the campaign's stop flag is set.  Covers the
+            # redelivery window the SIGKILL can't (visibility_timeout=300s).
+            if _redis_sync is not None:
+                try:
+                    r = _redis_sync.Redis.from_url(celery_app.conf.broker_url)
+                    if stop_requested(r, lead.campaign_id):
+                        return {"status": "stopped", "reason": "campaign_stopped"}
+                except Exception:  # noqa: BLE001
+                    pass
 
             # If this campaign's first touch isn't the legacy composed email
             # (the sequence starts with a LinkedIn / wait / etc. node), there
