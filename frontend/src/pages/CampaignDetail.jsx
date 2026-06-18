@@ -12,6 +12,7 @@ import {
   getLeadDetail,
   getPreviewProgress,
   pauseCampaign,
+  previewLeadReply,
   reEnrollHalted,
   resumeCampaign,
   updateCampaign,
@@ -1485,6 +1486,18 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
     },
   });
 
+  // Follow-up reply preview (email_reply nodes).  Composed on demand,
+  // never sent — lets the user check follow-up copy before it goes out.
+  const [replyNodeId, setReplyNodeId] = useState(null);
+  const replyMutation = useMutation({
+    mutationFn: (nodeId) => previewLeadReply(campaignId, lead.id, nodeId),
+    onSuccess: (data) => setReplyNodeId(data.node_id),
+    onError: (err) => {
+      toast.error(err?.response?.data?.detail || 'Failed to preview reply');
+    },
+  });
+  const reply = replyMutation.data;
+
   const qualityColors = {
     rich: 'bg-emerald-100 text-emerald-700',
     partial: 'bg-amber-100 text-amber-700',
@@ -1627,6 +1640,86 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
               {sent && <span className="text-slate-400">(sent emails can't be edited)</span>}
               {detail.brevo_message_id && (
                 <span>Message ID: <code className="text-slate-600">{detail.brevo_message_id}</code></span>
+              )}
+            </div>
+
+            {/* Follow-up reply preview */}
+            <div className="pt-3 border-t border-slate-200" data-testid="reply-preview-section">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                  Follow-up reply
+                </span>
+                <button
+                  type="button"
+                  onClick={() => replyMutation.mutate(undefined)}
+                  disabled={replyMutation.isPending}
+                  data-testid="preview-reply-btn"
+                  className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
+                >
+                  {replyMutation.isPending
+                    ? 'Composing…'
+                    : reply
+                      ? 'Regenerate'
+                      : 'Preview follow-up reply'}
+                </button>
+              </div>
+
+              {!reply && !replyMutation.isPending && (
+                <p className="text-xs text-slate-500 mt-1">
+                  See the reply your sequence will send in-thread before it goes out.
+                </p>
+              )}
+
+              {reply && (
+                <div className="mt-2 space-y-2" data-testid="reply-preview">
+                  {reply.available_nodes?.length > 1 && (
+                    <select
+                      value={replyNodeId || reply.node_id}
+                      onChange={(e) => replyMutation.mutate(e.target.value)}
+                      aria-label="Reply step"
+                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {reply.available_nodes.map((n, i) => (
+                        <option key={n.node_id} value={n.node_id}>
+                          {n.title || `Reply step ${i + 1}`}{n.ai_compose ? ' (AI)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <div className="border border-slate-200 rounded-lg overflow-hidden">
+                    <div className="bg-slate-50 border-b border-slate-200 px-4 py-2.5">
+                      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-2">Subject</span>
+                      <span className="text-sm text-slate-900 font-medium" data-testid="reply-preview-subject">
+                        {reply.subject || '—'}
+                      </span>
+                    </div>
+                    <div className="p-4">
+                      <pre
+                        className="text-sm text-slate-800 whitespace-pre-wrap font-sans leading-relaxed m-0"
+                        data-testid="reply-preview-body"
+                      >
+                        {reply.body || '—'}
+                      </pre>
+                    </div>
+                  </div>
+
+                  {reply.ai_compose && reply.ai_prompt && (
+                    <div className="text-xs text-slate-500">
+                      <span className="text-slate-400">AI prompt:</span> {reply.ai_prompt}
+                    </div>
+                  )}
+                  {reply.regenerated_at_send && (
+                    <p className="text-xs text-amber-600" data-testid="reply-preview-ai-note">
+                      AI replies are written fresh at send time — this is a representative draft, the final wording may differ.
+                    </p>
+                  )}
+                  {!reply.has_original_email && (
+                    <p className="text-xs text-amber-600">
+                      The first email hasn't been sent yet, so this preview uses an empty original — the real reply threads onto it once sent.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </div>

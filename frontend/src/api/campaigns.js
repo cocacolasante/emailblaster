@@ -110,6 +110,15 @@ export async function updateLeadEmail(campaignId, leadId, payload) {
   return data;
 }
 
+export async function previewLeadReply(campaignId, leadId, nodeId) {
+  const { data } = await client.post(
+    `/campaigns/${campaignId}/leads/${leadId}/reply-preview`,
+    null,
+    { params: nodeId ? { node_id: nodeId } : {} },
+  );
+  return data;
+}
+
 export async function listAllLeads(params = {}) {
   const { data } = await client.get(`/leads`, { params });
   return data;

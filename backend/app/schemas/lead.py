@@ -50,6 +50,37 @@ class LeadEmailUpdate(BaseModel):
     notes: str | None = None
 
 
+class ReplyPreviewNode(BaseModel):
+    """A reply step the user can preview for a lead.  Lets the UI offer a
+    picker when a sequence has more than one ``email_reply`` node."""
+    node_id: uuid.UUID
+    title: str | None = None
+    ai_compose: bool = False
+    ai_prompt: str | None = None
+
+
+class ReplyPreviewResponse(BaseModel):
+    """A composed-but-NOT-sent draft of an ``email_reply`` node for one lead,
+    so the user can review follow-up copy before it goes out.
+
+    Manual-template replies preview exactly.  AI replies are regenerated
+    fresh at send time (``regenerated_at_send``), so the preview is
+    representative — the wording the sequencer ultimately sends may differ."""
+    node_id: uuid.UUID
+    title: str | None = None
+    ai_compose: bool
+    ai_prompt: str | None = None
+    subject: str
+    body: str
+    regenerated_at_send: bool
+    # False when the lead's first email hasn't been composed/sent yet, so
+    # there's no original subject to build "Re:" from and (for AI) no prior
+    # email body to ground the reply.  The UI shows a caveat.
+    has_original_email: bool
+    # Every reply step in the sequence so the UI can offer a node picker.
+    available_nodes: list[ReplyPreviewNode]
+
+
 class LeadResponse(LeadSummary):
     """Per-lead detail, including the composed email and research blob."""
     phone: str | None

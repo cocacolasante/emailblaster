@@ -26,6 +26,7 @@ from app.models import (
     SendStatus,
     Sequence,
     SequenceNode,
+    SequenceNodeKind,
     Suppression,
 )
 from app.workers.send import compute_next_send_window
@@ -45,7 +46,14 @@ from app.schemas.campaign import (
     SequenceStepEvent,
     campaign_to_dict,
 )
-from app.schemas.lead import LeadEmailUpdate, LeadResponse, LeadSummary, PaginatedLeads
+from app.schemas.lead import (
+    LeadEmailUpdate,
+    LeadResponse,
+    LeadSummary,
+    PaginatedLeads,
+    ReplyPreviewNode,
+    ReplyPreviewResponse,
+)
 from app.services.sequence_service import ensure_default_sequence
 from app.services.signature import apply_signature, resolve_campaign_signature
 
@@ -561,6 +569,115 @@ async def update_campaign_lead(
     await db.commit()
     await db.refresh(lead)
     return LeadResponse.model_validate(lead)
+
+
+@router.post(
+    "/{campaign_id}/leads/{lead_id}/reply-preview",
+    response_model=ReplyPreviewResponse,
+)
+async def preview_lead_reply(
+    campaign_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    node_id: uuid.UUID | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ReplyPreviewResponse:
+    """Compose — WITHOUT sending — the draft an ``email_reply`` node would
+    send for this lead, so the user can review follow-up copy before it goes
+    out (mirrors the "View email" preview for the first email).
+
+    The composition path is identical to the sequencer's send-time path:
+    subject is the original's ``Re:`` form; the body is either the manual
+    ``body_template`` (substituted) or an AI follow-up via
+    ``generate_followup_reply`` + the campaign signature.  Manual replies
+    preview exactly; AI replies are regenerated fresh at send time, so the
+    preview is representative (``regenerated_at_send=True``)."""
+    # Lazy imports: pulling the worker module at router import time risks a
+    # circular import (sequencer imports send, which imports models, ...).
+    from app.workers.compose import generate_followup_reply
+    from app.workers.sequencer import _reply_subject, _substitute
+
+    campaign = await _get_or_404(db, campaign_id)
+    lead = await db.get(Lead, lead_id)
+    if lead is None or lead.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    seq = (await db.execute(
+        select(Sequence).where(Sequence.campaign_id == campaign_id)
+    )).scalar_one_or_none()
+    if seq is None:
+        raise HTTPException(status_code=404, detail="No sequence found for campaign")
+
+    reply_nodes = (await db.execute(
+        select(SequenceNode)
+        .where(
+            and_(
+                SequenceNode.sequence_id == seq.id,
+                SequenceNode.kind == SequenceNodeKind.EMAIL_REPLY,
+                SequenceNode.deleted_at.is_(None),
+            )
+        )
+        .order_by(SequenceNode.created_at)
+    )).scalars().all()
+    if not reply_nodes:
+        raise HTTPException(
+            status_code=404,
+            detail="This campaign's sequence has no reply step to preview",
+        )
+
+    if node_id is not None:
+        node = next((n for n in reply_nodes if n.id == node_id), None)
+        if node is None:
+            raise HTTPException(
+                status_code=404, detail="Reply node not found in this sequence"
+            )
+    else:
+        node = reply_nodes[0]
+
+    cfg = node.config or {}
+    ai_compose = bool(cfg.get("ai_compose"))
+    ai_prompt = cfg.get("ai_prompt") or ""
+    has_original = bool(lead.composed_subject or lead.composed_body)
+    subject = _reply_subject(lead.composed_subject or "")
+
+    if ai_compose:
+        body = await generate_followup_reply(
+            goal=campaign.goal,
+            tone=campaign.tone,
+            sender_name=campaign.sender_name,
+            first_name=lead.first_name or "",
+            last_name=lead.last_name or "",
+            company=lead.company or "",
+            job_title=lead.job_title or "",
+            research_data=lead.research_data or {},
+            original_subject=lead.composed_subject or "",
+            original_body=lead.composed_body or "",
+            idea=ai_prompt,
+        )
+        sig = await resolve_campaign_signature(db, campaign)
+        body = apply_signature(body, sig)
+    else:
+        body = _substitute(cfg.get("body_template") or "", lead)
+
+    available = [
+        ReplyPreviewNode(
+            node_id=n.id,
+            title=(n.config or {}).get("title"),
+            ai_compose=bool((n.config or {}).get("ai_compose")),
+            ai_prompt=(n.config or {}).get("ai_prompt") or "",
+        )
+        for n in reply_nodes
+    ]
+    return ReplyPreviewResponse(
+        node_id=node.id,
+        title=cfg.get("title"),
+        ai_compose=ai_compose,
+        ai_prompt=ai_prompt,
+        subject=subject,
+        body=body,
+        regenerated_at_send=ai_compose,
+        has_original_email=has_original,
+        available_nodes=available,
+    )
 
 
 @router.post("/{campaign_id}/apply-signature", response_model=ApplySignatureResponse)

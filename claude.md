@@ -22,7 +22,41 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Contact enrichment for IRS BMF orgs + deferred-
+- **Last completed:** **Preview the follow-up reply draft before it
+  sends.**  The campaign Leads "View email" modal now has a *Preview
+  follow-up reply* button that composes — **without sending** — the
+  draft an `email_reply` node would deliver for that lead, so the user
+  can vet follow-up copy the same way they vet the first email.
+  - **Endpoint** `POST /campaigns/{cid}/leads/{lid}/reply-preview`
+    (optional `?node_id=` to pick a specific reply step) in
+    `routers/campaigns.py`.  Resolves the campaign's live
+    (`deleted_at IS NULL`) `email_reply` nodes; composes via the EXACT
+    send-time path — subject = `_reply_subject(composed_subject)`, body
+    = manual `_substitute(body_template)` OR AI
+    `generate_followup_reply(...)` +
+    `apply_signature(resolve_campaign_signature)` (the two sequencer
+    helpers + compose fn are lazy-imported inside the handler to dodge
+    the circular import).  Returns `{node_id, title, ai_compose,
+    ai_prompt, subject, body, regenerated_at_send, has_original_email,
+    available_nodes}`.  404 when the sequence has no reply step /
+    unknown lead / unknown node.  Nothing is sent or mutated.
+  - **Honesty caveats:** manual templates preview byte-exact; AI
+    replies are regenerated fresh at send time (`regenerated_at_send`),
+    so the preview is *representative*.  `has_original_email=False`
+    (first email not yet composed/sent) surfaces a "uses an empty
+    original" note — the real reply threads onto the original once sent.
+  - **Schemas** `ReplyPreviewResponse` / `ReplyPreviewNode` in
+    `schemas/lead.py`.  **Frontend** (`CampaignDetail.jsx`
+    `LeadEmailModal`): a "Follow-up reply" section with a
+    Preview/Regenerate button, a subject+body card, the AI prompt, the
+    regenerated-at-send + missing-original caveats, and a node-picker
+    `<select>` when the sequence has >1 reply step.  `previewLeadReply`
+    in `api/campaigns.js`.
+  - Tests: 5 backend (`test_phase44_email_reply.py`: manual exact, AI
+    delegates to `generate_followup_reply`, missing-original flag,
+    404 no-reply-node, 404 wrong-lead) + 1 frontend
+    (`CampaignDetail.test.jsx`).  Tests: **backend 1057, frontend 366**.
+- **Previously:** **Contact enrichment for IRS BMF orgs + deferred-
   enrichment queue (gate the review queue).**  IRS BMF pulled many new
   501(c)(3)s but resolved no contact, so they all fell through to
   notification-only and cluttered the review queue.  Now contactless orgs
@@ -2457,7 +2491,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1026 passing**.  Frontend tests: **350 passing**._
+_Backend tests: **1057 passing**.  Frontend tests: **366 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

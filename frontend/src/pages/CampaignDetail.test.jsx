@@ -27,6 +27,7 @@ vi.mock('../api/campaigns.js', () => ({
   updateCampaign: vi.fn().mockResolvedValue({}),
   applySignature: vi.fn().mockResolvedValue({ updated: 3 }),
   updateLeadEmail: vi.fn().mockResolvedValue({}),
+  previewLeadReply: vi.fn(),
   getLeadDetail: vi.fn(),
   getDeliverability: vi.fn(),
   getCopyInsights: vi.fn(),
@@ -374,6 +375,40 @@ describe('CampaignDetail', () => {
     await waitFor(() => expect(api.updateLeadEmail).toHaveBeenCalledWith(
       'c1', 'L1', expect.objectContaining({ composed_body: 'Body here\n\nAnthony\n555-1234' }),
     ));
+  });
+
+  it('previews the follow-up reply draft on demand', async () => {
+    api.listCampaignLeads.mockResolvedValue({
+      items: [{
+        id: 'L1', email: 'l@x.com', first_name: 'Jane', last_name: 'Doe',
+        company: 'Acme', research_status: 'done', compose_status: 'done',
+        send_status: 'sent',
+      }],
+      total: 1, page: 1, page_size: 50, total_pages: 1,
+    });
+    api.getLeadDetail.mockResolvedValue({
+      composed_subject: 'Hi', composed_body: 'Body here',
+      send_status: 'sent', research_data: { quality: 'low' },
+    });
+    api.previewLeadReply.mockResolvedValue({
+      node_id: 'n1', title: 'Bump', ai_compose: true, ai_prompt: 'nudge the trial',
+      subject: 'Re: Hi', body: 'Just circling back, Jane.',
+      regenerated_at_send: true, has_original_email: true,
+      available_nodes: [{ node_id: 'n1', title: 'Bump', ai_compose: true, ai_prompt: 'nudge the trial' }],
+    });
+
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    fireEvent.click(await screen.findByText('View email'));
+    fireEvent.click(await screen.findByTestId('preview-reply-btn'));
+
+    await waitFor(() => expect(api.previewLeadReply).toHaveBeenCalledWith('c1', 'L1', undefined));
+    expect((await screen.findByTestId('reply-preview-body')).textContent)
+      .toContain('Just circling back, Jane.');
+    expect(screen.getByTestId('reply-preview-subject').textContent).toContain('Re: Hi');
+    // AI replies carry the regenerated-at-send caveat.
+    expect(screen.getByTestId('reply-preview-ai-note')).toBeInTheDocument();
   });
 
   it('shows the goal-rewrite progress card while a rewrite is in flight', async () => {
