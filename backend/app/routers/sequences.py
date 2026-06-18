@@ -27,6 +27,7 @@ from app.schemas.sequence import (
 )
 from app.services.sequence_service import (
     ensure_default_sequence,
+    reenroll_for_new_nodes,
     replace_graph,
     validate_graph,
 )
@@ -203,8 +204,14 @@ async def publish_sequence(
         return PublishResponse(ok=False, is_published=seq.is_published, errors=errors)
 
     seq.is_published = True
+    # Re-queue already-finished leads for any newly-added node.  Safe because
+    # replace_graph preserves node ids → the send-once idempotency skips
+    # everything a lead already did; only the new node(s) fire.
+    requeued = await reenroll_for_new_nodes(db, seq)
     await db.commit()
-    return PublishResponse(ok=True, is_published=True, errors=[])
+    return PublishResponse(
+        ok=True, is_published=True, errors=[], reenrolled_for_new_nodes=requeued,
+    )
 
 
 # --------------------------------------------------------------------------

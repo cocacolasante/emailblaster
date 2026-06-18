@@ -117,6 +117,9 @@ class PublishResponse(BaseModel):
     ok: bool
     is_published: bool
     errors: list[str] = Field(default_factory=list)
+    # How many already-finished (completed/halted) leads were re-queued to
+    # pick up a newly-added node on this publish.
+    reenrolled_for_new_nodes: int = 0
 
 
 # --------------------------------------------------------------------------

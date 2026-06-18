@@ -19,11 +19,27 @@ from app.models import (
     Lead,
     LeadSequenceState,
     LeadSequenceStatus,
+    LeadStepExecution,
     Sequence,
     SequenceEdge,
     SequenceNode,
     SequenceNodeKind,
 )
+
+# Node kinds that perform an action AND write a lead_step_executions row
+# (so a lead "having executed" them is detectable).  The legacy entry email
+# is excluded — it's tracked via lead.send_status, not an execution row.
+_EXECUTION_RECORDING_KINDS = {
+    SequenceNodeKind.EMAIL_REPLY,
+    SequenceNodeKind.LINKEDIN_VIEW_PROFILE,
+    SequenceNodeKind.LINKEDIN_FOLLOW_PROFILE,
+    SequenceNodeKind.LINKEDIN_REACT_POST,
+    SequenceNodeKind.LINKEDIN_COMMENT_POST,
+    SequenceNodeKind.LINKEDIN_CONNECT,
+    SequenceNodeKind.LINKEDIN_DM,
+    SequenceNodeKind.LINKEDIN_INMAIL,
+    SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE,
+}
 from app.services.sequence_conditions import detect_cycle, validate
 
 
@@ -356,20 +372,26 @@ async def replace_graph(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> dict[str, uuid.UUID]:
-    """Soft-delete the live topology and insert the new one. Returns a
-    mapping of client_id → persisted node UUID so the caller can build the
-    response.
+    """Persist the new topology, PRESERVING the ids of unchanged nodes.
+    Returns a mapping of client_id → persisted node UUID.
 
     Also clears ``is_published`` since the graph just changed.
 
-    **Soft-delete trade-offs:**
-    - ``lead_step_executions`` rows pointing at retired nodes are preserved
-      → analytics still work after re-edits.
-    - ``lead_sequence_states.current_node_id`` may now point at a soft-
-      deleted node. The scheduler detects that and halts those leads with
-      ``halt_reason="current node deleted"`` so they don't crash silently.
-    - Edges to/from retired nodes are still hard-deleted; only nodes carry
-      historical value for analytics.
+    **Node-identity preservation (why):** a node the builder sent with an
+    existing node's UUID as its ``client_id`` AND the same kind is UPDATED
+    IN PLACE (config / entry / position) — its id is kept.  Only genuinely
+    new nodes (builder-generated ``n_...`` client_ids, or a kind change) get
+    a fresh id; existing live nodes absent from the payload are soft-deleted.
+
+    This matters for editing a RUNNING campaign:
+    - ``lead_step_executions`` keep matching their node ids, so the
+      per-node send-once idempotency still works → re-walking a lead never
+      re-sends a node it already did.
+    - In-flight leads' ``current_node_id`` stays valid (no mass "current
+      node deleted" halt just because the graph was re-saved).
+    - A newly-added node has a new id with no execution history, so it
+      fires for every lead that reaches it (incl. re-enrolled ones).
+    Removed nodes are still soft-deleted, preserving their analytics.
     """
     now = datetime.now(timezone.utc)
 
@@ -380,39 +402,70 @@ async def replace_graph(
     for e in existing_edges:
         await db.delete(e)
 
-    # Soft-delete LIVE nodes; leave already-retired ones alone.
+    # Index the LIVE nodes so we can update-in-place / preserve ids.
     existing_nodes = (await db.execute(
         select(SequenceNode).where(
             SequenceNode.sequence_id == sequence.id,
             live_nodes_filter(),
         )
     )).scalars().all()
-    for n in existing_nodes:
-        n.deleted_at = now
-    await db.flush()
+    existing_by_id: dict[uuid.UUID, SequenceNode] = {n.id: n for n in existing_nodes}
 
     sequence.is_published = False
 
     client_to_db: dict[str, uuid.UUID] = {}
+    kept_ids: set[uuid.UUID] = set()
     for n in nodes:
         is_entry = bool(n.get("is_entry", False))
+        kind = SequenceNodeKind(n["kind"])
         config = n.get("config") or {}
         # An email entry node always means "send the campaign-composed first
         # email" — stamp the flag the sequencer keys off of so a node the
         # builder promoted to entry behaves like the seeded default.
-        if is_entry and SequenceNodeKind(n["kind"]) == SequenceNodeKind.EMAIL:
+        if is_entry and kind == SequenceNodeKind.EMAIL:
             config = {**config, "use_campaign_compose": True}
-        node = SequenceNode(
-            sequence_id=sequence.id,
-            kind=SequenceNodeKind(n["kind"]),
-            config=config,
-            position_x=int(n.get("position_x", 0)),
-            position_y=int(n.get("position_y", 0)),
-            is_entry=is_entry,
-        )
-        db.add(node)
-        await db.flush()
-        client_to_db[n["client_id"]] = node.id
+
+        # Match an existing live node by UUID client_id + same kind → update
+        # in place (preserve id).  Anything else → create a fresh node.
+        matched: SequenceNode | None = None
+        try:
+            cid_uuid = uuid.UUID(str(n["client_id"]))
+        except (ValueError, AttributeError, TypeError):
+            cid_uuid = None
+        if cid_uuid is not None and cid_uuid in existing_by_id:
+            candidate = existing_by_id[cid_uuid]
+            if candidate.kind == kind:
+                matched = candidate
+
+        if matched is not None:
+            matched.config = config
+            matched.is_entry = is_entry
+            if "position_x" in n:
+                matched.position_x = int(n["position_x"])
+            if "position_y" in n:
+                matched.position_y = int(n["position_y"])
+            client_to_db[n["client_id"]] = matched.id
+            kept_ids.add(matched.id)
+        else:
+            node = SequenceNode(
+                sequence_id=sequence.id,
+                kind=kind,
+                config=config,
+                position_x=int(n.get("position_x", 0)),
+                position_y=int(n.get("position_y", 0)),
+                is_entry=is_entry,
+            )
+            db.add(node)
+            await db.flush()
+            client_to_db[n["client_id"]] = node.id
+            kept_ids.add(node.id)
+
+    # Soft-delete live nodes that survived neither as an in-place update nor
+    # a recreate (genuinely removed, or whose kind changed).
+    for nid, node in existing_by_id.items():
+        if nid not in kept_ids:
+            node.deleted_at = now
+    await db.flush()
 
     for e in edges:
         db.add(SequenceEdge(
@@ -424,3 +477,80 @@ async def replace_graph(
         ))
 
     return client_to_db
+
+
+async def reenroll_for_new_nodes(db: AsyncSession, sequence: Sequence) -> int:
+    """Re-queue COMPLETED / HALTED leads that have a live action node they
+    haven't executed yet — i.e. a node was added after they finished.
+
+    Each such lead is reset to its most-recent STILL-LIVE executed node (so
+    it re-evaluates that node's now-updated outgoing edges and flows into
+    the new node), or the entry node when it has no live execution.  Because
+    ``replace_graph`` preserves node ids, the per-node send-once idempotency
+    skips everything the lead already did — only the genuinely-new node(s)
+    fire, so nothing is re-sent.  Returns how many leads were re-queued.
+
+    Call AFTER publishing the (changed) graph.  A no-op when no live action
+    node is unexecuted for a lead (e.g. a config-only edit).
+    """
+    live_nodes = (await db.execute(
+        select(SequenceNode).where(
+            SequenceNode.sequence_id == sequence.id,
+            live_nodes_filter(),
+        )
+    )).scalars().all()
+    live_ids = {n.id for n in live_nodes}
+    entry = next((n for n in live_nodes if n.is_entry), None)
+    if entry is None:
+        return 0
+    # Live nodes that record an execution (so "did the lead do it?" is known).
+    action_ids = {
+        n.id for n in live_nodes
+        if n.kind in _EXECUTION_RECORDING_KINDS
+        or (n.kind == SequenceNodeKind.EMAIL and not n.is_entry)
+    }
+    if not action_ids:
+        return 0   # nothing actionable to re-run
+
+    states = (await db.execute(
+        select(LeadSequenceState).where(
+            LeadSequenceState.sequence_id == sequence.id,
+            LeadSequenceState.status.in_(
+                (LeadSequenceStatus.COMPLETED, LeadSequenceStatus.HALTED)
+            ),
+        )
+    )).scalars().all()
+    if not states:
+        return 0
+
+    lead_ids = [s.lead_id for s in states]
+    # Per-lead: which nodes they've executed + their latest still-live one.
+    exec_rows = (await db.execute(
+        select(
+            LeadStepExecution.lead_id,
+            LeadStepExecution.node_id,
+            LeadStepExecution.attempted_at,
+        )
+        .where(LeadStepExecution.lead_id.in_(lead_ids))
+        .order_by(LeadStepExecution.attempted_at.asc())
+    )).all()
+    executed: dict[uuid.UUID, set[uuid.UUID]] = {}
+    last_live: dict[uuid.UUID, uuid.UUID] = {}
+    for lid, nid, _at in exec_rows:
+        executed.setdefault(lid, set()).add(nid)
+        if nid in live_ids:
+            last_live[lid] = nid   # asc order → last assignment wins
+
+    now = datetime.now(timezone.utc)
+    requeued = 0
+    for s in states:
+        done = executed.get(s.lead_id, set())
+        if not (action_ids - done):
+            continue   # already executed every live action node → nothing new
+        s.current_node_id = last_live.get(s.lead_id, entry.id)
+        s.status = LeadSequenceStatus.ACTIVE
+        s.halt_reason = None
+        s.next_run_at = now
+        s.entered_current_at = now
+        requeued += 1
+    return requeued

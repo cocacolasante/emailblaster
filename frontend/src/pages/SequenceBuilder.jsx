@@ -1337,7 +1337,12 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
     mutationFn: () => publishSequence(campaignId),
     onSuccess: (r) => {
       if (r.ok) {
-        setStatusMsg('Published.');
+        const n = r.reenrolled_for_new_nodes || 0;
+        setStatusMsg(
+          n > 0
+            ? `Published. Re-queued ${n} already-finished lead${n === 1 ? '' : 's'} for the new step(s).`
+            : 'Published.',
+        );
         setErrors([]);
         queryClient.invalidateQueries({ queryKey: ['sequence', campaignId] });
       } else {

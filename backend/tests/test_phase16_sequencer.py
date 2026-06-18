@@ -28,6 +28,8 @@ from app.models import (
 from app.services.sequence_service import (
     enroll_leads,
     ensure_default_sequence,
+    reenroll_for_new_nodes,
+    replace_graph,
 )
 from app.workers import sequencer
 
@@ -506,3 +508,154 @@ async def test_email_reply_manual_without_body_is_misconfigured(db_session, monk
 
     result = await sequencer._send_email_step_async(str(lead.id), str(node.id))
     assert result["status"] == "misconfigured"
+
+
+# --------------------------------------------------------------------------
+# replace_graph preserves node ids; publish re-queues finished leads
+# --------------------------------------------------------------------------
+
+
+def _n(client_id, kind, *, entry=False, **cfg):
+    return {"client_id": client_id, "kind": kind, "is_entry": entry, "config": cfg}
+
+
+def _e(a, b):
+    return {"from_client_id": a, "to_client_id": b, "condition": {"op": "always"}}
+
+
+async def test_replace_graph_preserves_unchanged_node_ids(db_session):
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+
+    m1 = await replace_graph(db_session, seq,
+        nodes=[
+            _n("e", "email", entry=True),
+            _n("f", "email", subject_template="s", body_template="b"),
+        ],
+        edges=[_e("e", "f")],
+    )
+    await db_session.commit()
+    entry_id, follow_id = m1["e"], m1["f"]
+
+    # Re-save using the REAL ids as client_ids + add a new node.
+    m2 = await replace_graph(db_session, seq,
+        nodes=[
+            _n(str(entry_id), "email", entry=True),
+            _n(str(follow_id), "email", subject_template="s", body_template="b"),
+            _n("new", "email", subject_template="s2", body_template="b2"),
+        ],
+        edges=[_e(str(entry_id), str(follow_id)), _e(str(follow_id), "new")],
+    )
+    await db_session.commit()
+
+    assert m2[str(entry_id)] == entry_id      # preserved
+    assert m2[str(follow_id)] == follow_id    # preserved
+    assert m2["new"] not in (entry_id, follow_id)   # genuinely new id
+
+    # Old nodes are still live (not soft-deleted).
+    for nid in (entry_id, follow_id):
+        node = await db_session.get(SequenceNode, nid)
+        assert node.deleted_at is None
+
+
+async def test_replace_graph_soft_deletes_removed_node(db_session):
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+    m1 = await replace_graph(db_session, seq,
+        nodes=[_n("e", "email", entry=True), _n("w", "wait", duration_minutes=60)],
+        edges=[_e("e", "w")],
+    )
+    await db_session.commit()
+    wait_id = m1["w"]
+
+    # Re-save without the wait node → it gets soft-deleted, entry preserved.
+    m2 = await replace_graph(db_session, seq,
+        nodes=[_n(str(m1["e"]), "email", entry=True)], edges=[],
+    )
+    await db_session.commit()
+    assert m2[str(m1["e"])] == m1["e"]
+    gone = await db_session.get(SequenceNode, wait_id)
+    assert gone.deleted_at is not None
+
+
+async def test_reenroll_for_new_nodes_requeues_completed_lead(db_session):
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+    m = await replace_graph(db_session, seq,
+        nodes=[
+            _n("e", "email", entry=True),
+            _n("f", "email", subject_template="s", body_template="b"),
+        ],
+        edges=[_e("e", "f")],
+    )
+    await db_session.commit()
+    follow_id = m["f"]
+
+    # A lead that COMPLETED the sequence (executed the followup).
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id, current_node_id=None,
+        status=LeadSequenceStatus.COMPLETED, entered_current_at=_now(),
+    )
+    db_session.add(state)
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=follow_id, result=LeadStepResult.SENT,
+        attempted_at=_now(),
+    ))
+    await db_session.commit()
+
+    # Add a new node after the followup (ids preserved).
+    m2 = await replace_graph(db_session, seq,
+        nodes=[
+            _n(str(m["e"]), "email", entry=True),
+            _n(str(follow_id), "email", subject_template="s", body_template="b"),
+            _n("new", "email", subject_template="s2", body_template="b2"),
+        ],
+        edges=[_e(str(m["e"]), str(follow_id)), _e(str(follow_id), "new")],
+    )
+    await db_session.commit()
+
+    requeued = await reenroll_for_new_nodes(db_session, seq)
+    await db_session.commit()
+    assert requeued == 1
+
+    await db_session.refresh(state)
+    assert state.status == LeadSequenceStatus.ACTIVE
+    # Reset to its last still-live executed node (the followup), from which
+    # the sequencer skips-and-advances into the new node.
+    assert state.current_node_id == follow_id
+    assert state.next_run_at is not None
+
+
+async def test_reenroll_skips_lead_that_did_every_node(db_session):
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+    m = await replace_graph(db_session, seq,
+        nodes=[
+            _n("e", "email", entry=True),
+            _n("f", "email", subject_template="s", body_template="b"),
+        ],
+        edges=[_e("e", "f")],
+    )
+    await db_session.commit()
+    follow_id = m["f"]
+
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id, current_node_id=None,
+        status=LeadSequenceStatus.COMPLETED, entered_current_at=_now(),
+    )
+    db_session.add(state)
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=follow_id, result=LeadStepResult.SENT,
+        attempted_at=_now(),
+    ))
+    await db_session.commit()
+
+    # Re-publish the SAME graph (no new action node) → nothing to re-run.
+    requeued = await reenroll_for_new_nodes(db_session, seq)
+    assert requeued == 0
+    await db_session.refresh(state)
+    assert state.status == LeadSequenceStatus.COMPLETED
