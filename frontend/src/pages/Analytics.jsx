@@ -15,6 +15,7 @@ import {
   listCampaignErrors,
   retryFailedLeads,
 } from '../api/campaigns.js';
+import { getSequenceAnalytics } from '../api/sequences.js';
 import MetricsGrid from '../components/MetricsGrid.jsx';
 import LeadTable from '../components/LeadTable.jsx';
 import { useToast } from '../components/Toast.jsx';
@@ -184,6 +185,122 @@ function FailedLeadsBanner({ id }) {
 }
 
 
+const SEQ_KIND_LABELS = {
+  email: 'Email',
+  email_reply: 'Reply (in-thread)',
+  wait: 'Wait',
+  linkedin_view_profile: 'LinkedIn: view',
+  linkedin_follow_profile: 'LinkedIn: follow',
+  linkedin_react_post: 'LinkedIn: react',
+  linkedin_comment_post: 'LinkedIn: comment',
+  linkedin_connect: 'LinkedIn: connect',
+  linkedin_dm: 'LinkedIn: DM',
+  linkedin_inmail: 'LinkedIn: InMail',
+  linkedin_invite_to_page: 'LinkedIn: page invite',
+};
+
+const SEQ_KIND_COLORS = {
+  email: 'bg-blue-100 text-blue-700',
+  email_reply: 'bg-indigo-100 text-indigo-700',
+  wait: 'bg-slate-100 text-slate-500',
+  linkedin_view_profile: 'bg-sky-100 text-sky-700',
+  linkedin_follow_profile: 'bg-sky-100 text-sky-700',
+  linkedin_react_post: 'bg-sky-100 text-sky-700',
+  linkedin_comment_post: 'bg-indigo-100 text-indigo-700',
+  linkedin_connect: 'bg-indigo-100 text-indigo-700',
+  linkedin_dm: 'bg-purple-100 text-purple-700',
+  linkedin_inmail: 'bg-purple-100 text-purple-700',
+  linkedin_invite_to_page: 'bg-indigo-100 text-indigo-700',
+};
+
+function stepName(node, index) {
+  const base = SEQ_KIND_LABELS[node.kind] ?? node.kind;
+  // A builder title (when set) is the most descriptive; fall back to
+  // "<n>. <kind>" so multiple same-kind steps stay distinguishable.
+  if (node.title) return node.title;
+  return `${index + 1}. ${base}`;
+}
+
+/** Per-node funnel for the whole sequence — surfaces follow-up emails,
+ *  in-thread replies, waits, and every LinkedIn step, not just the first
+ *  email.  Only shown when the sequence actually has more than one node. */
+function SequencePerformance({ id }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['sequence-analytics', id],
+    queryFn: () => getSequenceAnalytics(id),
+    refetchInterval: 30000,
+  });
+
+  if (isLoading || !data) return null;
+  const nodes = data.per_node ?? [];
+  // Nothing secondary to report on a plain single-email sequence — the
+  // email metrics above already cover it.
+  if (nodes.length <= 1) return null;
+
+  const summary = [
+    { label: 'Active', value: data.active, color: 'text-emerald-700' },
+    { label: 'Completed', value: data.completed, color: 'text-blue-700' },
+    { label: 'Pending', value: data.pending, color: 'text-amber-600' },
+    { label: 'Halted', value: data.halted, color: 'text-red-600' },
+  ];
+
+  return (
+    <div
+      data-testid="sequence-performance"
+      className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mb-4"
+    >
+      <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">Sequence performance</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Every step — follow-ups, replies, and LinkedIn — not just the first email.
+          </p>
+        </div>
+        <div className="flex gap-4">
+          {summary.map(({ label, value, color }) => (
+            <div key={label} className="text-center">
+              <div className={`text-lg font-bold ${color}`}>{value ?? 0}</div>
+              <div className="text-[10px] uppercase tracking-wide text-slate-400">{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50">
+            <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Step</th>
+            <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Sent</th>
+            <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Skipped</th>
+            <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Failed</th>
+            <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Here now</th>
+          </tr>
+        </thead>
+        <tbody>
+          {nodes.map((n, i) => (
+            <tr key={n.node_id} data-testid="seq-node-row" className="border-t border-slate-100 hover:bg-slate-50">
+              <td className="px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${SEQ_KIND_COLORS[n.kind] ?? 'bg-slate-100 text-slate-600'}`}>
+                    {SEQ_KIND_LABELS[n.kind] ?? n.kind}
+                  </span>
+                  <span className="text-slate-700">{stepName(n, i)}</span>
+                  {n.is_entry && (
+                    <span className="text-[10px] text-slate-400 uppercase tracking-wide">start</span>
+                  )}
+                </div>
+              </td>
+              <td className="px-4 py-2.5 text-right font-medium text-emerald-700">{n.sent}</td>
+              <td className="px-4 py-2.5 text-right text-slate-500">{n.skipped}</td>
+              <td className="px-4 py-2.5 text-right text-red-600">{n.failed}</td>
+              <td className="px-4 py-2.5 text-right text-blue-700">{n.currently_here}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function AnalyticsContent({ id, includeLeadTable = true }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['analytics', id],
@@ -231,6 +348,8 @@ export function AnalyticsContent({ id, includeLeadTable = true }) {
       )}
 
       <Timeline points={data.timeline} replyTrackingEnabled={replyTracking} />
+
+      <SequencePerformance id={id} />
 
       <ReputationCard score={data.sender_reputation_score} rates={data.rates} />
 

@@ -187,20 +187,24 @@ async def test_analytics_empty_campaign_returns_zeros(client):
 
 
 async def test_analytics_counts_step_executions(client, db_session):
+    """A SECONDARY (non-entry) node aggregates its lead_step_executions —
+    this is the path that surfaces follow-up emails / replies / LinkedIn
+    steps.  (The entry email node is special-cased; see the next test.)"""
     r = await client.post("/campaigns/", json=_payload())
     cid = uuid.UUID(r.json()["id"])
 
-    campaign = await db_session.get(Campaign, cid)
     seq = (await db_session.execute(
         select(Sequence).where(Sequence.campaign_id == cid)
     )).scalar_one()
-    entry = (await db_session.execute(
-        select(SequenceNode).where(
-            SequenceNode.sequence_id == seq.id, SequenceNode.is_entry.is_(True),
-        )
-    )).scalar_one()
+    # A follow-up email node downstream of the auto-created entry node.
+    followup = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL, is_entry=False,
+        config={"title": "Follow-up", "subject_template": "s", "body_template": "b"},
+    )
+    db_session.add(followup)
+    await db_session.commit()
+    await db_session.refresh(followup)
 
-    # Three leads with various step outcomes on the entry node.
     leads = []
     for i in range(3):
         l = Lead(campaign_id=cid, email=f"l{i}@x.com", send_status=SendStatus.SENT)
@@ -211,20 +215,47 @@ async def test_analytics_counts_step_executions(client, db_session):
         await db_session.refresh(l)
 
     db_session.add_all([
-        LeadStepExecution(lead_id=leads[0].id, node_id=entry.id, result=LeadStepResult.SENT),
-        LeadStepExecution(lead_id=leads[1].id, node_id=entry.id, result=LeadStepResult.SENT),
-        LeadStepExecution(lead_id=leads[2].id, node_id=entry.id, result=LeadStepResult.SKIPPED),
+        LeadStepExecution(lead_id=leads[0].id, node_id=followup.id, result=LeadStepResult.SENT),
+        LeadStepExecution(lead_id=leads[1].id, node_id=followup.id, result=LeadStepResult.SENT),
+        LeadStepExecution(lead_id=leads[2].id, node_id=followup.id, result=LeadStepResult.SKIPPED),
     ])
     await db_session.commit()
 
     a = await client.get(f"/campaigns/{cid}/sequence/analytics")
     body = a.json()
-    assert len(body["per_node"]) == 1
-    node = body["per_node"][0]
+    assert len(body["per_node"]) == 2
+    node = next(n for n in body["per_node"] if n["node_id"] == str(followup.id))
+    assert node["kind"] == "email"
+    assert node["title"] == "Follow-up"
+    assert node["is_entry"] is False
     assert node["attempted"] == 3
     assert node["sent"] == 2
     assert node["skipped"] == 1
     assert node["failed"] == 0
+
+
+async def test_analytics_entry_email_uses_send_status(client, db_session):
+    """The entry EMAIL node reflects the legacy first-email outcome
+    (lead.send_status), since the compose -> send_lead path never writes
+    lead_step_executions for it."""
+    r = await client.post("/campaigns/", json=_payload())
+    cid = uuid.UUID(r.json()["id"])
+
+    for i in range(4):
+        db_session.add(Lead(
+            campaign_id=cid, email=f"l{i}@x.com",
+            send_status=SendStatus.SENT if i < 3 else SendStatus.FAILED,
+        ))
+    await db_session.commit()
+
+    a = await client.get(f"/campaigns/{cid}/sequence/analytics")
+    body = a.json()
+    assert len(body["per_node"]) == 1
+    entry = body["per_node"][0]
+    assert entry["is_entry"] is True
+    assert entry["sent"] == 3
+    assert entry["failed"] == 1
+    assert entry["attempted"] == 4
 
 
 async def test_analytics_counts_active_leads(client, db_session):

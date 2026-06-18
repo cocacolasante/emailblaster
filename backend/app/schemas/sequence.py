@@ -156,6 +156,11 @@ class LeadStepExecutionOut(BaseModel):
 
 class NodeAnalytics(BaseModel):
     node_id: uuid.UUID
+    # Node identity so the UI can label + order the funnel without a second
+    # fetch of the sequence graph.
+    kind: SequenceNodeKind
+    title: str | None = None  # builder-set config.title, else None
+    is_entry: bool = False
     attempted: int  # total lead_step_executions on this node
     sent: int       # result = SENT
     skipped: int    # result = SKIPPED

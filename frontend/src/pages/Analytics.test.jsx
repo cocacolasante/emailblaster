@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Analytics from './Analytics.jsx';
@@ -32,7 +32,16 @@ vi.mock('../api/campaigns.js', () => ({
   retryFailedLeads: vi.fn(),
 }));
 
+vi.mock('../api/sequences.js', () => ({
+  getSequenceAnalytics: vi.fn().mockResolvedValue({
+    campaign_id: 'c1', sequence_id: 's1',
+    total_leads: 0, halted: 0, completed: 0, active: 0, pending: 0,
+    per_node: [],
+  }),
+}));
+
 import * as api from '../api/campaigns.js';
+import * as seqApi from '../api/sequences.js';
 
 const BASE = {
   campaign_id: 'c1',
@@ -93,6 +102,42 @@ describe('Analytics page', () => {
     await screen.findByTestId('metric-reply-rate');
     expect(screen.getByTestId('metric-reply-rate')).toHaveTextContent('10.0%');
     expect(screen.getByTestId('metric-bounce-rate')).toHaveTextContent('10.0%');
+  });
+
+  it('renders the sequence performance card with secondary steps', async () => {
+    seqApi.getSequenceAnalytics.mockResolvedValue({
+      campaign_id: 'c1', sequence_id: 's1',
+      total_leads: 100, halted: 2, completed: 30, active: 60, pending: 8,
+      per_node: [
+        { node_id: 'n1', kind: 'email', title: null, is_entry: true,
+          attempted: 100, sent: 95, skipped: 0, failed: 5, currently_here: 0 },
+        { node_id: 'n2', kind: 'wait', title: null, is_entry: false,
+          attempted: 0, sent: 0, skipped: 0, failed: 0, currently_here: 12 },
+        { node_id: 'n3', kind: 'email_reply', title: 'Trial nudge', is_entry: false,
+          attempted: 40, sent: 38, skipped: 2, failed: 0, currently_here: 0 },
+      ],
+    });
+    renderAnalytics();
+    const card = await screen.findByTestId('sequence-performance');
+    const rows = within(card).getAllByTestId('seq-node-row');
+    expect(rows).toHaveLength(3);
+    // The secondary in-thread reply step is surfaced (not just the first email).
+    expect(card.textContent).toContain('Trial nudge');
+    expect(card.textContent).toContain('Reply (in-thread)');
+  });
+
+  it('hides the sequence performance card for a single-node sequence', async () => {
+    seqApi.getSequenceAnalytics.mockResolvedValue({
+      campaign_id: 'c1', sequence_id: 's1',
+      total_leads: 10, halted: 0, completed: 0, active: 10, pending: 0,
+      per_node: [
+        { node_id: 'n1', kind: 'email', title: null, is_entry: true,
+          attempted: 10, sent: 10, skipped: 0, failed: 0, currently_here: 0 },
+      ],
+    });
+    renderAnalytics();
+    await screen.findByTestId('metric-sent');
+    expect(screen.queryByTestId('sequence-performance')).not.toBeInTheDocument();
   });
 
   it('reply rate shows -- when tracking disabled', async () => {

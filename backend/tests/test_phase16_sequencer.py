@@ -519,8 +519,8 @@ def _n(client_id, kind, *, entry=False, **cfg):
     return {"client_id": client_id, "kind": kind, "is_entry": entry, "config": cfg}
 
 
-def _e(a, b):
-    return {"from_client_id": a, "to_client_id": b, "condition": {"op": "always"}}
+def _e(a, b, condition=None):
+    return {"from_client_id": a, "to_client_id": b, "condition": condition or {"op": "always"}}
 
 
 async def test_replace_graph_preserves_unchanged_node_ids(db_session):
@@ -659,3 +659,50 @@ async def test_reenroll_skips_lead_that_did_every_node(db_session):
     assert requeued == 0
     await db_session.refresh(state)
     assert state.status == LeadSequenceStatus.COMPLETED
+
+
+async def test_reenroll_preserves_entered_current_at_clock(db_session):
+    """Re-queuing must NOT reset entered_current_at to now — otherwise a
+    time-based edge wait (e.g. "reply 2 days after the first email")
+    restarts on every publish and the lead never crosses the gate.  The
+    entry-email lead (no live execution) keeps its original entry time."""
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+    m = await replace_graph(db_session, seq,
+        nodes=[_n("e", "email", entry=True)],
+        edges=[],
+    )
+    await db_session.commit()
+
+    # A lead that finished the (1-node) sequence days ago — entry email sent,
+    # no sequencer execution rows (legacy first-email path writes none).
+    long_ago = _now() - timedelta(days=5)
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id, current_node_id=None,
+        status=LeadSequenceStatus.COMPLETED, entered_current_at=long_ago,
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    # Now add a reply node after the entry email and re-publish.
+    await replace_graph(db_session, seq,
+        nodes=[
+            _n(str(m["e"]), "email", entry=True),
+            _n("r", "email_reply", ai_compose=True),
+        ],
+        edges=[_e(str(m["e"]), "r", condition={"op": "days_since_entered_node", "gte": 2})],
+    )
+    await db_session.commit()
+
+    requeued = await reenroll_for_new_nodes(db_session, seq)
+    await db_session.commit()
+    assert requeued == 1
+
+    await db_session.refresh(state)
+    assert state.status == LeadSequenceStatus.ACTIVE
+    # The clock is preserved at the original entry time (5 days ago), NOT
+    # reset to now — so the 2-day reply gate is already satisfied.
+    assert abs((state.entered_current_at - long_ago).total_seconds()) < 5
+    assert (_now() - state.entered_current_at) > timedelta(days=2)

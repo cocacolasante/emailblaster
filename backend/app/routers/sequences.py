@@ -9,13 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import (
     Campaign,
+    Lead,
     LeadSequenceState,
     LeadSequenceStatus,
     LeadStepExecution,
     LeadStepResult,
+    SendStatus,
     Sequence,
     SequenceEdge,
     SequenceNode,
+    SequenceNodeKind,
 )
 from app.schemas.sequence import (
     NodeAnalytics,
@@ -219,6 +222,39 @@ async def publish_sequence(
 # --------------------------------------------------------------------------
 
 
+def _funnel_order(
+    node_ids: list[uuid.UUID],
+    entry_node: SequenceNode | None,
+    edges: list[SequenceEdge],
+) -> list[uuid.UUID]:
+    """Order node ids the way leads flow through the sequence: entry node
+    first, then breadth-first over outgoing edges (already priority-sorted).
+    Nodes unreachable from the entry are appended afterwards in their
+    original (creation) order so nothing is dropped from the report."""
+    if entry_node is None:
+        return list(node_ids)
+    adjacency: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for e in edges:
+        if e.to_node_id is not None:
+            adjacency.setdefault(e.from_node_id, []).append(e.to_node_id)
+
+    ordered: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
+    queue: list[uuid.UUID] = [entry_node.id]
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        ordered.append(nid)
+        queue.extend(adjacency.get(nid, []))
+    # Trailing: anything not reachable from entry, in creation order.
+    for nid in node_ids:
+        if nid not in seen:
+            ordered.append(nid)
+    return ordered
+
+
 @router.get(
     "/campaigns/{campaign_id}/sequence/analytics",
     response_model=SequenceAnalyticsResponse,
@@ -243,6 +279,16 @@ async def get_sequence_analytics(
         )
     )).scalars().all()
     node_ids = [n.id for n in nodes]
+    live = {n.id for n in nodes}
+    edges = [
+        e for e in (await db.execute(
+            select(SequenceEdge)
+            .where(SequenceEdge.sequence_id == seq.id)
+            .order_by(SequenceEdge.priority.asc())
+        )).scalars().all()
+        # Only edges between live nodes matter for funnel ordering.
+        if e.from_node_id in live and (e.to_node_id is None or e.to_node_id in live)
+    ]
 
     # Aggregate step executions by (node, result).
     exec_rows = (await db.execute(
@@ -280,16 +326,51 @@ async def get_sequence_analytics(
     )).all()
     currently: dict[uuid.UUID, int] = {nid: c for nid, c in currently_rows}
 
+    node_by_id = {n.id: n for n in nodes}
+    entry_node = next((n for n in nodes if n.is_entry), None)
+
+    # The legacy first email (compose -> send_lead) does NOT write
+    # lead_step_executions — only the sequencer does.  So an entry EMAIL
+    # node would otherwise show 0 sent here even though every first email
+    # went out.  Fold the real first-email outcome (lead.send_status) into
+    # that node so the funnel reflects it.  (EMAIL_REPLY can't be an entry
+    # node; a LinkedIn/wait entry IS sequencer-driven, so its executions are
+    # already correct and we leave it alone.)
+    if entry_node is not None and entry_node.kind == SequenceNodeKind.EMAIL:
+        send_rows = (await db.execute(
+            select(Lead.send_status, func.count().label("c"))
+            .where(Lead.campaign_id == campaign.id)
+            .group_by(Lead.send_status)
+        )).all()
+        by_send: dict[SendStatus, int] = {s: c for s, c in send_rows}
+        sent = by_send.get(SendStatus.SENT, 0)
+        failed = by_send.get(SendStatus.FAILED, 0)
+        bucket = by_node.setdefault(
+            entry_node.id, {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0}
+        )
+        bucket["sent"] = sent
+        bucket["failed"] = failed
+        bucket["attempted"] = sent + failed
+
+    # Order the funnel the way the sequence flows: entry first, then BFS over
+    # live edges (priority order), so the report reads top-to-bottom like the
+    # builder.  Any node unreachable from the entry trails afterwards in
+    # creation order so nothing is dropped.
+    ordered_ids = _funnel_order(node_ids, entry_node, edges)
+
     per_node = [
         NodeAnalytics(
             node_id=nid,
+            kind=node_by_id[nid].kind,
+            title=(node_by_id[nid].config or {}).get("title") or None,
+            is_entry=node_by_id[nid].is_entry,
             attempted=by_node[nid]["attempted"],
             sent=by_node[nid]["sent"],
             skipped=by_node[nid]["skipped"],
             failed=by_node[nid]["failed"],
             currently_here=currently.get(nid, 0),
         )
-        for nid in node_ids
+        for nid in ordered_ids
     ]
 
     # Overall status breakdown.

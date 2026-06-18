@@ -22,7 +22,84 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **"Stop research & compose" button greys out
+- **Last completed:** **Fixed: re-publishing a sequence restarted every
+  lead's `days_since_entered_node` clock (follow-up replies never fired).**
+  Diagnosed a live campaign whose `email_reply` node ("reply 2 days after
+  the first email", edge `days_since_entered_node >= 2`) wasn't firing even
+  for leads emailed days earlier.
+  - **Root cause:** `days_since_entered_node` measures from
+    `LeadSequenceState.entered_current_at` (when the lead entered the
+    *node*), not from when the email was sent.  `reenroll_for_new_nodes`
+    (run on every publish) reset `entered_current_at = now` for every
+    re-queued lead — so each sequence edit/republish **restarted the
+    2-day clock for all leads**, and they never crossed the gate.  The
+    chain: publish changes the entry node id → leads on the now
+    soft-deleted entry node get halted by the beat → reenroll re-queues
+    them to the new entry node with `entered_current_at = now`.
+  - **Fix (`sequence_service.reenroll_for_new_nodes`):** anchor
+    `entered_current_at` to when the lead ACTUALLY reached the node — the
+    node's real `LeadStepExecution.attempted_at` when it has one, else
+    preserve the lead's existing entry timestamp, else `now`.  No longer
+    blanket-resets to now, so time-based edge waits survive re-publishing.
+  - **Live remediation (one-off):** backfilled `entered_current_at` for
+    the affected campaign's leads from the actual send time embedded in
+    `brevo_message_id` (`<YYYYMMDDHHMM.…@smtp-relay.mailin.fr>`):
+    `UPDATE lead_sequence_states SET entered_current_at =
+    to_timestamp(substring(brevo_message_id from '\d{12}'),
+    'YYYYMMDDHH24MI') …`.  319 leads (sent ≥2 days prior) immediately
+    became eligible and advanced to the reply node; the rest correctly
+    waited out their 2-day mark.
+  - **Gotcha worth remembering:** `days_since_entered_node` is
+    node-entry-relative, NOT send-relative.  In a clean run they're within
+    minutes (enrol → send), but any republish that re-enrols leads used to
+    reset it.  The legacy first email writes NO `lead_step_executions`, so
+    the only durable per-lead "first email sent at" signal is the
+    timestamp embedded in `brevo_message_id`.
+  - Tests: 1 backend (`test_phase16_sequencer.py`:
+    `test_reenroll_preserves_entered_current_at_clock` — re-publish keeps a
+    5-day-old entry clock instead of resetting to now; `_e()` helper gained
+    an optional `condition` arg).  Tests: **backend 1079, frontend 376**.
+- **Previously:** **Per-node "Sequence performance" report on the
+  campaign Analytics tab.**  The campaign reporting only ever showed the
+  FIRST email (the Email-pipeline counters + analytics rates key off
+  `lead.send_status` / `email_events`, which the legacy compose→send path
+  populates).  Follow-up emails, in-thread replies, waits, and every
+  LinkedIn step were invisible.  New card surfaces a per-node funnel for
+  the whole sequence.
+  - **Backend** — `GET /campaigns/{id}/sequence/analytics` (already
+    existed, drives the SequenceBuilder overlay) enriched: `NodeAnalytics`
+    now carries `kind` / `title` / `is_entry`; `per_node` is returned in
+    **funnel order** (entry node first, then BFS over live edges via
+    `_funnel_order`, unreachable nodes trailing in creation order).
+  - **Entry-email override (the subtle bit):** the legacy first email
+    (compose→`send_lead`) NEVER writes `lead_step_executions` — only the
+    sequencer does.  So an entry EMAIL node would show `sent=0` in a pure
+    execution funnel even though every first email went out.  The endpoint
+    folds the real first-email outcome (`lead.send_status` SENT/FAILED)
+    into the entry email node's counts.  `EMAIL_REPLY` can't be an entry;
+    a LinkedIn/wait entry IS sequencer-driven so its executions are already
+    correct and left alone.  All other (secondary) nodes aggregate
+    `lead_step_executions` as before.
+  - **Frontend** (`Analytics.jsx` `SequencePerformance`, rendered in
+    `AnalyticsContent` between the timeline and the reputation card):
+    per-step table (kind badge + title, Sent / Skipped / Failed / Here
+    now) + a sequence-status summary (active/completed/pending/halted).
+    Only shown when the sequence has >1 live node (nothing secondary to
+    report on a plain single-email campaign).  Reuses the existing
+    `getSequenceAnalytics` API.
+  - **Known gap (documented, not faked):** per-node OPEN/CLICK/REPLY
+    rates aren't available — the Brevo events poller matches events only
+    by `Lead.brevo_message_id` (the first email's id), so engagement on
+    secondary emails isn't even recorded yet (would need event→step
+    attribution via the per-step Brevo message_id on
+    `lead_step_executions.external_id`).  The funnel reports
+    sent/skipped/failed/here, which is accurate.
+  - Tests: 2 backend (`test_phase20_analytics.py`: secondary node
+    aggregates executions incl. kind/title; entry-email node uses
+    send_status) + 2 frontend (`Analytics.test.jsx`: card renders
+    secondary steps; hidden for single-node).  Tests: **backend 1078,
+    frontend 376**.
+- **Previously:** **"Stop research & compose" button greys out
   when the pipeline is idle.**  The red Stop button on the campaign
   Overview is now only red + clickable while research or compose is
   actually pending/running; once everything is composed (or terminally
@@ -2518,7 +2595,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1077 passing**.  Frontend tests: **373 passing**._
+_Backend tests: **1079 passing**.  Frontend tests: **376 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

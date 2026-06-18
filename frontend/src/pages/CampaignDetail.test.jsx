@@ -35,6 +35,15 @@ vi.mock('../api/campaigns.js', () => ({
   stopCampaignPipeline: vi.fn(),
 }));
 
+// AnalyticsContent (rendered on the Analytics tab) pulls sequence analytics.
+vi.mock('../api/sequences.js', () => ({
+  getSequenceAnalytics: vi.fn().mockResolvedValue({
+    campaign_id: 'c1', sequence_id: 's1',
+    total_leads: 0, halted: 0, completed: 0, active: 0, pending: 0,
+    per_node: [],
+  }),
+}));
+
 // Recharts stub
 vi.mock('recharts', () => {
   const noop = ({ children }) => <div>{children}</div>;

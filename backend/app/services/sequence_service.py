@@ -536,10 +536,12 @@ async def reenroll_for_new_nodes(db: AsyncSession, sequence: Sequence) -> int:
     )).all()
     executed: dict[uuid.UUID, set[uuid.UUID]] = {}
     last_live: dict[uuid.UUID, uuid.UUID] = {}
-    for lid, nid, _at in exec_rows:
+    last_live_at: dict[uuid.UUID, datetime] = {}
+    for lid, nid, at in exec_rows:
         executed.setdefault(lid, set()).add(nid)
         if nid in live_ids:
             last_live[lid] = nid   # asc order → last assignment wins
+            last_live_at[lid] = at
 
     now = datetime.now(timezone.utc)
     requeued = 0
@@ -551,6 +553,15 @@ async def reenroll_for_new_nodes(db: AsyncSession, sequence: Sequence) -> int:
         s.status = LeadSequenceStatus.ACTIVE
         s.halt_reason = None
         s.next_run_at = now
-        s.entered_current_at = now
+        # Anchor entered_current_at to when the lead ACTUALLY reached this
+        # node — NOT "now".  Resetting it to now on every publish restarts
+        # time-based edge waits (e.g. "reply 2 days after the first email"),
+        # so a lead that's been waiting for days never crosses the gate if
+        # the sequence is edited.  Use the node's real execution time when we
+        # have it (a re-published downstream node), else preserve the lead's
+        # existing entry timestamp (the entry email's send/enrol time), and
+        # only fall back to now when there's nothing to anchor to.
+        anchor = last_live_at.get(s.lead_id) or s.entered_current_at or now
+        s.entered_current_at = anchor
         requeued += 1
     return requeued
