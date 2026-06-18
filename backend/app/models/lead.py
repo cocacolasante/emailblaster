@@ -137,6 +137,9 @@ class Lead(Base):
         ForeignKey("crm_opportunities.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Tenancy-ready (migration 0038): nullable now, scoped later. Leads remain
+    # both the outreach recipient and the CRM lead exactly as before.
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

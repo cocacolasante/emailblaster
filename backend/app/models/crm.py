@@ -111,6 +111,33 @@ class Opportunity(Base):
         nullable=True,
     )
 
+    # --- Phase 1 (migration 0038): configurable pipeline + normalized graph ---
+    # ``stage`` (enum) is KEPT and dual-written for back-compat; ``stage_id``
+    # becomes the source of truth as code migrates onto it.
+    pipeline_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("pipelines.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    stage_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("opportunity_stages.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    # No FK yet — no users/auth table exists; design-ready for a later refactor.
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
@@ -158,6 +185,22 @@ class CrmActivity(Base):
         nullable=True,
         index=True,
     )
+    # --- Phase 1 (migration 0038): broaden the related-to graph + owner/tenant.
+    # Existing lead/opportunity polymorphic link is unchanged; these extend it
+    # so activities can also hang off accounts/contacts and be reported across
+    # objects.  All nullable — nothing is required to backfill.
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     activity_type: Mapped[CrmActivityType] = mapped_column(
         Enum(CrmActivityType, name="crm_activity_type",
@@ -260,4 +303,172 @@ class OpportunityProduct(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+# ============================================================================
+# Phase 1 (migration 0038): configurable pipeline + normalized account/contact
+# ============================================================================
+#
+# All tenancy-ready: nullable ``tenant_id`` on every table.  The legacy
+# ``OpportunityStage`` enum + ``STAGE_DEFAULT_PROBABILITY`` / ``CLOSED_STAGES``
+# above are kept as the seed source + back-compat fallback; the tables below
+# make stages first-class + configurable.
+
+
+class Pipeline(Base):
+    """An ordered set of opportunity stages.  v1 ships a single
+    ``is_default`` pipeline (seeded to mirror the legacy enum); the schema
+    supports multiple pipelines later without a migration."""
+
+    __tablename__ = "pipelines"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+    stages: Mapped[list["PipelineStage"]] = relationship(
+        back_populates="pipeline",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="PipelineStage.sort_order",
+    )
+
+
+class PipelineStage(Base):
+    """A configurable, ordered stage within a pipeline.  ``key`` mirrors the
+    legacy ``OpportunityStage`` enum value for seeded stages so reporting can
+    map old rows; ``is_won`` / ``is_lost`` replace the hard-coded
+    ``CLOSED_STAGES`` set as data."""
+
+    __tablename__ = "opportunity_stages"
+    __table_args__ = (
+        Index("ix_opportunity_stages_pipeline_order", "pipeline_id", "sort_order"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    pipeline_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("pipelines.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Stable machine key (e.g. "proposal"); seeded to the legacy enum value.
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    default_probability: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_won: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    is_lost: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+    pipeline: Mapped["Pipeline"] = relationship(back_populates="stages")
+
+
+class Account(Base):
+    """A company.  Normalizes the ``company`` text denormalized on leads /
+    opportunities.  Existing lead handling is unchanged — accounts are linked
+    to NEW opportunities/contacts going forward, no historical backfill."""
+
+    __tablename__ = "accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    domain: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    website: Mapped[str | None] = mapped_column(Text, nullable=True)
+    industry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+    contacts: Mapped[list["Contact"]] = relationship(
+        back_populates="account", passive_deletes=True,
+    )
+
+
+class Contact(Base):
+    """A person, optionally a member of an Account.  Distinct from ``leads``
+    (the outreach recipient): a contact is the CRM person record.  Can be
+    seeded from a lead via ``source_lead_id`` without disrupting the lead."""
+
+    __tablename__ = "contacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leads.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+    account: Mapped["Account | None"] = relationship(back_populates="contacts")
+
+
+class OpportunityStageChange(Base):
+    """Append-only audit of every opportunity stage move (the Phase 2 Kanban
+    writes one per drag).  Stores both the stage FK and the stage ``key`` so
+    history survives a stage being renamed/deactivated.  ``source`` is
+    'user' for human moves, 'agent' for (suggest-and-approve) automated ones;
+    ``changed_by`` is a design-ready owner/user id (no FK — no users table)."""
+
+    __tablename__ = "opportunity_stage_changes"
+    __table_args__ = (
+        Index("ix_opp_stage_changes_opp_time", "opportunity_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("crm_opportunities.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    from_stage_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    to_stage_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    from_stage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_stage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="user", server_default="user")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

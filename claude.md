@@ -22,7 +22,39 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Beat-driven first-email pacer — killed the
+- **Last completed:** **CRM extension Phase 1 — data-model foundation
+  (migration 0038, additive + reversible).**  First of a multi-phase CRM
+  build (Kanban pipeline + custom report builder + unified analytics; full
+  plan in `docs/crm-extension-audit.md`).  Schema only — NO UI/endpoints
+  this phase.
+  - **New tables** (each with nullable `tenant_id` — tenancy-ready, not
+    enforced): `pipelines`, `opportunity_stages` (model `PipelineStage` —
+    configurable ordered stages w/ `key`/`sort_order`/`default_probability`/
+    `is_won`/`is_lost`/`is_active`), `accounts`, `contacts` (account ↔
+    contacts, optional `source_lead_id`), `opportunity_stage_changes`
+    (append-only stage-move audit; `source` user|agent, `changed_by`,
+    from/to stage id+key), `report_definitions` (saved report builder
+    defs — `data_source` + JSONB `definition`, **never** raw SQL).
+  - **Additive nullable columns:** `crm_opportunities` +`pipeline_id`/
+    `stage_id`/`account_id`/`contact_id`/`owner_id`/`tenant_id`;
+    `crm_activities` +`account_id`/`contact_id`/`owner_id`/`tenant_id`;
+    `leads` +`tenant_id`.  `owner_id` is a design-ready UUID with **no FK**
+    (no users/auth table yet).
+  - **Back-compat (don't break anything):** the legacy `opportunity_stage`
+    ENUM column is KEPT and dual-written; `STAGE_DEFAULT_PROBABILITY` /
+    `CLOSED_STAGES` stay as the seed source + fallback.  Migration seeds one
+    `is_default` "Default" pipeline + 6 stages mirroring the enum and
+    back-fills every opportunity's `pipeline_id`/`stage_id` from its `stage`
+    value.  Verified up→down→up on the dev DB (seed + backfill correct,
+    downgrade drops cleanly).
+  - **Gotcha:** new relationships (`Pipeline.stages`, `Account.contacts`)
+    follow the codebase's async convention — eager-load explicitly with
+    `selectinload` per query; never lazy-access in an async session
+    (MissingGreenlet).
+  - Tests: 7 new (`test_phase38_crm_foundation.py`) + conftest truncate
+    list updated.  Tests: **backend 1091, frontend 376**.
+  - **Checkpoint: awaiting approval before Phase 2 (Kanban DnD board).**
+- **Previously:** **Beat-driven first-email pacer — killed the
   self-re-enqueue send storm.**  Diagnosed a campaign with ~1000 first
   emails "stuck": the broker held **10.6k `send.send_lead` tasks** all
   bouncing on the rate gate.  Root cause: the legacy first email is sent
@@ -2639,7 +2671,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1084 passing**.  Frontend tests: **376 passing**._
+_Backend tests: **1091 passing**.  Frontend tests: **376 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -14,6 +14,8 @@ from app.models.connected_account import ConnectedAccount, ConnectedAccountTestS
 from app.models.crm import (
     CLOSED_STAGES,
     STAGE_DEFAULT_PROBABILITY,
+    Account,
+    Contact,
     CrmActivity,
     CrmActivityDirection,
     CrmActivityType,
@@ -22,7 +24,11 @@ from app.models.crm import (
     Opportunity,
     OpportunityProduct,
     OpportunityStage,
+    OpportunityStageChange,
+    Pipeline,
+    PipelineStage,
 )
+from app.models.report import ReportDefinition
 from app.models.email_event import EmailEvent, EmailEventType
 from app.models.icp import (
     IcpProfile,
@@ -90,6 +96,8 @@ __all__ = [
     "ConnectedAccountTestStatus",
     "CLOSED_STAGES",
     "STAGE_DEFAULT_PROBABILITY",
+    "Account",
+    "Contact",
     "CrmActivity",
     "CrmActivityDirection",
     "CrmActivityType",
@@ -98,6 +106,10 @@ __all__ = [
     "Opportunity",
     "OpportunityProduct",
     "OpportunityStage",
+    "OpportunityStageChange",
+    "Pipeline",
+    "PipelineStage",
+    "ReportDefinition",
     "IcpProfile",
     "IcpProfileSource",
     "IcpProfileStatus",
