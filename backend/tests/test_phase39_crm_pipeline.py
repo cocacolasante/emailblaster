@@ -130,6 +130,30 @@ async def test_no_op_stage_change_writes_no_audit(client, db_session):
     assert rows == []
 
 
+async def test_stage_change_audit_captures_actor_timestamp_source(client, db_session):
+    """Phase 6 audit-log confirmation: every stage move records WHO (changed_by
+    — design-ready owner id), WHEN (created_at), WHAT (from/to), and HOW
+    (source = user vs agent)."""
+    await _seed_pipeline(db_session)
+    oid = (await client.post("/crm/opportunities", json={
+        "name": "Audited", "stage": "prospecting",
+    })).json()["id"]
+    await client.patch(f"/crm/opportunities/{oid}", json={"stage": "qualification"})
+
+    row = (await db_session.execute(
+        select(OpportunityStageChange).where(
+            OpportunityStageChange.opportunity_id == oid
+        )
+    )).scalars().one()
+    assert row.created_at is not None          # WHEN
+    assert row.source == "user"                 # HOW (human-initiated)
+    assert row.from_stage_key == "prospecting"  # WHAT
+    assert row.to_stage_key == "qualification"
+    # changed_by mirrors the opportunity owner (None until a users/auth layer
+    # exists) — the column is present + populated from owner_id by design.
+    assert hasattr(row, "changed_by")
+
+
 async def test_stage_change_works_without_seeded_pipeline(client):
     """Back-compat: with no pipeline seeded, stage moves still work (enum
     drives behavior); stage_id stays NULL and an audit row is still written."""

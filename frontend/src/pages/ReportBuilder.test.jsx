@@ -96,7 +96,7 @@ describe('ReportBuilder', () => {
     renderPage();
     await selectOpportunities(user);
     // default columns toggled on
-    await waitFor(() => expect(screen.getByTestId('column-toggle-name')).toHaveClass('bg-blue-50'));
+    await waitFor(() => expect(screen.getByTestId('column-toggle-name')).toHaveAttribute('aria-pressed', 'true'));
 
     await user.click(screen.getByTestId('run-btn'));
     await waitFor(() => expect(api.runAdhocReport).toHaveBeenCalled());
@@ -108,6 +108,18 @@ describe('ReportBuilder', () => {
     const table = await screen.findByTestId('results-table');
     expect(within(table).getByText('Acme big')).toBeInTheDocument();
     expect(screen.getByTestId('result-col-amount')).toBeInTheDocument();
+  });
+
+  it('exposes a11y attributes: aria-pressed chips + labelled remove buttons', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await selectOpportunities(user);
+    // default columns are toggled "on" -> aria-pressed reflects state
+    expect(screen.getByTestId('column-toggle-name')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('column-toggle-amount')).toHaveAttribute('aria-pressed', 'true');
+    // icon-only remove button has an accessible name
+    await user.click(screen.getByTestId('add-filter-btn'));
+    expect(screen.getByTestId('remove-filter-0')).toHaveAttribute('aria-label', 'Remove filter');
   });
 
   it('adds a filter and includes it in the run definition', async () => {

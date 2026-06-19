@@ -100,9 +100,9 @@ function OpportunityCard({ opp, onOpen, reducedMotion }) {
       style={style}
       {...attributes}
       {...listeners}
-      role="button"
       tabIndex={0}
       data-testid={`opp-card-${opp.id}`}
+      aria-label={`${opp.name}, ${fmtAmount(opp.amount)}. Press space to pick up and move between stages; enter to open.`}
       onClick={() => onOpen(opp.id)}
       onKeyDown={(e) => {
         // Enter opens; Space is reserved by dnd-kit for pick-up.
@@ -110,7 +110,7 @@ function OpportunityCard({ opp, onOpen, reducedMotion }) {
       }}
       className="w-full text-left bg-white rounded-lg border border-slate-200 shadow-sm p-3
                  cursor-grab active:cursor-grabbing hover:border-blue-300 hover:shadow
-                 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
     >
       <div className="text-sm font-medium text-slate-900 truncate">{opp.name}</div>
       <div className="text-xs text-slate-500 mt-0.5 truncate">{cardSubtitle(opp)}</div>
@@ -141,8 +141,10 @@ function StageColumn({ column, cards, onOpen, reducedMotion }) {
     <div
       ref={setNodeRef}
       data-testid={`stage-column-${column.key}`}
-      className={`flex-1 min-w-[230px] rounded-xl border p-2.5 transition-colors
-        ${isOver ? 'bg-blue-50 border-blue-300' : 'bg-slate-50 border-slate-200'}`}
+      role="group"
+      aria-label={`${column.label} stage, ${count} deal${count === 1 ? '' : 's'}, ${fmtAmount(total)}`}
+      className={`flex-1 min-w-[230px] rounded-card border p-2.5 transition-colors duration-fast
+        ${isOver ? 'bg-brand-50 border-brand-300' : 'bg-slate-50 border-slate-200'}`}
     >
       <div className={`flex items-baseline justify-between px-1.5 pb-2 mb-2 border-b-2
         ${STAGE_HEADER_CLASS[column.key] || 'border-slate-300 text-slate-600'}`}>
@@ -263,6 +265,23 @@ export default function Opportunities() {
 
   const activeOpp = activeId ? oppById[activeId] : null;
 
+  // Screen-reader announcements for keyboard drag (space to pick up, arrows to
+  // move, space to drop) — names the deal + the stage it's over / landed on.
+  const stageLabelByKey = Object.fromEntries(allColumns.map((c) => [c.key, c.label]));
+  const dealName = (id) => oppById[id]?.name || 'deal';
+  const announcements = {
+    onDragStart: ({ active }) => `Picked up ${dealName(active.id)}.`,
+    onDragOver: ({ active, over }) => {
+      const t = over ? resolveDropTarget(over.id, stageKeys, cardStage) : null;
+      return t ? `${dealName(active.id)} is over ${stageLabelByKey[t] || t}.` : '';
+    },
+    onDragEnd: ({ active, over }) => {
+      const t = over ? resolveDropTarget(over.id, stageKeys, cardStage) : null;
+      return t ? `Moved ${dealName(active.id)} to ${stageLabelByKey[t] || t}.` : `${dealName(active.id)} returned.`;
+    },
+    onDragCancel: ({ active }) => `Cancelled moving ${dealName(active.id)}.`,
+  };
+
   return (
     <div className="p-6 max-w-[110rem] mx-auto">
       <div className="flex items-center justify-between mb-1">
@@ -320,6 +339,7 @@ export default function Opportunities() {
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}
+          accessibility={{ announcements }}
           onDragStart={(e) => setActiveId(e.active.id)}
           onDragCancel={() => setActiveId(null)}
           onDragEnd={onDragEnd}

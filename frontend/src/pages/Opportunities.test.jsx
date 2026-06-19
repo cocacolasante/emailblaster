@@ -118,6 +118,19 @@ describe('Opportunities board', () => {
     expect(screen.getByTestId('stage-column-closed_won')).toBeInTheDocument();
   });
 
+  it('cards + columns expose accessible labels for keyboard drag', async () => {
+    renderPage();
+    const card = await screen.findByTestId('opp-card-o1');
+    // Card is focusable and self-describing for screen readers.
+    expect(card).toHaveAttribute('tabindex', '0');
+    expect(card.getAttribute('aria-label')).toMatch(/Acme — managed IT/);
+    expect(card.getAttribute('aria-label')).toMatch(/pick up/i);
+    // Droppable column is a labelled group.
+    const col = screen.getByTestId('stage-column-qualification');
+    expect(col).toHaveAttribute('role', 'group');
+    expect(col.getAttribute('aria-label')).toMatch(/Qualification stage/);
+  });
+
   it('clicking a card navigates to the opportunity detail page', async () => {
     const user = userEvent.setup();
     renderPage();

@@ -244,8 +244,10 @@ export default function ReportBuilder() {
                         return (
                           <button key={f.key} type="button"
                             data-testid={`column-toggle-${f.key}`}
+                            aria-pressed={on}
+                            aria-label={`Column ${f.label}${on ? ' (selected)' : ''}`}
                             onClick={() => patch({ columns: on ? def.columns.filter((c) => c !== f.key) : [...def.columns, f.key] })}
-                            className={`px-2 py-1 rounded-md text-xs border ${on ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-slate-300 text-slate-600'}`}>
+                            className={`px-2 py-1 rounded-md text-xs border focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${on ? 'bg-brand-50 border-brand-300 text-brand-700' : 'bg-white border-slate-300 text-slate-600'}`}>
                             {f.label}
                           </button>
                         );
@@ -262,8 +264,10 @@ export default function ReportBuilder() {
                           return (
                             <button key={f.key} type="button"
                               data-testid={`groupby-toggle-${f.key}`}
+                              aria-pressed={on}
+                              aria-label={`Group by ${f.label}${on ? ' (selected)' : ''}`}
                               onClick={() => patch({ group_by: on ? def.group_by.filter((c) => c !== f.key) : [...def.group_by, f.key] })}
-                              className={`px-2 py-1 rounded-md text-xs border ${on ? 'bg-violet-50 border-violet-300 text-violet-700' : 'bg-white border-slate-300 text-slate-600'}`}>
+                              className={`px-2 py-1 rounded-md text-xs border focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${on ? 'bg-violet-50 border-violet-300 text-violet-700' : 'bg-white border-slate-300 text-slate-600'}`}>
                               {f.label}
                             </button>
                           );
@@ -291,8 +295,9 @@ export default function ReportBuilder() {
                               {obj.fields.filter((f) => (f.aggregates || []).includes(a.fn)).map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
                             </select>
                           )}
-                          <button type="button" onClick={() => patch({ aggregates: def.aggregates.filter((_, j) => j !== i) })}
-                            className="text-slate-400 hover:text-red-600 text-sm">✕</button>
+                          <button type="button" aria-label="Remove aggregate"
+                            onClick={() => patch({ aggregates: def.aggregates.filter((_, j) => j !== i) })}
+                            className="text-slate-400 hover:text-red-600 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded">✕</button>
                         </div>
                       ))}
                       <button type="button" data-testid="add-aggregate-btn"
@@ -324,9 +329,9 @@ export default function ReportBuilder() {
                         </select>
                         <FilterValueInput fieldMeta={fm} op={flt.op} value={flt.value} relativeRanges={relativeRanges}
                           onChange={(v) => patch({ filters: def.filters.map((x, j) => j === i ? { ...x, value: v } : x) })} />
-                        <button type="button" data-testid={`remove-filter-${i}`}
+                        <button type="button" data-testid={`remove-filter-${i}`} aria-label="Remove filter"
                           onClick={() => patch({ filters: def.filters.filter((_, j) => j !== i) })}
-                          className="text-slate-400 hover:text-red-600 text-sm">✕</button>
+                          className="text-slate-400 hover:text-red-600 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded">✕</button>
                       </div>
                     );
                   })}

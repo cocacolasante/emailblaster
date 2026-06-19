@@ -22,7 +22,36 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM extension Phase 5 — design-system token
+- **Last completed:** **CRM extension Phase 6 — accessibility, audit-log
+  verification & QA (final phase).**  Completes the six-phase CRM
+  extension (pipeline Kanban + custom report builder + unified analytics +
+  design system).
+  - **Kanban keyboard a11y:** `@dnd-kit`'s `KeyboardSensor` +
+    `sortableKeyboardCoordinates` (move cards with Space/arrows/Esc);
+    cards are focusable with an instructive `aria-label`, columns are
+    `role="group"` with a labelled name+count+total, and `DndContext`
+    emits screen-reader **announcements** (pick-up / over / dropped /
+    cancelled) naming the deal + stage.
+  - **Report-builder a11y:** toggle chips expose `aria-pressed`; icon-only
+    remove buttons got `aria-label`; `focus-visible` rings on chips +
+    buttons (the `Button` primitive already covers actions).
+  - **Audit-log confirmation:** every stage move records who
+    (`changed_by`←owner_id) / when (`created_at`) / what (from/to stage
+    id+key) / how (`source` user|agent) in `opportunity_stage_changes`,
+    centralized in `update_opportunity`; surfaced via
+    `GET /crm/opportunities/{id}/stage-history`.  `agent_actions` (the
+    automated-action audit) preserved.
+  - **QA report** `docs/crm-extension-qa.md`: definition-of-done check,
+    a11y status, audit coverage, human-in-the-loop/safety, responsive/
+    overflow, and deferred follow-ups (the pre-existing-page button sweep;
+    multitenancy enforcement; the explicitly out-of-scope CRM features).
+  - Tests: 1 backend (`test_phase39`: audit captures actor/timestamp/
+    source) + 2 frontend (Kanban card/column a11y labels; builder
+    aria-pressed + labelled remove) + a stale `bg-blue-50` class assertion
+    repointed to the semantic `aria-pressed`.  Tests: **backend 1117,
+    frontend 408**.
+  - **CRM extension COMPLETE** — all 6 phases shipped + checkpointed.
+- **Previously:** **CRM extension Phase 5 — design-system token
   layer + primitives, applied to CRM/analytics surfaces.**  The app had
   NO formal token layer (`tailwind.config` `theme.extend` was empty);
   Phase 5 codifies the de-facto conventions and stops one-off styles.
@@ -2817,7 +2846,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1116 passing**.  Frontend tests: **406 passing**._
+_Backend tests: **1117 passing**.  Frontend tests: **408 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
