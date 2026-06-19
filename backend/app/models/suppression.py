@@ -16,6 +16,10 @@ class SuppressionReason(str, enum.Enum):
     HARD_BOUNCE = "hard_bounce"
     SPAM = "spam"
     MANUAL = "manual"
+    # Brevo blocklisted the contact (admin-blocked / blocklisted) — distinct
+    # from a hard bounce or spam complaint; synced from Brevo's blocked-contacts
+    # list and the real-time "blocked" transactional event.
+    BLOCKED = "blocked"
 
 
 def canonical_email(email: str | None) -> str:

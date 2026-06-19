@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # with the regular API key.  Trade-off: up to this many minutes of
     # lag from event-at-Brevo to event-row-in-our-DB.
     BREVO_EVENTS_POLL_INTERVAL_MINUTES: int = 10
+    # How often (minutes) to sync Brevo's blocked-contacts list (hard bounces /
+    # unsubscribes / spam / admin-blocked) into the suppression list — the
+    # backstop to the real-time events poller.  Default every 6 hours.
+    BREVO_BLOCKLIST_SYNC_INTERVAL_MINUTES: int = 360
     # Legacy: the (now-deleted) /webhooks/brevo route used this as a
     # shared-secret gate.  No longer referenced anywhere; keep the
     # setting for one release so anybody whose .env still has it doesn't

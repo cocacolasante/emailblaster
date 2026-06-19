@@ -40,7 +40,7 @@ from app.schemas.lead import (
     PaginatedLeads,
     UploadPreviewResponse,
 )
-from app.services import campaign_membership
+from app.services import campaign_membership, suppression
 from app.services.csv_parser import parse_csv_content, select_sample_indices, suggest_mapping
 from app.services.sequence_service import (
     campaign_sends_legacy_first_email,
@@ -379,47 +379,18 @@ async def ignore_lead(
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    canonical = canonical_email(lead.email)
-
-    # Step 1: upsert into the suppression list.  Unique index on email
-    # means a duplicate INSERT would 23505 — handle the existence check
-    # up front so we can report it back to the UI.
-    existing = await db.scalar(
-        select(Suppression).where(Suppression.email == canonical)
+    # Shared suppression core: add to the ignore list, halt every ACTIVE
+    # sequence for this email, and pull not-yet-sent leads out of the queue.
+    res = await suppression.suppress_email(
+        db, lead.email, SuppressionReason.MANUAL,
     )
-    already_suppressed = existing is not None
-    if not already_suppressed:
-        db.add(Suppression(email=canonical, reason=SuppressionReason.MANUAL))
-
-    # Step 2: halt every sequence state row for ANY lead with the same
-    # email (could be more than one row if the email is shared across
-    # multiple campaigns).  We only flip ACTIVE rows — already-HALTED
-    # rows are left as-is so we don't overwrite an earlier halt reason.
-    state_rows = (await db.execute(
-        select(LeadSequenceState, Lead.campaign_id)
-        .join(Lead, Lead.id == LeadSequenceState.lead_id)
-        # func.lower so legacy/mixed-case rows sharing the address are
-        # caught too — the suppression list is canonical-lowercase.
-        .where(func.lower(Lead.email) == canonical)
-        .where(LeadSequenceState.status == LeadSequenceStatus.ACTIVE)
-    )).all()
-
-    halted_count = 0
-    campaigns_affected: set[uuid.UUID] = set()
-    for state, campaign_id in state_rows:
-        state.status = LeadSequenceStatus.HALTED
-        state.halt_reason = "ignored by user (manual suppression)"
-        state.next_run_at = None
-        halted_count += 1
-        campaigns_affected.add(campaign_id)
-
     await db.commit()
 
     return IgnoreLeadResponse(
-        suppressed=True,
-        already_suppressed=already_suppressed,
-        leads_halted=halted_count,
-        campaigns_affected=sorted(campaigns_affected),
+        suppressed=res.suppressed,
+        already_suppressed=res.already_suppressed,
+        leads_halted=res.leads_halted,
+        campaigns_affected=res.campaigns_affected,
     )
 
 

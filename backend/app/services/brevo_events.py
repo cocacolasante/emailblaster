@@ -21,8 +21,6 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
-    Suppression,
-    canonical_email,
     SuppressionReason,
 )
 
@@ -53,6 +51,9 @@ EVENT_MAP: dict[str, EmailEventType] = {
     # Reputation
     "spam": EmailEventType.SPAM,
     "unsubscribed": EmailEventType.UNSUBSCRIBED,
+    # Blocklisted recipient — Brevo refused the send.
+    "blocked": EmailEventType.BLOCKED,
+    "blocklisted": EmailEventType.BLOCKED,
 }
 
 # Which event types automatically add the recipient to the suppression
@@ -61,6 +62,7 @@ SUPPRESSION_MAP: dict[EmailEventType, SuppressionReason] = {
     EmailEventType.HARD_BOUNCE: SuppressionReason.HARD_BOUNCE,
     EmailEventType.SPAM: SuppressionReason.SPAM,
     EmailEventType.UNSUBSCRIBED: SuppressionReason.UNSUBSCRIBED,
+    EmailEventType.BLOCKED: SuppressionReason.BLOCKED,
 }
 
 
@@ -124,6 +126,7 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
         EmailEventType.SOFT_BOUNCE,
         EmailEventType.SPAM,
         EmailEventType.UNSUBSCRIBED,
+        EmailEventType.BLOCKED,
     }:
         # These are one-shot terminal events per lead — if we already saw
         # one, do not record a second.  Opens and clicks legitimately
@@ -137,13 +140,16 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
         event_data=event,
     ))
 
+    # A suppressing event (hard bounce / spam / unsubscribe / blocked) doesn't
+    # just add the email to the list — it pulls the recipient out of every
+    # current campaign (halts sequences + drops not-yet-sent leads) and blocks
+    # future ones.  One shared path with the manual ignore button + the
+    # blocklist sync.
     suppression_reason = SUPPRESSION_MAP.get(event_type)
     if suppression_reason is not None:
-        existing_sup = await db.scalar(
-            select(Suppression).where(Suppression.email == canonical_email(lead.email))
-        )
-        if existing_sup is None:
-            db.add(Suppression(email=canonical_email(lead.email), reason=suppression_reason))
+        from app.services import suppression as _suppression  # avoid import cycle
+
+        await _suppression.suppress_email(db, lead.email, suppression_reason)
 
     # Circuit breaker: a fresh HARD_BOUNCE/SPAM is the cheapest moment to
     # re-check just this campaign's health (the beat sweep is the backstop).

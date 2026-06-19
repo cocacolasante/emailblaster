@@ -16,6 +16,7 @@ celery_app = Celery(
         "app.workers.sequencer",
         "app.workers.linkedin_poller",
         "app.workers.brevo_events_poller",
+        "app.workers.brevo_blocklist_sync",
         "app.workers.lead_sweeper",
         "app.workers.social_listening",
         "app.workers.agent_sweeper",
@@ -72,6 +73,10 @@ celery_app.conf.beat_schedule = {
     "brevo-events-poll": {
         "task": "brevo_events_poller.poll",
         "schedule": float(settings.BREVO_EVENTS_POLL_INTERVAL_MINUTES * 60),
+    },
+    "brevo-blocklist-sync": {
+        "task": "brevo_blocklist_sync.sync",
+        "schedule": float(settings.BREVO_BLOCKLIST_SYNC_INTERVAL_MINUTES * 60),
     },
     "lead-sweeper": {
         "task": "lead_sweeper.sweep_stale",

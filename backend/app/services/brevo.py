@@ -12,7 +12,12 @@ logger = logging.getLogger(__name__)
 
 BREVO_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_EVENTS_URL = "https://api.brevo.com/v3/smtp/statistics/events"
+# Brevo's authoritative list of transactional recipients it will no longer
+# send to: hard bounces, unsubscribes, spam complaints, and admin/blocklisted
+# contacts — keyed by email, each with a reason code.
+BREVO_BLOCKED_URL = "https://api.brevo.com/v3/smtp/blockedContacts"
 _TIMEOUT_SECONDS = 30.0
+_BLOCKED_PAGE_LIMIT = 100  # Brevo caps blockedContacts at 100 per page
 # Brevo caps a single events page at 5000.  For a single-operator inbox
 # doing < 500 emails/day this always fits in one page; the worker still
 # paginates in case of a backlog catch-up after worker downtime.
@@ -147,6 +152,43 @@ async def fetch_events(
             resp.raise_for_status()
             payload = resp.json() or {}
             page = payload.get("events") or []
+            if not isinstance(page, list):
+                break
+            out.extend(page)
+            if len(page) < limit:
+                break
+            offset += limit
+    return out
+
+
+async def fetch_blocked_contacts(
+    *,
+    start_date: str | None = None,
+    limit: int = _BLOCKED_PAGE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Pull Brevo's blocked-contacts list (hard bounces / unsubscribes / spam /
+    admin-blocked).  Each entry: ``{email, senderEmail, reason: {message,
+    code}, blockedAt}``.  Paginates via ``offset`` until a short page.
+
+    ``start_date`` (``YYYY-MM-DD``) limits to contacts blocked on/after that
+    day — used for incremental syncs so we don't re-scan the whole history
+    every run.
+    """
+    if not settings.BREVO_API_KEY:
+        raise RuntimeError("BREVO_API_KEY is not configured")
+
+    out: list[dict[str, Any]] = []
+    offset = 0
+    headers = {"api-key": settings.BREVO_API_KEY, "accept": "application/json"}
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        while True:
+            params: dict[str, Any] = {"limit": limit, "offset": offset}
+            if start_date:
+                params["startDate"] = start_date
+            resp = await client.get(BREVO_BLOCKED_URL, params=params, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json() or {}
+            page = payload.get("contacts") or []
             if not isinstance(page, list):
                 break
             out.extend(page)

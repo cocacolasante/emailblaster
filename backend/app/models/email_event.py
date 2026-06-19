@@ -25,6 +25,8 @@ class EmailEventType(str, enum.Enum):
     SPAM = "spam"
     UNSUBSCRIBED = "unsubscribed"
     REPLIED = "replied"
+    # Brevo refused the send because the recipient is blocklisted/blocked.
+    BLOCKED = "blocked"
 
 
 class EmailEvent(Base):
