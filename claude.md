@@ -22,7 +22,48 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM extension Phase 2 — drag-and-drop
+- **Last completed:** **CRM extension Phase 3 — custom report builder
+  (metadata-driven, NEVER raw SQL).**  Build / save / edit / duplicate /
+  run / CSV-export reports over leads, activities, opportunities, contacts,
+  accounts.
+  - **Whitelist registry** (`services/report_registry.py`): the security
+    boundary — declares every reportable object → field (type, the
+    SQLAlchemy column, allowed operators per type, allowed aggregates,
+    enum values, optional join).  Anything not declared here is
+    unreportable.  Each object notes `has_tenant` for future scoping.
+    `build_metadata()` serves the UI's control vocabulary.
+  - **Query service** (`services/report_query.py`): `_build_query` resolves
+    a structured definition (columns / filters / group_by / aggregates /
+    sort / limit + relative date ranges like `last_30_days`) into a
+    **parameterized** SQLAlchemy statement — all values bind as params,
+    NEVER string-interpolated; unknown field/source/operator/aggregate →
+    `ReportError` → 400 *before* any query runs.  `validate_definition`
+    (pure, no DB) reuses it as the save-time validator; `run_report`
+    executes + serializes (Decimal→float, datetime/enum→str).  Accepts an
+    optional `tenant_id` (applied only when the model carries it + a tenant
+    is passed) — tenancy-ready, not enforced.  Row cap 5000 + `truncated`
+    flag.
+  - **Router** (`routers/report_builder.py`, prefix `/reports` — distinct
+    from the fixed CRM dashboard at `/crm/reports`): `GET /reports/metadata`,
+    full CRUD on `report_definitions` (create/patch validate the
+    definition), `POST /reports/{id}/duplicate`, `POST /reports/run`
+    (ad-hoc preview), `POST /reports/{id}/run` (saved).
+  - **Frontend** (`pages/ReportBuilder.jsx`, route `/reports/builder` + nav
+    "Report builder"): data-source picker; **Table** mode (column chips +
+    filters + sort) vs **Summary** mode (group-by + aggregates); type-aware
+    filter value inputs (enum select, number, date, between, relative-range
+    select); results = dense table with **sticky headers + tabular-nums** +
+    an optional **bar/line/pie chart** (recharts) for grouped reports +
+    **CSV export** (client-side Blob); saved-reports rail to load / save /
+    duplicate / delete.  `api/reportBuilder.js`.
+  - Tests: 13 backend (`test_phase40_report_builder.py`: metadata, tabular/
+    grouped/filtered/relative-range runs, **safety rejections** — unknown
+    field/source, disallowed operator, bad value → 400, CRUD + run-saved +
+    duplicate + validate-on-patch) + 7 frontend (`ReportBuilder.test.jsx`:
+    sources, default-columns run, add-filter, summary group/agg, save, CSV,
+    load-saved).  Tests: **backend 1111, frontend 389**.
+  - **Checkpoint: awaiting approval before Phase 4 (unify analytics).**
+- **Previously:** **CRM extension Phase 2 — drag-and-drop
   opportunity Kanban (logged stage moves) + list view.**  Builds on the
   Phase 1 configurable-pipeline schema.
   - **New dependency (approved):** `@dnd-kit/core` + `/sortable` +
@@ -2713,7 +2754,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1098 passing**.  Frontend tests: **382 passing**._
+_Backend tests: **1111 passing**.  Frontend tests: **389 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

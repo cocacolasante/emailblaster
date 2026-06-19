@@ -42,6 +42,16 @@ const ITEMS = [
     ),
   },
   {
+    to: '/reports/builder',
+    label: 'Report builder',
+    icon: (
+      // Sliders — "build a report"
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h10M4 12h7M4 18h13M16 4v4m-5 2v4m9-8v4" />
+      </svg>
+    ),
+  },
+  {
     to: '/replies',
     label: 'Replies',
     icon: (
