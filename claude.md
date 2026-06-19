@@ -22,7 +22,39 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM extension Phase 6 — accessibility, audit-log
+- **Last completed:** **UI refinement Phase 1 — design foundation
+  ("Apple-feel" pass; presentation layer only).**  First implementation
+  phase of the app-wide UI refinement (plan + audit in
+  `docs/ui-refinement-audit.md`).  Extends the CRM Phase-5 token/primitive
+  seed across the whole app.
+  - **Tokens** (`tailwind.config.js`, additive): semantic colour scales
+    `success`/`warning`/`danger`/`info` (aliased to the emerald/amber/red/
+    sky hues already in use) + `brand-800` + `shadow-overlay` (for
+    modals/dropdowns, retiring per-modal `shadow-2xl`).
+  - **Base layer** (`index.css`, `@layer base`): global `:focus-visible`
+    ring (brand), `::selection` (brand-100), `-webkit-font-smoothing:
+    antialiased` (the Apple crispness), a `.tabular` utility for
+    number columns.
+  - **New dependency (approved): `framer-motion`** (^11) for true spring
+    physics.  `utils/motion.js` centralizes spring presets + enter/exit
+    variants (`overlayVariants`/`modalVariants`/`popVariants`/
+    `riseVariants`/`tap`); reduced motion handled by framer-motion +
+    `useReducedMotion`.
+  - **`utils/statusColors.js`** — ONE semantic source for status/badge
+    colours (`chipClasses` + per-domain `sendStatusSemantic`/
+    `crmStatusSemantic`/`oppStageSemantic`/`sentimentSemantic`/
+    `sequenceStatusSemantic`), collapsing the 6+ divergent maps.
+  - **Proof screen:** `pages/Replies.jsx` retrofitted onto the foundation —
+    `PageHeader`, `Button` (primary/secondary + loading), shared
+    `Skeleton`/`EmptyState`/`ErrorState` (replacing bare "Loading…" + adding
+    a missing error state), `statusColors` chips, `tabular` timestamps,
+    focus rings, and a framer-motion staggered entrance (reduced-motion
+    aware).  All testids/behaviour preserved.
+  - Verified: full frontend suite green; `npm run build` compiles the new
+    tokens.  No backend changes.  Tests: **backend 1117, frontend 408**.
+  - **Checkpoint: awaiting approval before Phase 2 (component library +
+    /ui-kit).**
+- **Previously:** **CRM extension Phase 6 — accessibility, audit-log
   verification & QA (final phase).**  Completes the six-phase CRM
   extension (pipeline Kanban + custom report builder + unified analytics +
   design system).
