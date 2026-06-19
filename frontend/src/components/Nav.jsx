@@ -32,6 +32,16 @@ const ITEMS = [
     ),
   },
   {
+    to: '/dashboard',
+    label: 'Dashboard',
+    icon: (
+      // Grid — "dashboard"
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5h6v6H4V5zm10 0h6v4h-6V5zM4 15h6v4H4v-4zm10-2h6v6h-6v-6z" />
+      </svg>
+    ),
+  },
+  {
     to: '/reports',
     label: 'Reports',
     icon: (

@@ -22,7 +22,41 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM extension Phase 3 — custom report builder
+- **Last completed:** **CRM extension Phase 4 — unified analytics layer
+  + curated dashboard.**  Consolidated the reporting surfaces onto one
+  shared visual + data foundation and reconciled drifting metric defs.
+  - **Backend:** the `_rate` ratio helper (copy-pasted into `analytics`,
+    `campaigns`, `reports` routers) is now a single
+    `services/metrics.py::rate(numer, denom, ndigits=4)` (None when
+    `denom ≤ 0`); all three import it (`from … import rate as _rate`) so it
+    can't drift.  Standardized metric definitions documented in
+    `docs/crm-metrics.md`.
+  - **Shared frontend foundation:** `utils/format.js` (`formatNumber`/
+    `formatCurrency`/`formatPercent`/`formatDate`/`formatDateTime`) — null
+    renders as the em-dash `—` EVERYWHERE (campaign analytics previously
+    used `--`); `components/states.jsx` (`Skeleton`/`LoadingCards`/
+    `EmptyState`/`ErrorState`, reduced-motion via `motion-safe:`);
+    `components/charts.jsx` (`SimpleBarChart`/`SimpleLineChart`/
+    `SimplePieChart` — shared palette/axes/tooltip + empty handling).
+  - **Adopted across surfaces:** `Analytics.jsx` + `Reports.jsx` +
+    `Opportunities.jsx` (`fmtAmount` is now a re-export of `formatCurrency`,
+    keeping Reports.jsx's import working) + `ReportBuilder.jsx` use the
+    shared formatters; ReportBuilder's inline charts now use the shared
+    chart components.
+  - **New curated `Dashboard.jsx`** (route `/dashboard` + nav): CRM KPIs
+    (from `/crm/reports/overview`) + open-pipeline-by-stage bar chart +
+    a cross-campaign aggregate (Σ opened ÷ Σ sent, Σ replied ÷ Σ sent from
+    `listCampaigns`) + a **saved-reports panel that runs a saved report
+    inline** (reusing the Phase-3 run endpoint) — all on the shared
+    `MetricsGrid`/`charts`/`states`/`format` primitives.
+  - Tests: 5 backend (`test_phase41_metrics.py`: rate semantics + all 3
+    routers share one helper) + 11 frontend (`utils/format.test.js` ×5,
+    `Dashboard.test.jsx` ×6) + 4 existing analytics/reports/opportunities/
+    builder suites still green after the formatter refactor.  Tests:
+    **backend 1116, frontend 399**.
+  - **Checkpoint: awaiting approval before Phase 5 (interface refinement
+    / token layer sweep).**
+- **Previously:** **CRM extension Phase 3 — custom report builder
   (metadata-driven, NEVER raw SQL).**  Build / save / edit / duplicate /
   run / CSV-export reports over leads, activities, opportunities, contacts,
   accounts.
@@ -2754,7 +2788,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1111 passing**.  Frontend tests: **389 passing**._
+_Backend tests: **1116 passing**.  Frontend tests: **399 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

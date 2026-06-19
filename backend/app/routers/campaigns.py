@@ -106,10 +106,8 @@ def _stage_label(state: LeadSequenceState | None, node: SequenceNode | None) -> 
     return title or _NODE_KIND_LABEL.get(kind, kind)
 
 
-def _rate(numer: int, denom: int) -> float | None:
-    if denom <= 0:
-        return None
-    return round(numer / denom, 4)
+# Canonical ratio metric — shared across all reporting surfaces.
+from app.services.metrics import rate as _rate  # noqa: E402
 
 
 async def _compute_stats_and_counts(

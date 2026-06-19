@@ -16,18 +16,9 @@ import {
   getReportOverview,
 } from '../api/reports.js';
 import { STAGES, fmtAmount } from './Opportunities.jsx';
+import { formatPercent as pct, formatDate as fmtDate } from '../utils/format.js';
 
 const STAGE_LABEL = Object.fromEntries(STAGES.map((s) => [s.value, s.label]));
-
-function pct(v) {
-  return v == null ? '—' : `${(v * 100).toFixed(1)}%`;
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
-}
 
 function isoDaysAgo(days) {
   const d = new Date();

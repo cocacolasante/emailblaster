@@ -19,11 +19,7 @@ import { getSequenceAnalytics } from '../api/sequences.js';
 import MetricsGrid from '../components/MetricsGrid.jsx';
 import LeadTable from '../components/LeadTable.jsx';
 import { useToast } from '../components/Toast.jsx';
-
-function pct(v) {
-  if (v == null) return '--';
-  return `${(v * 100).toFixed(1)}%`;
-}
+import { formatPercent as pct } from '../utils/format.js';
 
 function reputationColorStyle(score) {
   if (score == null) return '#94a3b8';

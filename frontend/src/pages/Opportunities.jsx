@@ -28,6 +28,7 @@ import {
 } from '../api/crm.js';
 import { useToast } from '../components/Toast.jsx';
 import useReducedMotion from '../utils/useReducedMotion.js';
+import { formatCurrency, formatDate as fmtDate } from '../utils/format.js';
 
 // Pipeline order fallback — matches the backend OpportunityStage enum.  The
 // board prefers the CONFIGURABLE stages from /crm/pipelines/default; this is
@@ -50,18 +51,9 @@ const STAGE_HEADER_CLASS = {
   closed_lost: 'border-slate-300 text-slate-500',
 };
 
-export function fmtAmount(n) {
-  if (n == null) return '—';
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency', currency: 'USD', maximumFractionDigits: 0,
-  }).format(n);
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
-}
+// Re-exported from the shared formatter so existing importers (Reports.jsx)
+// keep working while the definition lives in one place.
+export const fmtAmount = formatCurrency;
 
 /**
  * Resolve which stage a drop landed on.  ``over.id`` is either a column id

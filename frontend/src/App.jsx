@@ -9,6 +9,7 @@ import Leads from './pages/Leads.jsx';
 import Opportunities from './pages/Opportunities.jsx';
 import Reports from './pages/Reports.jsx';
 import ReportBuilder from './pages/ReportBuilder.jsx';
+import Dashboard from './pages/Dashboard.jsx';
 import OpportunityDetail from './pages/OpportunityDetail.jsx';
 import Replies from './pages/Replies.jsx';
 import ResearchClient from './pages/ResearchClient.jsx';
@@ -39,6 +40,7 @@ export default function App() {
               <Route path="/leads" element={<Leads />} />
               <Route path="/opportunities" element={<Opportunities />} />
               <Route path="/opportunities/:id" element={<OpportunityDetail />} />
+              <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/reports" element={<Reports />} />
               <Route path="/reports/builder" element={<ReportBuilder />} />
               <Route path="/replies" element={<Replies />} />

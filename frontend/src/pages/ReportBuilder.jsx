@@ -1,17 +1,13 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
-  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from 'recharts';
 
 import {
   createReport, deleteReport, duplicateReport, getReportMetadata,
   listReports, runAdhocReport, updateReport,
 } from '../api/reportBuilder.js';
 import { useToast } from '../components/Toast.jsx';
-
-const PIE_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#ea580c', '#16a34a', '#64748b', '#db2777'];
+import { SimpleBarChart, SimpleLineChart, SimplePieChart } from '../components/charts.jsx';
+import { formatNumber } from '../utils/format.js';
 
 const OP_LABELS = {
   equals: 'is', not_equals: 'is not', contains: 'contains', not_contains: 'does not contain',
@@ -28,7 +24,7 @@ function emptyDef() {
 
 function fmtCell(v) {
   if (v == null) return '—';
-  if (typeof v === 'number') return new Intl.NumberFormat().format(v);
+  if (typeof v === 'number') return formatNumber(v, { maximumFractionDigits: 2 });
   return String(v);
 }
 
@@ -406,27 +402,14 @@ function Results({ result, chartType, setChartType, groupKey, numericAggKeys, on
       </div>
 
       {showChart && chartType !== 'none' && (
-        <div className="p-4 border-b border-slate-100" data-testid="report-chart" style={{ width: '100%', height: 280 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            {chartType === 'pie' ? (
-              <PieChart>
-                <Pie data={rows} dataKey={yKey} nameKey={groupKey} outerRadius={100} label>
-                  {rows.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                </Pie>
-                <Tooltip /><Legend />
-              </PieChart>
-            ) : chartType === 'line' ? (
-              <LineChart data={rows}>
-                <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey={groupKey} /><YAxis /><Tooltip /><Legend />
-                <Line type="monotone" dataKey={yKey} stroke="#2563eb" />
-              </LineChart>
-            ) : (
-              <BarChart data={rows}>
-                <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey={groupKey} /><YAxis /><Tooltip /><Legend />
-                <Bar dataKey={yKey} fill="#2563eb" />
-              </BarChart>
-            )}
-          </ResponsiveContainer>
+        <div className="p-4 border-b border-slate-100" data-testid="report-chart">
+          {chartType === 'pie' ? (
+            <SimplePieChart data={rows} nameKey={groupKey} valueKey={yKey} />
+          ) : chartType === 'line' ? (
+            <SimpleLineChart data={rows} xKey={groupKey} yKey={yKey} />
+          ) : (
+            <SimpleBarChart data={rows} xKey={groupKey} yKey={yKey} />
+          )}
         </div>
       )}
 

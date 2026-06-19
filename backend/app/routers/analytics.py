@@ -31,10 +31,8 @@ MIN_SENDS_FOR_SUBJECT_RANKING = 5
 TIMELINE_DAYS = 30
 
 
-def _rate(numer: int, denom: int) -> float | None:
-    if denom <= 0:
-        return None
-    return round(numer / denom, 4)
+# Canonical ratio metric — shared across all reporting surfaces.
+from app.services.metrics import rate as _rate  # noqa: E402
 
 
 def _reputation(sent: int, delivered: int, bounced: int, spam: int) -> int | None:

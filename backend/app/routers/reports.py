@@ -102,8 +102,8 @@ def _month_keys(start_d: date, end_d: date) -> list[str]:
     return keys
 
 
-def _rate(numer: int, denom: int) -> float | None:
-    return round(numer / denom, 4) if denom > 0 else None
+# Canonical ratio metric — shared across all reporting surfaces.
+from app.services.metrics import rate as _rate  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
