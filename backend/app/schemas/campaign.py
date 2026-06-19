@@ -69,6 +69,9 @@ class CampaignStats(BaseModel):
     bounce_rate: float | None
     reply_rate: float | None
     reply_tracking_note: str | None = None
+    # False when click tracking is disabled in Brevo — the UI then shows
+    # click-rate as "not tracked" rather than a misleading 0%.
+    click_tracking_enabled: bool = True
 
 
 # --------------------------------------------------------------------------

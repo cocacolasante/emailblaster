@@ -1336,6 +1336,31 @@ async def test_stats_aggregate_lead_counts_and_event_rates(client, db_session):
     # No connected account → reply tracking disabled
     assert stats["reply_rate"] is None
     assert stats["reply_tracking_note"] == "reply tracking not configured"
+    # Click tracking on by default → real rate + flag true.
+    assert stats["click_tracking_enabled"] is True
+
+
+async def test_click_rate_not_tracked_when_click_tracking_disabled(client, db_session, monkeypatch):
+    """When click tracking is turned off in Brevo (the setting mirrors it),
+    the stats report click_rate as None (UI shows 'not tracked') instead of a
+    misleading 0%, even though a stray CLICKED event exists."""
+    from app.config import settings as _settings
+    monkeypatch.setattr(_settings, "EMAIL_CLICK_TRACKING_ENABLED", False)
+
+    created = (await client.post("/campaigns/", json=_campaign_payload())).json()
+    cid = uuid.UUID(created["id"])
+    lead = Lead(campaign_id=cid, email="ct@x.com", send_status=SendStatus.SENT)
+    db_session.add(lead)
+    await db_session.flush()
+    db_session.add(EmailEvent(lead_id=lead.id, campaign_id=cid, event_type=EmailEventType.CLICKED))
+    await db_session.commit()
+
+    stats = (await client.get(f"/campaigns/{created['id']}")).json()["stats"]
+    assert stats["click_tracking_enabled"] is False
+    assert stats["click_rate"] is None
+    assert stats["clicked"] == 0
+    # Open rate is unaffected (open tracking is independent).
+    assert stats["open_rate"] is not None or stats["opened"] == 0
 
 
 async def test_reply_rate_computed_when_connected_account_present(client, db_session):

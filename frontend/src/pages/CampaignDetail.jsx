@@ -481,7 +481,13 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onStop, 
             </div>
             <div>
               <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Click rate</div>
-              <div className="text-2xl font-bold text-slate-900">{pct(campaign.stats?.click_rate)}</div>
+              {campaign.stats?.click_tracking_enabled === false ? (
+                <div className="text-2xl font-bold text-slate-400" title="Click tracking is turned off in Brevo">
+                  <span className="text-base">Not tracked</span>
+                </div>
+              ) : (
+                <div className="text-2xl font-bold text-slate-900">{pct(campaign.stats?.click_rate)}</div>
+              )}
             </div>
             <div>
               <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Reply rate</div>

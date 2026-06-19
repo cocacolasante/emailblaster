@@ -52,6 +52,7 @@ class AnalyticsResponse(BaseModel):
     overview: AnalyticsOverview
     rates: AnalyticsRates
     reply_tracking_enabled: bool
+    click_tracking_enabled: bool = True
     timeline: list[TimelinePoint]
     research_quality_breakdown: list[QualityBreakdownItem]
     sender_reputation_score: int | None

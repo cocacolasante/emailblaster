@@ -100,7 +100,13 @@ function CampaignCard({ campaign }) {
         </div>
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Click</div>
-          <div className="text-sm font-semibold text-slate-900">{pct(campaign.stats?.click_rate)}</div>
+          {campaign.stats?.click_tracking_enabled === false ? (
+            <div className="text-sm font-medium text-slate-400" title="Click tracking is turned off in Brevo">
+              Not tracked
+            </div>
+          ) : (
+            <div className="text-sm font-semibold text-slate-900">{pct(campaign.stats?.click_rate)}</div>
+          )}
         </div>
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Reply</div>

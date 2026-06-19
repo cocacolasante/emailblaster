@@ -136,4 +136,17 @@ describe('Campaigns list', () => {
     const link = await screen.findAllByRole('link', { name: /new campaign/i });
     expect(link[0]).toHaveAttribute('href', '/campaigns/new');
   });
+
+  it('shows "Not tracked" for click rate when click tracking is disabled', async () => {
+    api.listCampaigns.mockResolvedValue([{
+      id: 'c9', name: 'No click tracking', status: 'running',
+      created_at: '2026-05-01T12:00:00Z',
+      lead_counts: { total: 10, pending: 0, scheduled: 0, sent: 10, failed: 0 },
+      stats: { open_rate: 0.5, click_rate: null, reply_rate: 0.05, click_tracking_enabled: false },
+      connected_account_configured: true,
+    }]);
+    renderPage();
+    await screen.findByTestId('campaign-card');
+    expect(screen.getByText('Not tracked')).toBeInTheDocument();
+  });
 });

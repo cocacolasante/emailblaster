@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models import (
     Campaign,
@@ -141,20 +142,24 @@ async def _compute_stats_and_counts(
     unsubscribed = by_event.get(EmailEventType.UNSUBSCRIBED, 0)
 
     reply_tracking = campaign.connected_account_id is not None
+    click_tracking = settings.EMAIL_CLICK_TRACKING_ENABLED
 
     stats = CampaignStats(
         sent_count=sent_count,
         delivered=delivered,
         opened=opened,
-        clicked=clicked,
+        clicked=clicked if click_tracking else 0,
         bounced=bounced,
         replied=replied if reply_tracking else 0,
         unsubscribed=unsubscribed,
         open_rate=_rate(opened, sent_count),
-        click_rate=_rate(clicked, sent_count),
+        # Click tracking off in Brevo → no CLICKED events arrive; report
+        # "not tracked" (None) rather than a misleading 0%.
+        click_rate=_rate(clicked, sent_count) if click_tracking else None,
         bounce_rate=_rate(bounced, sent_count),
         reply_rate=_rate(replied, sent_count) if reply_tracking else None,
         reply_tracking_note=None if reply_tracking else "reply tracking not configured",
+        click_tracking_enabled=click_tracking,
     )
 
     counts = LeadCounts(

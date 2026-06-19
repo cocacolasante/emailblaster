@@ -314,7 +314,11 @@ export function AnalyticsContent({ id, includeLeadTable = true }) {
     { label: 'Sent', value: data.overview.sent },
     { label: 'Delivered', value: data.overview.delivered },
     { label: 'Open rate', value: pct(data.rates.open_rate) },
-    { label: 'Click rate', value: pct(data.rates.click_rate) },
+    {
+      label: 'Click rate',
+      value: data.click_tracking_enabled === false ? 'Not tracked' : pct(data.rates.click_rate),
+      tooltip: data.click_tracking_enabled === false ? 'Click tracking is turned off in Brevo' : null,
+    },
   ];
 
   const secondRow = [

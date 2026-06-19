@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     BREVO_API_KEY: str = ""
     BREVO_SENDER_EMAIL: str = "noreply@example.com"
     BREVO_SENDER_NAME: str = "Email Blaster"
+    # Set to False to mirror "Click tracking" being turned OFF in the Brevo
+    # dashboard (Transactional → Settings).  Disabling click tracking removes
+    # Brevo's link-rewriting (a strong bulk/marketing fingerprint that gets
+    # 1:1 outreach tagged [BULK]) but also stops CLICKED events from arriving —
+    # so when this is False the app reports click-rate as "not tracked" (—)
+    # instead of a misleading 0%.  Open tracking is independent and unaffected.
+    EMAIL_CLICK_TRACKING_ENABLED: bool = True
     # How often (minutes) to poll Brevo's transactional events API for
     # delivered/opened/clicked/bounced/spam/unsubscribed.  We poll
     # instead of taking the inbound webhook because the webhook needs a
