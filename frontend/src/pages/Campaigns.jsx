@@ -7,6 +7,7 @@ import {
   resumeCampaign,
 } from '../api/campaigns.js';
 import { useToast } from '../components/Toast.jsx';
+import { PageHeader } from '../components/ui.jsx';
 
 const STATUS_CLASSES = {
   draft:      'bg-slate-100 text-slate-600',
@@ -212,15 +213,17 @@ export default function Campaigns() {
 
   return (
     <div className="p-8 max-w-[1100px] mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-slate-900 m-0">Campaigns</h1>
-        <Link
-          to="/campaigns/new"
-          className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors no-underline"
-        >
-          + New campaign
-        </Link>
-      </div>
+      <PageHeader
+        title="Campaigns"
+        actions={(
+          <Link
+            to="/campaigns/new"
+            className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors duration-fast no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1"
+          >
+            + New campaign
+          </Link>
+        )}
+      />
 
       {isLoading && <Skeleton />}
       {error && (

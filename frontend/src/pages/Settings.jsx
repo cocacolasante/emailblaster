@@ -22,6 +22,7 @@ import {
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import ConnectLinkedInModal from '../components/ConnectLinkedInModal.jsx';
 import { useToast } from '../components/Toast.jsx';
+import { Tabs } from '../components/ui.jsx';
 
 const STATUS_LABEL = {
   untested: 'Untested',
@@ -780,68 +781,19 @@ export default function Settings() {
   return (
     <div className="p-8 max-w-[900px] mx-auto">
       <h1 className="text-2xl font-bold text-slate-900 mb-6">Settings</h1>
-      <div role="tablist" className="flex border-b border-slate-200 mb-6">
-        <button
-          role="tab"
-          aria-selected={tab === 'inboxes'}
-          onClick={() => setTab('inboxes')}
-          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
-            tab === 'inboxes'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Connected inboxes
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'linkedin'}
-          onClick={() => setTab('linkedin')}
-          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
-            tab === 'linkedin'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          LinkedIn accounts
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'agent'}
-          onClick={() => setTab('agent')}
-          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
-            tab === 'agent'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Agent
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'discovery'}
-          onClick={() => setTab('discovery')}
-          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
-            tab === 'discovery'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Discovery
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === 'api'}
-          onClick={() => setTab('api')}
-          className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
-            tab === 'api'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          API status
-        </button>
-      </div>
+      <Tabs
+        testId="settings-tab"
+        className="mb-6"
+        active={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'inboxes', label: 'Connected inboxes' },
+          { key: 'linkedin', label: 'LinkedIn accounts' },
+          { key: 'agent', label: 'Agent' },
+          { key: 'discovery', label: 'Discovery' },
+          { key: 'api', label: 'API status' },
+        ]}
+      />
       {tab === 'inboxes' && <ConnectedInboxesTab />}
       {tab === 'linkedin' && <LinkedInAccountsTab />}
       {tab === 'agent' && <AgentTab />}

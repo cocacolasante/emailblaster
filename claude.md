@@ -22,7 +22,29 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **UI refinement Phase 2 — core component library +
+- **Last completed:** **UI refinement Phase 3 — shell, IA & tab
+  consolidation.**  Started the primitive-adoption sweep on the highest-drift
+  surfaces.
+  - **Tabs consolidation:** the 3 hand-rolled tab strips (CampaignDetail,
+    Settings, SocialRadar — each with `blue-600`/`blue-700` drift + no
+    keyboard support) now use the one `Tabs` primitive (roving tabindex +
+    arrows, `aria-selected`).  Preserved testids by passing
+    `testId="tab"` / `"settings-tab"` so `tab-leads`/`tab-searches`/
+    `getByRole('tab', {name})` assertions still pass; deleted SocialRadar's
+    bespoke `TabButton`.
+  - **Page scaffolding:** `PageHeader` adopted on Campaigns (+ Replies from
+    Phase 1); the New-campaign action link tokenized (`bg-brand-600` +
+    focus-visible ring).
+  - Verified: full frontend suite green (108 tests across the 3 tab suites,
+    421 total); build clean.  No backend changes.  Tests: **backend 1117,
+    frontend 421**.
+  - **Scope note:** the brief's Phase-3 deliverable is "shell + 2-3 core
+    screens" — met (Replies inbox + CampaignDetail/Settings tabs +
+    scaffolding).  Deeper SequenceBuilder polish + the full per-page
+    button/modal fan-out (the ~212 hand-rolled buttons, 8 modals) continue
+    through Phase 5 (states/tables) and the Phase 6 final consistency sweep.
+  - **Checkpoint: awaiting approval before Phase 4 (motion).**
+- **Previously:** **UI refinement Phase 2 — core component library +
   /ui-kit.**  Built the full primitive set on the Phase-1 foundation; the
   Phase-3 sweep adopts them across pages.
   - **New primitives** in `components/ui/` (re-exported via the

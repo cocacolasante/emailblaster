@@ -23,6 +23,7 @@ import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
 import LeadTable from '../components/LeadTable.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import { useToast } from '../components/Toast.jsx';
+import { Tabs } from '../components/ui.jsx';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { AnalyticsContent } from './Analytics.jsx';
 
@@ -1937,29 +1938,18 @@ export default function CampaignDetail() {
         </div>
       </div>
 
-      <div role="tablist" className="flex border-b border-slate-200 mb-6 mt-4">
-        {[
-          { id: 'overview', label: 'Overview' },
-          { id: 'activity', label: 'Activity' },
-          { id: 'leads', label: 'Leads' },
-          { id: 'analytics', label: 'Analytics' },
-        ].map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer ${
-              tab === t.id
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-            data-testid={`tab-${t.id}`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        testId="tab"
+        className="mb-6 mt-4"
+        active={tab}
+        onChange={setTab}
+        tabs={[
+          { key: 'overview', label: 'Overview' },
+          { key: 'activity', label: 'Activity' },
+          { key: 'leads', label: 'Leads' },
+          { key: 'analytics', label: 'Analytics' },
+        ]}
+      />
 
       {tab === 'overview' && (
         <OverviewTab

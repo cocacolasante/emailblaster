@@ -16,6 +16,7 @@ import {
   updateSearch,
 } from '../api/socialRadar.js';
 import { useToast } from '../components/Toast.jsx';
+import { Tabs } from '../components/ui.jsx';
 
 const CATEGORY_OPTIONS = [
   { value: '', label: 'All categories' },
@@ -140,14 +141,13 @@ export default function SocialRadar() {
         only drafts suggestions.
       </p>
 
-      <div className="flex gap-1 border-b border-slate-200 mb-4">
-        <TabButton current={tab} value="feed" onClick={() => setTab('feed')}>
-          Feed
-        </TabButton>
-        <TabButton current={tab} value="searches" onClick={() => setTab('searches')}>
-          Searches
-        </TabButton>
-      </div>
+      <Tabs
+        testId="tab"
+        className="mb-4"
+        active={tab}
+        onChange={setTab}
+        tabs={[{ key: 'feed', label: 'Feed' }, { key: 'searches', label: 'Searches' }]}
+      />
 
       {tab === 'feed' && <FeedTab />}
       {tab === 'searches' && (
@@ -167,23 +167,6 @@ export default function SocialRadar() {
   );
 }
 
-function TabButton({ current, value, onClick, children }) {
-  const active = current === value;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-testid={`tab-${value}`}
-      className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
-        active
-          ? 'border-blue-600 text-blue-700'
-          : 'border-transparent text-slate-500 hover:text-slate-700'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
 
 
 // ===========================================================================
