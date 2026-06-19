@@ -454,7 +454,38 @@ describe('Leads page', () => {
   it('shows an empty-state row when no leads come back', async () => {
     api.listAllLeads.mockResolvedValue(leadsPayload([]));
     renderPage();
-    await waitFor(() => expect(screen.getByText(/No leads\./i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('leads-empty')).toBeInTheDocument());
+    expect(screen.getByText(/No leads found/i)).toBeInTheDocument();
+  });
+
+  it('shows an error state with retry when the leads query fails', async () => {
+    api.listAllLeads.mockRejectedValue(new Error('boom'));
+    renderPage();
+    const err = await screen.findByTestId('leads-error');
+    expect(within(err).getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it('New-lead modal shows an inline email error on blur and clears it once valid', async () => {
+    api.listAllLeads.mockResolvedValue(leadsPayload([]));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTestId('new-lead-btn'));
+    const modal = await screen.findByTestId('new-lead-modal');
+    const email = within(modal).getByTestId('new-lead-email');
+
+    // No error until the field is touched.
+    expect(within(modal).queryByText(/valid email address/i)).toBeNull();
+    await user.click(email);
+    await user.tab(); // blur with an empty value
+    expect(await within(modal).findByText(/valid email address/i)).toBeInTheDocument();
+    expect(email).toHaveAttribute('aria-invalid', 'true');
+    // Save is disabled while invalid.
+    expect(within(modal).getByTestId('new-lead-save')).toBeDisabled();
+
+    await user.type(email, 'jane@acme.com');
+    await waitFor(() => expect(within(modal).queryByText(/valid email address/i)).toBeNull());
+    expect(within(modal).getByTestId('new-lead-save')).not.toBeDisabled();
   });
 });
 

@@ -8,6 +8,7 @@ import {
   updateSample,
 } from '../api/campaigns.js';
 import EmailPreviewCard from '../components/EmailPreviewCard.jsx';
+import { Skeleton, ErrorState } from '../components/states.jsx';
 
 export default function Preview() {
   const { id } = useParams();
@@ -58,12 +59,30 @@ export default function Preview() {
   }
 
   if (previewQuery.isLoading || campaignQuery.isLoading) {
-    return <div className="p-8 text-sm text-slate-500">Loading preview…</div>;
+    return (
+      <div className="p-8 max-w-3xl mx-auto" data-testid="preview-loading">
+        <Skeleton className="h-7 w-40 mb-2" />
+        <Skeleton className="h-4 w-72 mb-6" />
+        <div className="space-y-4">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="bg-white rounded-card border border-slate-200 p-5">
+              <Skeleton className="h-4 w-1/3 mb-3" />
+              <Skeleton className="h-3 w-full mb-2" />
+              <Skeleton className="h-3 w-5/6" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
   if (previewQuery.error || campaignQuery.error) {
     return (
-      <div className="p-8 text-sm text-red-600">
-        Failed to load preview.
+      <div className="p-8 max-w-3xl mx-auto">
+        <ErrorState
+          message="Couldn't load the preview."
+          onRetry={() => { previewQuery.refetch(); campaignQuery.refetch(); }}
+          testId="preview-error"
+        />
       </div>
     );
   }

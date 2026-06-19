@@ -22,7 +22,55 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **UI refinement Phase 4 — motion &
+- **Last completed:** **UI refinement Phase 5 — states, forms &
+  data density.**  Fanned the shared `states` primitives + `Field`
+  inline-validation + tabular numerics across the primary views that were
+  still bare.
+  - **Designed loading / empty / error on every bare primary view** (the
+    shared `Skeleton`/`EmptyState`/`ErrorState` from `components/states.jsx`,
+    reduced-motion-aware via `motion-safe:`):
+    - **Leads** — table loading is now 6 skeleton rows (`leads-skeleton-row`);
+      "No leads." → `EmptyState` (`leads-empty`); added a missing
+      `ErrorState` with Retry (`leads-error`, wired to `refetch`).
+    - **Preview** — bare "Loading preview…" → a header + 3 card skeletons
+      (`preview-loading`); thin red error → `ErrorState` (`preview-error`,
+      refetches both queries).
+    - **Reports** — bare "Loading…" → `LoadingCards` (`reports-loading`) +
+      added `ErrorState` (`reports-error`).
+    - **SocialRadar** — all 4 bare "Loading…" (feed / searches table /
+      detail page / detail opps) → a local `FeedSkeleton` card stack +
+      colspan skeleton rows.
+    - **CampaignDetail** — the 3 inline "Loading…" (window-status panel,
+      email-pipeline-activity, lead-detail modal) → `Skeleton` bars.
+    - (Already had designed states: Campaigns [bespoke], Dashboard,
+      Opportunities, Replies, OpportunityDetail.)
+  - **Form inline-validation** — the **New-lead modal** (`Leads.jsx`) is the
+    representative adoption: hand-rolled `<input>`/`<textarea>`/`<button>`
+    → the `Field`/`Input`/`Textarea`/`Button` primitives (label wires
+    `htmlFor` + `aria-describedby` + `aria-invalid`).  Email is `required`
+    with a touched-on-blur inline error ("Enter a valid email address.") and
+    Save is disabled while invalid.  All testids preserved
+    (`new-lead-email`/`-first_name`/`-company`/`-save`, `new-lead-modal`) by
+    forwarding `data-testid` through `Input`/`Button`.
+  - **Tabular numerics** (the `.tabular` base utility = `tabular-nums`) on the
+    metric tables so figures align: Reports deals table + the shared
+    `SimpleTable` (drives the stage / forecast / loss-reason cards) +
+    Activities timestamp; Analytics best-subjects + per-node sequence funnel.
+    Dashboard already used `tabular-nums`.
+  - **Deliberately deferred to the Phase-6 consistency sweep:** migrating the
+    *interactive* tables (Leads/`LeadTable`, contacts) onto the `Table`
+    primitive — they carry per-row checkboxes, row-click modals, and per-id
+    testids (`lead-row-<id>`), so a clean migration needs a `rowTestId`
+    extension on the primitive (or test churn).  Applied data-density
+    in place instead.  The broad button/modal fan-out (the ~212 hand-rolled
+    buttons, 8 modals) also continues in Phase 6.
+  - Tests: +2 frontend (`Leads.test.jsx`: error-state-with-retry; New-lead
+    inline email validation on blur + clears when valid) + 1 repointed
+    (empty-state now asserts the `leads-empty` testid).  Verified: frontend
+    **423** green; build clean.  No backend changes (**1117**).
+  - **Checkpoint: Phase 5 done — Phase 6 (a11y + QA + final consistency
+    sweep) next.**
+- **Previously:** **UI refinement Phase 4 — motion &
   micro-interactions.**  Wired the global reduced-motion guarantee + the
   page/tab motion the primitives didn't already cover.
   - **`<MotionConfig reducedMotion="user">` at the app root** (`App.jsx`) —
@@ -2960,7 +3008,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1117 passing**.  Frontend tests: **421 passing**._
+_Backend tests: **1117 passing**.  Frontend tests: **423 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

@@ -17,6 +17,7 @@ import {
 } from '../api/reports.js';
 import { STAGES, fmtAmount } from './Opportunities.jsx';
 import { formatPercent as pct, formatDate as fmtDate } from '../utils/format.js';
+import { LoadingCards, ErrorState } from '../components/states.jsx';
 
 const STAGE_LABEL = Object.fromEntries(STAGES.map((s) => [s.value, s.label]));
 
@@ -172,12 +173,12 @@ function DealsTable({ range }) {
                     <div className="text-xs text-slate-400">{d.company || d.email || '—'}</div>
                   </td>
                   <td className="py-2 pr-3 text-slate-600">{STAGE_LABEL[d.stage] || d.stage}</td>
-                  <td className="py-2 pr-3 text-right">{fmtAmount(d.amount)}</td>
-                  <td className="py-2 pr-3 text-right text-slate-500">{fmtAmount(d.weighted_amount)}</td>
-                  <td className="py-2 pr-3 text-slate-600">
+                  <td className="py-2 pr-3 text-right tabular">{fmtAmount(d.amount)}</td>
+                  <td className="py-2 pr-3 text-right tabular text-slate-500">{fmtAmount(d.weighted_amount)}</td>
+                  <td className="py-2 pr-3 text-slate-600 tabular">
                     {fmtDate(outcome === 'open' ? d.created_at : d.closed_at)}
                   </td>
-                  <td className="py-2 pr-3 text-right text-slate-500">{d.age_days ?? '—'}</td>
+                  <td className="py-2 pr-3 text-right tabular text-slate-500">{d.age_days ?? '—'}</td>
                   {outcome === 'lost' && <td className="py-2 text-slate-600">{d.loss_reason || '—'}</td>}
                 </tr>
               ))}
@@ -238,7 +239,7 @@ function ActivitiesTable({ range }) {
             <tbody>
               {items.map((a) => (
                 <tr key={a.id} className="border-b border-slate-100">
-                  <td className="py-2 pr-3 text-slate-600">{fmtDate(a.occurred_at)}</td>
+                  <td className="py-2 pr-3 text-slate-600 tabular">{fmtDate(a.occurred_at)}</td>
                   <td className="py-2 pr-3">
                     <span className="capitalize text-slate-700">{a.activity_type}</span>
                     {a.direction && <span className="text-xs text-slate-400"> · {a.direction}</span>}
@@ -283,7 +284,7 @@ export default function Reports() {
     return { start: p.start(), end: isoDaysAgo(0) };
   }, [preset, customStart, customEnd]);
 
-  const { data: overview, isLoading } = useQuery({
+  const { data: overview, isLoading, error, refetch } = useQuery({
     queryKey: ['report-overview', range.start, range.end],
     queryFn: () => getReportOverview({ start: range.start, end: range.end }),
   });
@@ -339,7 +340,10 @@ export default function Reports() {
         are by close date; pipeline + forecast are a live snapshot.
       </p>
 
-      {isLoading && <p className="text-slate-400">Loading…</p>}
+      {isLoading && <LoadingCards count={4} testId="reports-loading" />}
+      {error && (
+        <ErrorState message="Couldn't load reports." onRetry={() => refetch()} testId="reports-error" />
+      )}
 
       {k && (
         <>
@@ -499,7 +503,7 @@ function SimpleTable({ head, rows, empty }) {
         {rows.map((r, ri) => (
           <tr key={ri} className="border-b border-slate-100">
             {r.map((cell, ci) => (
-              <td key={ci} className={`py-2 pr-3 ${ci === 0 ? 'text-left text-slate-700' : 'text-right text-slate-600'}`}>{cell}</td>
+              <td key={ci} className={`py-2 pr-3 ${ci === 0 ? 'text-left text-slate-700' : 'text-right tabular text-slate-600'}`}>{cell}</td>
             ))}
           </tr>
         ))}

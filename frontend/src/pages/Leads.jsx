@@ -12,6 +12,8 @@ import {
 } from '../api/campaigns.js';
 import { useToast } from '../components/Toast.jsx';
 import ActivityLog from '../components/ActivityLog.jsx';
+import { Skeleton, EmptyState, ErrorState } from '../components/states.jsx';
+import { Field, Input, Textarea, Button } from '../components/ui.jsx';
 import {
   convertLead,
   createCrmLead,
@@ -102,7 +104,7 @@ export default function Leads() {
   if (search.trim()) params.search = search.trim();
   if (hasNotes) params.has_notes = true;
 
-  const { data: leadsPage, isLoading } = useQuery({
+  const { data: leadsPage, isLoading, error, refetch } = useQuery({
     queryKey: ['all-leads', params],
     queryFn: () => listAllLeads(params),
     keepPreviousData: true,
@@ -235,9 +237,30 @@ export default function Leads() {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+              Array.from({ length: 6 }).map((_, i) => (
+                <tr key={`sk-${i}`} className="border-b border-slate-100" data-testid="leads-skeleton-row">
+                  <td className="px-3 py-3 w-8"><Skeleton className="h-4 w-4" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-40" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-28" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-28" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-16" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-32" /></td>
+                </tr>
+              ))
+            ) : error ? (
+              <tr><td colSpan={7} className="p-0">
+                <ErrorState message="Couldn't load leads." onRetry={() => refetch()} testId="leads-error" />
+              </td></tr>
             ) : (leadsPage?.items?.length ?? 0) === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No leads.</td></tr>
+              <tr><td colSpan={7} className="p-0">
+                <EmptyState
+                  title="No leads found"
+                  hint="Adjust your filters above, or add a lead with “+ New lead”."
+                  icon="👤"
+                  testId="leads-empty"
+                />
+              </td></tr>
             ) : (
               leadsPage.items.map((l) => (
                 <tr
@@ -343,26 +366,30 @@ function NewLeadModal({ onClose }) {
     },
   });
 
-  const canSave = form.email.trim().includes('@') && !createMut.isPending;
+  const [emailTouched, setEmailTouched] = useState(false);
+  const emailValid = form.email.trim().includes('@');
+  const canSave = emailValid && !createMut.isPending;
 
+  // Hand-rolled text fields → the shared Field + Input primitives (label +
+  // wired htmlFor/aria; testids preserved by forwarding them through Input).
   const field = (key, label, props = {}) => (
-    <div>
-      <label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>
-      <input
-        type="text"
-        value={form[key]}
-        onChange={(e) => update(key, e.target.value)}
-        data-testid={`new-lead-${key}`}
-        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-        {...props}
-      />
-    </div>
+    <Field label={label}>
+      {(p) => (
+        <Input
+          {...p}
+          data-testid={`new-lead-${key}`}
+          value={form[key]}
+          onChange={(e) => update(key, e.target.value)}
+          {...props}
+        />
+      )}
+    </Field>
   );
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto"
+        className="bg-white rounded-card shadow-overlay w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
         data-testid="new-lead-modal"
       >
@@ -372,7 +399,23 @@ function NewLeadModal({ onClose }) {
             className="text-slate-400 hover:text-slate-600 text-xl bg-transparent border-none cursor-pointer p-1">×</button>
         </div>
         <div className="space-y-3">
-          {field('email', 'Email *', { placeholder: 'jane@acme.com' })}
+          <Field
+            label="Email"
+            required
+            error={emailTouched && !emailValid ? 'Enter a valid email address.' : undefined}
+          >
+            {(p) => (
+              <Input
+                {...p}
+                type="email"
+                data-testid="new-lead-email"
+                placeholder="jane@acme.com"
+                value={form.email}
+                onChange={(e) => update('email', e.target.value)}
+                onBlur={() => setEmailTouched(true)}
+              />
+            )}
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             {field('first_name', 'First name')}
             {field('last_name', 'Last name')}
@@ -385,34 +428,31 @@ function NewLeadModal({ onClose }) {
             {field('phone', 'Phone')}
             {field('linkedin_url', 'LinkedIn URL')}
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Notes</label>
-            <textarea
-              value={form.notes}
-              onChange={(e) => update('notes', e.target.value)}
-              rows={3}
-              data-testid="new-lead-notes"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"
-            />
-          </div>
+          <Field label="Notes">
+            {(p) => (
+              <Textarea
+                {...p}
+                rows={3}
+                data-testid="new-lead-notes"
+                value={form.notes}
+                onChange={(e) => update('notes', e.target.value)}
+              />
+            )}
+          </Field>
           <p className="text-xs text-slate-500 m-0">
             Manually-created leads are CRM records — they don't enter any
             campaign's email pipeline unless you add them to one later.
           </p>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="px-3 py-1.5 text-sm border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50">
-              Cancel
-            </button>
-            <button
-              type="button"
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button
               onClick={() => createMut.mutate()}
               disabled={!canSave}
+              loading={createMut.isPending}
               data-testid="new-lead-save"
-              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg"
             >
-              {createMut.isPending ? 'Creating…' : 'Create lead'}
-            </button>
+              Create lead
+            </Button>
           </div>
         </div>
       </div>

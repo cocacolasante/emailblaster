@@ -95,8 +95,8 @@ function BestSubjects({ subjects }) {
             {subjects.map((s) => (
               <tr key={s.subject} className="hover:bg-slate-50">
                 <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{s.subject}</td>
-                <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{s.sent}</td>
-                <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{pct(s.open_rate)}</td>
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">{s.sent}</td>
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">{pct(s.open_rate)}</td>
               </tr>
             ))}
           </tbody>
@@ -285,10 +285,10 @@ function SequencePerformance({ id }) {
                   )}
                 </div>
               </td>
-              <td className="px-4 py-2.5 text-right font-medium text-emerald-700">{n.sent}</td>
-              <td className="px-4 py-2.5 text-right text-slate-500">{n.skipped}</td>
-              <td className="px-4 py-2.5 text-right text-red-600">{n.failed}</td>
-              <td className="px-4 py-2.5 text-right text-blue-700">{n.currently_here}</td>
+              <td className="px-4 py-2.5 text-right tabular font-medium text-emerald-700">{n.sent}</td>
+              <td className="px-4 py-2.5 text-right tabular text-slate-500">{n.skipped}</td>
+              <td className="px-4 py-2.5 text-right tabular text-red-600">{n.failed}</td>
+              <td className="px-4 py-2.5 text-right tabular text-blue-700">{n.currently_here}</td>
             </tr>
           ))}
         </tbody>

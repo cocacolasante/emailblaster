@@ -17,6 +17,22 @@ import {
 } from '../api/socialRadar.js';
 import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
+import { Skeleton } from '../components/states.jsx';
+
+/** Vertical stack of card-shaped skeletons for the opportunity feeds. */
+function FeedSkeleton({ count = 3, testId = 'feed-loading' }) {
+  return (
+    <div className="space-y-3" data-testid={testId}>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="bg-white rounded-card border border-slate-200 p-4">
+          <Skeleton className="h-4 w-1/3 mb-3" />
+          <Skeleton className="h-3 w-full mb-2" />
+          <Skeleton className="h-3 w-4/5" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const CATEGORY_OPTIONS = [
   { value: '', label: 'All categories' },
@@ -295,7 +311,7 @@ function FeedTab() {
 
       {/* Cards */}
       {isLoading ? (
-        <div className="text-center text-slate-500 py-8">Loading…</div>
+        <FeedSkeleton testId="feed-loading" />
       ) : (feed?.items ?? []).length === 0 ? (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center text-slate-500" data-testid="feed-empty">
           No opportunities yet. Create a search and click <strong>Run now</strong>.
@@ -490,7 +506,13 @@ function SearchesTab({ onView, onEdit }) {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-500">Loading…</td></tr>
+              [0, 1, 2].map((i) => (
+                <tr key={`sk-${i}`} className="border-b border-slate-100">
+                  {Array.from({ length: 8 }).map((__, c) => (
+                    <td key={c} className="px-4 py-3"><Skeleton className="h-4 w-full" /></td>
+                  ))}
+                </tr>
+              ))
             ) : rows.length === 0 ? (
               <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-500" data-testid="searches-empty">
                 No searches yet. Click <strong>+ New search</strong> to start.
@@ -646,7 +668,11 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
     return (
       <div>
         <BackHeader onBack={onBack} />
-        <div className="text-center text-slate-500 py-8">Loading…</div>
+        <div className="mt-4" data-testid="search-detail-loading">
+          <Skeleton className="h-6 w-48 mb-3" />
+          <Skeleton className="h-4 w-72 mb-6" />
+          <FeedSkeleton count={2} testId="search-detail-skeleton" />
+        </div>
       </div>
     );
   }
@@ -836,7 +862,7 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
         </div>
       </div>
       {oppsLoading ? (
-        <div className="text-center text-slate-500 py-8">Loading…</div>
+        <FeedSkeleton testId="detail-opps-loading" />
       ) : (opps?.items ?? []).length === 0 ? (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center text-slate-500" data-testid="detail-empty">
           No opportunities yet for this search. Click <strong>Run now</strong> above, then wait ~1 min.

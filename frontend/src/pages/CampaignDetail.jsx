@@ -24,6 +24,7 @@ import LeadTable from '../components/LeadTable.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
+import { Skeleton } from '../components/states.jsx';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { AnalyticsContent } from './Analytics.jsx';
 
@@ -713,7 +714,7 @@ function ActivityTab({ campaignId, campaign }) {
         <div className={`bg-white rounded-xl border shadow-sm p-5 ${inWindow ? 'border-emerald-300' : 'border-amber-300'}`}>
           <h3 className="text-sm font-semibold text-slate-900 mb-3">Window status</h3>
           {isLoading ? (
-            <p className="text-sm text-slate-400">Loading…</p>
+            <div className="space-y-2"><Skeleton className="h-4 w-32" /><Skeleton className="h-4 w-48" /></div>
           ) : (
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -925,7 +926,11 @@ function ActivityTab({ campaignId, campaign }) {
           <span className="text-xs text-slate-400">Last 20 leads by activity</span>
         </div>
         {isLoading ? (
-          <div className="px-5 py-4 text-sm text-slate-400">Loading…</div>
+          <div className="px-5 py-4 space-y-2">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-5/6" />
+            <Skeleton className="h-4 w-2/3" />
+          </div>
         ) : (activity?.recent_events?.length ?? 0) === 0 ? (
           <div className="px-5 py-4 text-sm text-slate-400">No activity yet.</div>
         ) : (
@@ -1575,7 +1580,11 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
         </div>
 
         {isLoading && (
-          <div className="py-8 text-center text-sm text-slate-500">Loading…</div>
+          <div className="py-6 space-y-2" data-testid="lead-detail-loading">
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-3/4" />
+          </div>
         )}
         {error && (
           <div className="py-4 text-sm text-red-600">Failed to load lead detail.</div>
