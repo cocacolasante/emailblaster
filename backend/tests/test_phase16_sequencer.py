@@ -275,6 +275,43 @@ async def test_send_email_step_records_execution_and_advances(db_session, monkey
     assert state.current_node_id is None
 
 
+async def test_send_email_step_never_double_sends(db_session, monkeypatch):
+    """Two dispatches of the same (lead, node) BEFORE the SENT row is recorded
+    — the redelivery / concurrent-dispatch / task-retry race — must deliver the
+    email exactly ONCE.  The atomic Redis claim blocks the second send even
+    though the lifetime DB guard can't yet see a SENT row."""
+    campaign = await _make_campaign(db_session)
+    campaign.min_delay_seconds = 0  # isolate the claim from the min-delay gate
+    _, entry, wait_node, followup = await _build_three_node_sequence(db_session, campaign)
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    await db_session.commit()
+
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=followup.sequence_id,
+        current_node_id=followup.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    calls = {"n": 0}
+    async def fake_send(**kwargs):
+        calls["n"] += 1
+        return f"mid-{calls['n']}"
+    monkeypatch.setattr(sequencer.brevo, "send_email", fake_send)
+
+    # Deliberately do NOT record the execution row between the two calls —
+    # that is exactly the window the claim has to defend.
+    r1 = await sequencer._send_email_step_async(str(lead.id), str(followup.id))
+    r2 = await sequencer._send_email_step_async(str(lead.id), str(followup.id))
+
+    assert r1["status"] == "sent"
+    assert r2["status"] == "skipped"
+    assert "duplicate" in (r2.get("error") or "")
+    assert calls["n"] == 1  # the email left exactly once
+
+
 # --------------------------------------------------------------------------
 # Follow-up email step honours pre-send gates (paused / scheduled / rate-limited)
 # --------------------------------------------------------------------------
@@ -315,6 +352,15 @@ async def test_followup_step_defers_when_campaign_paused(db_session, monkeypatch
     assert state.current_node_id == followup.id  # parked, not advanced
     assert state.status == LeadSequenceStatus.ACTIVE
     assert state.next_run_at is not None and state.next_run_at > _now()
+
+    # A deferral is "retry later", not an attempt — it must NOT write a
+    # lead_step_executions row (otherwise a parked lead re-checking every few
+    # minutes looks like repeated "skipped" steps in the Activity tab and
+    # bloats the table without bound).
+    exec_rows = (await db_session.execute(
+        select(LeadStepExecution).where(LeadStepExecution.lead_id == lead.id)
+    )).scalars().all()
+    assert exec_rows == []
 
 
 async def test_followup_step_defers_outside_schedule_window(db_session, monkeypatch):

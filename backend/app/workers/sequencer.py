@@ -80,6 +80,15 @@ ADVANCE_BATCH_SIZE = 200
 # Anything NOT in this set is permanent: the cursor advances like a sent step.
 TRANSIENT_SKIP_STATUSES = {"challenged", "restricted", "rate_limited", "transient_error"}
 
+# At-most-once send guard.  An atomic Redis claim keyed on (lead, node) is set
+# immediately before the Brevo send so a redelivered / concurrently-dispatched /
+# task-retried send can never deliver the same email twice (the DB
+# ``_already_executed_ever`` check is a read, and the SENT row isn't written
+# until ``_record_execution_and_advance`` runs AFTER the send returns — a real
+# race window).  The TTL only needs to outlast any retry/redelivery window;
+# the SENT row becomes the permanent lifetime guard within seconds.
+_SENT_CLAIM_TTL_SECONDS = 7 * 24 * 3600
+
 
 def _is_transient_failure(meta: dict[str, Any] | None) -> bool:
     """Whether a failed LinkedIn action is an infrastructure/transient error
@@ -921,23 +930,53 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
 
         html_body = render_html(body)
         text_body = render_text(body)
-        message_id = await brevo.send_email(
-            to_email=ctx["to_email"],
-            to_name=ctx["to_name"],
-            subject=ctx["subject"],
-            html_body=html_body,
-            text_body=text_body,
-            sender_name=ctx["sender_name"],
-            sender_email=ctx["sender_email"],
-            campaign_id=ctx["campaign_id"],
-            lead_id=ctx["lead_id"],
-            in_reply_to=ctx["in_reply_to"],
+
+        # At-most-once guard: atomically CLAIM (lead, node) before the send.
+        # Whoever claims first is the only task that sends — this closes the
+        # race the lifetime DB check can't (the SENT row is written only after
+        # this function returns, so a redelivered / concurrent / retried send
+        # would otherwise slip past it and double-send).
+        claim_key = f"seq:emailsent:{lid}:{nid}"
+        claimed = await redis_client.set(
+            claim_key, "1", nx=True, ex=_SENT_CLAIM_TTL_SECONDS,
         )
-        # Bump Brevo rate counters so follow-ups are metered alongside
-        # legacy first-email sends.
-        await _send_mod.increment_rate_counters(
-            campaign_snap, redis_client, domain=sending_domain,
-        )
+        if not claimed:
+            return {
+                "status": "skipped",
+                "error": "email already sent for this node — skipping duplicate",
+            }
+        try:
+            message_id = await brevo.send_email(
+                to_email=ctx["to_email"],
+                to_name=ctx["to_name"],
+                subject=ctx["subject"],
+                html_body=html_body,
+                text_body=text_body,
+                sender_name=ctx["sender_name"],
+                sender_email=ctx["sender_email"],
+                campaign_id=ctx["campaign_id"],
+                lead_id=ctx["lead_id"],
+                in_reply_to=ctx["in_reply_to"],
+            )
+        except Exception:
+            # The send did not verifiably succeed — release the claim so a
+            # legitimate retry can try again.  We hold the claim only for a
+            # confirmed send, so this never drops a real send on a transient
+            # pre-send error, and never double-sends after a successful one.
+            await redis_client.delete(claim_key)
+            raise
+        # Bump Brevo rate counters so follow-ups are metered alongside legacy
+        # first-email sends.  Best-effort: a counter-bump failure must NOT raise
+        # (a raise here would retry the whole task — the send already happened).
+        try:
+            await _send_mod.increment_rate_counters(
+                campaign_snap, redis_client, domain=sending_domain,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "increment_rate_counters failed after email step send (lead=%s) — "
+                "send already delivered, not retrying", lid,
+            )
         result = {"status": "sent", "message_id": message_id}
     finally:
         await engine.dispose()
@@ -1389,20 +1428,34 @@ async def _record_execution_and_advance(
             else:
                 mapped = LeadStepResult.FAILED
 
-            # LinkedIn handlers return external_id; email handler returns
-            # message_id. Either is fine here.
-            external = result.get("external_id") or result.get("message_id")
-            exec_row = LeadStepExecution(
-                lead_id=lead_id,
-                node_id=node_id,
-                result=mapped,
-                external_id=external,
-                external_meta=result.get("meta") if isinstance(result.get("meta"), dict) else None,
-                error=result.get("error"),
-            )
-            session.add(exec_row)
-            # Flush so the count query below sees this row.
-            await session.flush()
+            # A ``deferred`` gate-trip (paused / outside window / min_delay /
+            # hourly_cap / daily_cap) is "try again later", NOT an attempt that
+            # was skipped — the step never reached the channel.  Recording it as
+            # a SKIPPED execution row made a parked lead look identical to a real
+            # skip in the Activity tab AND wrote a fresh noise row on every
+            # re-check (every few minutes per parked lead → unbounded
+            # lead_step_executions growth, esp. when a follow-up backlog is
+            # starved behind the first-email pacer for the shared rate budget).
+            # Park + reschedule below WITHOUT writing a row — same as the
+            # ``stale_dispatch`` early-return above.  The transient-retry budget
+            # (which counts SKIPPED rows since entered_current_at) only applies
+            # to TRANSIENT_SKIP_STATUSES, never to deferred, so dropping the row
+            # leaves that accounting unchanged.
+            if status != "deferred":
+                # LinkedIn handlers return external_id; email handler returns
+                # message_id. Either is fine here.
+                external = result.get("external_id") or result.get("message_id")
+                exec_row = LeadStepExecution(
+                    lead_id=lead_id,
+                    node_id=node_id,
+                    result=mapped,
+                    external_id=external,
+                    external_meta=result.get("meta") if isinstance(result.get("meta"), dict) else None,
+                    error=result.get("error"),
+                )
+                session.add(exec_row)
+                # Flush so the count query below sees this row.
+                await session.flush()
 
             state = await session.scalar(
                 select(LeadSequenceState).where(LeadSequenceState.lead_id == lead_id)
