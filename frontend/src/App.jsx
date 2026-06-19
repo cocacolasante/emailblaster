@@ -10,6 +10,7 @@ import Opportunities from './pages/Opportunities.jsx';
 import Reports from './pages/Reports.jsx';
 import ReportBuilder from './pages/ReportBuilder.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import UiKit from './pages/UiKit.jsx';
 import OpportunityDetail from './pages/OpportunityDetail.jsx';
 import Replies from './pages/Replies.jsx';
 import ResearchClient from './pages/ResearchClient.jsx';
@@ -49,6 +50,7 @@ export default function App() {
               <Route path="/lookalikes" element={<Lookalikes />} />
               <Route path="/social-radar" element={<SocialRadar />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/ui-kit" element={<UiKit />} />{/* internal design-system preview */}
             </Routes>
           </ErrorBoundary>
         </main>

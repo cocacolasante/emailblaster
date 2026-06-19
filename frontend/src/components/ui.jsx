@@ -1,9 +1,22 @@
 /**
- * Shared UI primitives (Phase 5 design system).  Encode the design tokens +
- * the full interaction-state matrix (hover / focus-visible / active /
- * disabled / loading) in ONE place so every CRM/analytics surface is
- * consistent and no view hand-rolls these treatments.
+ * Shared UI primitives — the public barrel for the design system.
+ *
+ * Button/Card/PageHeader are defined here (the original Phase-5 seed); the
+ * Phase-2 primitives live in ./ui/* and are re-exported below, so every
+ * consumer imports from a single module: `import { Button, Modal, Input,
+ * Tabs, Badge, Table, … } from '../components/ui.jsx'`.
  */
+
+// Phase-2 primitive library (form controls, overlays, navigation, data).
+export {
+  Input, Textarea, Select, Field, Checkbox, Radio, Toggle,
+} from './ui/Field.jsx';
+export { Modal } from './ui/Modal.jsx';
+export { Badge } from './ui/Badge.jsx';
+export { Tabs } from './ui/Tabs.jsx';
+export { Tooltip } from './ui/Tooltip.jsx';
+export { Menu } from './ui/Menu.jsx';
+export { Table } from './ui/Table.jsx';
 
 const BTN_BASE =
   'inline-flex items-center justify-center gap-1.5 font-medium border rounded-lg ' +

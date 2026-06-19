@@ -22,7 +22,37 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **UI refinement Phase 1 — design foundation
+- **Last completed:** **UI refinement Phase 2 — core component library +
+  /ui-kit.**  Built the full primitive set on the Phase-1 foundation; the
+  Phase-3 sweep adopts them across pages.
+  - **New primitives** in `components/ui/` (re-exported via the
+    `components/ui.jsx` barrel — single import surface, existing imports
+    unaffected): `Field.jsx` (`Input`/`Textarea`/`Select`/`Field`
+    [label+hint+inline-error+required/optional, wires htmlFor +
+    aria-describedby + aria-invalid], `Checkbox`/`Radio`/`Toggle`
+    [role=switch]); `Modal.jsx` (consolidates the 8 hand-rolled dialogs —
+    portal, framer-motion spring enter/exit, **focus trap + focus
+    restore**, Esc + backdrop close, `role=dialog`/`aria-modal`, `Sheet`
+    sizes); `Badge.jsx` (semantic variants off `statusColors`); `Tabs.jsx`
+    (one accessible strip — roving tabindex + Arrow/Home/End, replaces the
+    3 drifting hand-rolled strips); `Tooltip.jsx` (hover **and** focus,
+    `role=tooltip`); `Menu.jsx` (dropdown — click/keyboard, Esc +
+    click-outside, `role=menu`); `Table.jsx` (dense, sticky header,
+    sortable headers w/ `aria-sort`, `tabular` numerics, hairline rows,
+    empty state).
+  - Every primitive: tokens only, hover/focus-visible/active/disabled/
+    loading, keyboard + ARIA.
+  - **`/ui-kit` route** (`pages/UiKit.jsx`, not in the product nav) renders
+    every primitive in all variants/states for review.
+  - Tests: 13 frontend (`components/ui.primitives.test.jsx` ×11 — Field
+    aria, Toggle, Badge, Tabs keyboard, Tooltip, Menu, Modal Esc/close,
+    Table sort/empty; `pages/UiKit.test.jsx` ×2).  Build clean.  No backend
+    changes.  Tests: **backend 1117, frontend 421**.
+  - **Note:** primitives are built + previewable; replacing the ~212
+    hand-rolled buttons / 8 modals / 3 tab strips / status maps with them is
+    the **Phase 3** application sweep.
+  - **Checkpoint: awaiting approval before Phase 3 (shell + adoption sweep).**
+- **Previously:** **UI refinement Phase 1 — design foundation
   ("Apple-feel" pass; presentation layer only).**  First implementation
   phase of the app-wide UI refinement (plan + audit in
   `docs/ui-refinement-audit.md`).  Extends the CRM Phase-5 token/primitive
@@ -2878,7 +2908,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1117 passing**.  Frontend tests: **408 passing**._
+_Backend tests: **1117 passing**.  Frontend tests: **421 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
