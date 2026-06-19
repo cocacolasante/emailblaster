@@ -22,7 +22,36 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **CRM extension Phase 4 — unified analytics layer
+- **Last completed:** **CRM extension Phase 5 — design-system token
+  layer + primitives, applied to CRM/analytics surfaces.**  The app had
+  NO formal token layer (`tailwind.config` `theme.extend` was empty);
+  Phase 5 codifies the de-facto conventions and stops one-off styles.
+  - **Token layer** (`tailwind.config.js`, **additive** — no existing
+    class changes): `colors.brand.{50..700}` (aliased to the blue already
+    in use), `borderRadius.card`/`pill`, `boxShadow.card`/`card-hover`,
+    `transitionDuration.fast`/`base`, `transitionTimingFunction.spring`.
+  - **Primitives** (`components/ui.jsx`): `Button` (variants primary/
+    secondary/danger/ghost + sizes; encodes the full interaction matrix in
+    ONE place — hover / focus-visible ring / active / disabled / loading
+    spinner + `aria-busy`; forwards `data-testid`/`onClick` so it's a
+    drop-in for `<button>`), `Card`, `PageHeader`.
+  - **Adopted** on Opportunities (Kanban + list + modal), ReportBuilder,
+    and OpportunityDetail (loading skeleton) — swapping hand-rolled buttons
+    + loading states for the primitives + the Phase-4 shared `states`.
+    Reports/Analytics/Dashboard already ride the shared `format`/`charts`/
+    `states` from Phase 4.
+  - **Docs** `docs/design-system.md` (tokens, primitives, states, motion +
+    reduced-motion, adoption status).  Remaining secondary-button adoption
+    on OpportunityDetail + pre-existing campaign/leads/settings pages is
+    folded into Phase 6's final consistency sweep (they already follow the
+    now-tokenized conventions).
+  - Tests: 7 frontend (`components/ui.test.jsx`: Button states — forwards/
+    focus-visible/active/disabled/loading/variants, Card, PageHeader);
+    existing Opportunities/ReportBuilder/Dashboard suites green after
+    adoption.  No backend changes.  Tests: **backend 1116, frontend 406**.
+  - **Checkpoint: awaiting approval before Phase 6 (a11y, audit-log
+    verification, final consistency sweep + QA report).**
+- **Previously:** **CRM extension Phase 4 — unified analytics layer
   + curated dashboard.**  Consolidated the reporting surfaces onto one
   shared visual + data foundation and reconciled drifting metric defs.
   - **Backend:** the `_rate` ratio helper (copy-pasted into `analytics`,
@@ -2788,7 +2817,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1116 passing**.  Frontend tests: **399 passing**._
+_Backend tests: **1116 passing**.  Frontend tests: **406 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

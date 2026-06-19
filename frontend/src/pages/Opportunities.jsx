@@ -29,6 +29,8 @@ import {
 import { useToast } from '../components/Toast.jsx';
 import useReducedMotion from '../utils/useReducedMotion.js';
 import { formatCurrency, formatDate as fmtDate } from '../utils/format.js';
+import { Button } from '../components/ui.jsx';
+import { Skeleton } from '../components/states.jsx';
 
 // Pipeline order fallback — matches the backend OpportunityStage enum.  The
 // board prefers the CONFIGURABLE stages from /crm/pipelines/default; this is
@@ -292,14 +294,9 @@ export default function Opportunities() {
             />
             Show closed
           </label>
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            data-testid="new-opportunity-btn"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg"
-          >
+          <Button onClick={() => setCreating(true)} data-testid="new-opportunity-btn">
             + New opportunity
-          </button>
+          </Button>
         </div>
       </div>
       <p className="text-sm text-slate-500 mb-5">
@@ -308,7 +305,15 @@ export default function Opportunities() {
       </p>
 
       {isLoading ? (
-        <div className="text-center text-slate-500 py-12">Loading…</div>
+        <div className="flex gap-3 overflow-x-auto pb-4" data-testid="board-loading">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex-1 min-w-[230px] bg-slate-50 rounded-card border border-slate-200 p-2.5 space-y-2">
+              <Skeleton className="h-4 w-1/2 mb-2" />
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ))}
+        </div>
       ) : view === 'list' ? (
         <OpportunityList opps={opps} columns={allColumns} onOpen={(id) => navigate(`/opportunities/${id}`)} showClosed={showClosed} />
       ) : (
@@ -470,19 +475,16 @@ function NewOpportunityModal({ onClose }) {
             </div>
           </div>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose}
-              className="px-3 py-1.5 text-sm border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50">
-              Cancel
-            </button>
-            <button
-              type="button"
+            <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
+            <Button
+              size="sm"
               onClick={() => createMut.mutate()}
-              disabled={!form.name.trim() || createMut.isPending}
+              disabled={!form.name.trim()}
+              loading={createMut.isPending}
               data-testid="new-opp-save"
-              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg"
             >
               {createMut.isPending ? 'Creating…' : 'Create'}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

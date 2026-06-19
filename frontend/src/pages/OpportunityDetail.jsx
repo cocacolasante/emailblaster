@@ -17,6 +17,7 @@ import {
 } from '../api/crm.js';
 import { useToast } from '../components/Toast.jsx';
 import ActivityLog from '../components/ActivityLog.jsx';
+import { Skeleton } from '../components/states.jsx';
 import { STAGES, fmtAmount } from './Opportunities.jsx';
 
 function fmtDate(iso) {
@@ -72,7 +73,15 @@ export default function OpportunityDetail() {
   const [losing, setLosing] = useState(false);
   const [lossReason, setLossReason] = useState('');
 
-  if (isLoading) return <div className="p-6 text-slate-500">Loading…</div>;
+  if (isLoading) {
+    return (
+      <div className="p-6 max-w-[70rem] mx-auto space-y-4" data-testid="opp-detail-loading">
+        <Skeleton className="h-7 w-1/3" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
   if (!opp) {
     return (
       <div className="p-6">

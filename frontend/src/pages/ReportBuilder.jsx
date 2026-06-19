@@ -7,6 +7,7 @@ import {
 } from '../api/reportBuilder.js';
 import { useToast } from '../components/Toast.jsx';
 import { SimpleBarChart, SimpleLineChart, SimplePieChart } from '../components/charts.jsx';
+import { Button } from '../components/ui.jsx';
 import { formatNumber } from '../utils/format.js';
 
 const OP_LABELS = {
@@ -178,11 +179,9 @@ export default function ReportBuilder() {
     <div className="p-6 max-w-[100rem] mx-auto" data-testid="report-builder">
       <div className="flex items-center justify-between mb-5">
         <h1 className="text-2xl font-bold text-slate-900 m-0">Report builder</h1>
-        <button type="button" onClick={() => { setDef(emptyDef()); setResult(null); }}
-          data-testid="new-report-btn"
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg">
+        <Button onClick={() => { setDef(emptyDef()); setResult(null); }} data-testid="new-report-btn">
           + New report
-        </button>
+        </Button>
       </div>
 
       <div className="grid grid-cols-[240px_1fr] gap-5">
@@ -338,22 +337,20 @@ export default function ReportBuilder() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 pt-1">
-                  <button type="button" onClick={() => runMut.mutate()} disabled={runMut.isPending || !def.data_source}
-                    data-testid="run-btn"
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
+                  <Button onClick={() => runMut.mutate()} disabled={!def.data_source}
+                    loading={runMut.isPending} data-testid="run-btn">
                     {runMut.isPending ? 'Running…' : 'Run'}
-                  </button>
-                  <button type="button" onClick={() => saveMut.mutate()} disabled={!def.name.trim() || !def.data_source || saveMut.isPending}
-                    data-testid="save-report-btn"
-                    className="px-4 py-2 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50 text-sm font-medium rounded-lg">
+                  </Button>
+                  <Button variant="secondary" onClick={() => saveMut.mutate()}
+                    disabled={!def.name.trim() || !def.data_source} loading={saveMut.isPending}
+                    data-testid="save-report-btn">
                     {def.id ? 'Save changes' : 'Save report'}
-                  </button>
+                  </Button>
                   {def.id && (
                     <>
-                      <button type="button" onClick={() => dupMut.mutate()} data-testid="duplicate-btn"
-                        className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Duplicate</button>
-                      <button type="button" onClick={() => delMut.mutate()} data-testid="delete-btn"
-                        className="px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg">Delete</button>
+                      <Button variant="ghost" onClick={() => dupMut.mutate()} data-testid="duplicate-btn">Duplicate</Button>
+                      <Button variant="ghost" onClick={() => delMut.mutate()} data-testid="delete-btn"
+                        className="text-red-600 hover:bg-red-50 active:bg-red-100">Delete</Button>
                     </>
                   )}
                 </div>
