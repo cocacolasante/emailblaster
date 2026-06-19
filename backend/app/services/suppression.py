@@ -44,6 +44,7 @@ _HALT_REASONS: dict[SuppressionReason, str] = {
     SuppressionReason.SPAM: "suppressed — marked as spam (Brevo)",
     SuppressionReason.UNSUBSCRIBED: "suppressed — recipient unsubscribed (Brevo)",
     SuppressionReason.BLOCKED: "suppressed — recipient blocklisted (Brevo)",
+    SuppressionReason.SOFT_BOUNCE: "suppressed — soft bounce (protecting sender reputation)",
 }
 
 

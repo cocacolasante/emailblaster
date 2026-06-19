@@ -108,15 +108,17 @@ async def test_unsubscribe_event_adds_suppression(db_session):
     assert sup.reason == SuppressionReason.UNSUBSCRIBED
 
 
-async def test_soft_bounce_does_NOT_add_suppression(db_session):
+async def test_soft_bounce_suppresses_at_default_threshold(db_session, monkeypatch):
+    """Soft bounces now suppress at SOFT_BOUNCE_SUPPRESS_THRESHOLD (default 1)
+    to protect sender reputation — and still record the event row."""
+    monkeypatch.setattr("app.services.brevo_events.settings.SOFT_BOUNCE_SUPPRESS_THRESHOLD", 1)
     _, lead = await _make_campaign_and_lead(db_session)
     await process_event(db_session, {
         "event": "softBounce", "messageId": lead.brevo_message_id,
     })
     await db_session.commit()
     sup = await db_session.scalar(select(Suppression).where(Suppression.email == "lead@x.com"))
-    assert sup is None
-    # Soft bounces still record an event row for diagnostics.
+    assert sup is not None and sup.reason is SuppressionReason.SOFT_BOUNCE
     events = (await db_session.execute(select(EmailEvent))).scalars().all()
     assert any(e.event_type == EmailEventType.SOFT_BOUNCE for e in events)
 

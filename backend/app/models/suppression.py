@@ -20,6 +20,10 @@ class SuppressionReason(str, enum.Enum):
     # from a hard bounce or spam complaint; synced from Brevo's blocked-contacts
     # list and the real-time "blocked" transactional event.
     BLOCKED = "blocked"
+    # Repeated (or, by default, a single) soft bounce — transient on its own
+    # but suppressed to protect sender reputation once the per-address soft
+    # bounce count reaches SOFT_BOUNCE_SUPPRESS_THRESHOLD.
+    SOFT_BOUNCE = "soft_bounce"
 
 
 def canonical_email(email: str | None) -> str:

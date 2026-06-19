@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     # unsubscribes / spam / admin-blocked) into the suppression list — the
     # backstop to the real-time events poller.  Default every 6 hours.
     BREVO_BLOCKLIST_SYNC_INTERVAL_MINUTES: int = 360
+    # Suppress an address once its soft-bounce count reaches this threshold.
+    # Soft bounces are transient, but repeated ones hurt sender reputation;
+    # default 1 = suppress on the first soft bounce.  Set to 0 to disable
+    # (never suppress on soft bounce — Brevo still escalates persistent ones
+    # to hard bounces/blocks, which always suppress).
+    SOFT_BOUNCE_SUPPRESS_THRESHOLD: int = 1
     # Legacy: the (now-deleted) /webhooks/brevo route used this as a
     # shared-secret gate.  No longer referenced anywhere; keep the
     # setting for one release so anybody whose .env still has it doesn't

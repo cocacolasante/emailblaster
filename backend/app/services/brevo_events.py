@@ -14,14 +14,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
     SuppressionReason,
+    canonical_email,
 )
 
 
@@ -150,6 +152,32 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
         from app.services import suppression as _suppression  # avoid import cycle
 
         await _suppression.suppress_email(db, lead.email, suppression_reason)
+
+    # Soft bounces are transient on their own, but repeated ones hurt sender
+    # reputation — suppress the address once its soft-bounce count reaches
+    # SOFT_BOUNCE_SUPPRESS_THRESHOLD (default 1 = suppress on the first; 0
+    # disables).  Counted per-address across campaigns; flush first so the row
+    # we just added is included.
+    elif (
+        event_type == EmailEventType.SOFT_BOUNCE
+        and settings.SOFT_BOUNCE_SUPPRESS_THRESHOLD > 0
+    ):
+        await db.flush()
+        soft_count = (await db.scalar(
+            select(func.count())
+            .select_from(EmailEvent)
+            .join(Lead, Lead.id == EmailEvent.lead_id)
+            .where(
+                EmailEvent.event_type == EmailEventType.SOFT_BOUNCE,
+                func.lower(Lead.email) == canonical_email(lead.email),
+            )
+        )) or 0
+        if soft_count >= settings.SOFT_BOUNCE_SUPPRESS_THRESHOLD:
+            from app.services import suppression as _suppression  # avoid import cycle
+
+            await _suppression.suppress_email(
+                db, lead.email, SuppressionReason.SOFT_BOUNCE,
+            )
 
     # Circuit breaker: a fresh HARD_BOUNCE/SPAM is the cheapest moment to
     # re-check just this campaign's health (the beat sweep is the backstop).

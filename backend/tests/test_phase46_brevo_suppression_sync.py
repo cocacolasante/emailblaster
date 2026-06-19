@@ -146,6 +146,44 @@ async def test_process_event_blocked_suppresses_and_halts(db_session):
     assert lead.send_status is SendStatus.SUPPRESSED
 
 
+async def test_soft_bounce_suppresses_at_threshold_one(db_session, monkeypatch):
+    """Default threshold = 1: a single soft bounce suppresses the address
+    (protecting sender reputation) and removes it from the campaign."""
+    monkeypatch.setattr("app.services.brevo_events.settings.SOFT_BOUNCE_SUPPRESS_THRESHOLD", 1)
+    campaign = await _campaign(db_session)
+    lead = await _lead_with_active_state(db_session, campaign, "soft@x.com")
+    lead.brevo_message_id = "soft-1"
+    await db_session.commit()
+
+    recorded = await process_event(db_session, {"event": "soft_bounce", "message-id": "soft-1"})
+    await db_session.commit()
+
+    assert recorded is True
+    sup = await db_session.scalar(select(Suppression).where(Suppression.email == "soft@x.com"))
+    assert sup is not None and sup.reason is SuppressionReason.SOFT_BOUNCE
+    state = await db_session.scalar(select(LeadSequenceState).where(LeadSequenceState.lead_id == lead.id))
+    assert state.status is LeadSequenceStatus.HALTED
+    await db_session.refresh(lead)
+    assert lead.send_status is SendStatus.SUPPRESSED
+
+
+async def test_soft_bounce_threshold_zero_does_not_suppress(db_session, monkeypatch):
+    """Threshold 0 keeps the old behaviour: soft bounces are recorded but never
+    suppress (Brevo still escalates persistent ones to hard bounces/blocks)."""
+    monkeypatch.setattr("app.services.brevo_events.settings.SOFT_BOUNCE_SUPPRESS_THRESHOLD", 0)
+    campaign = await _campaign(db_session)
+    lead = await _lead_with_active_state(db_session, campaign, "soft0@x.com")
+    lead.brevo_message_id = "soft0-1"
+    await db_session.commit()
+
+    recorded = await process_event(db_session, {"event": "soft_bounce", "message-id": "soft0-1"})
+    await db_session.commit()
+
+    assert recorded is True  # the event row is still recorded
+    sup = await db_session.scalar(select(Suppression).where(Suppression.email == "soft0@x.com"))
+    assert sup is None  # but the address is NOT suppressed
+
+
 # --------------------------------------------------------------------------
 # Brevo blocklist sync
 # --------------------------------------------------------------------------
