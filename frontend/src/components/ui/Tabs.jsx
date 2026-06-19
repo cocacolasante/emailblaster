@@ -5,6 +5,8 @@
  * The caller renders the active panel; this is just the strip.
  */
 import { useRef } from 'react';
+import { motion } from 'framer-motion';
+import { spring } from '../../utils/motion.js';
 
 export function Tabs({ tabs, active, onChange, className = '', testId = 'tabs' }) {
   const ref = useRef(null);
@@ -46,17 +48,26 @@ export function Tabs({ tabs, active, onChange, className = '', testId = 'tabs' }
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange?.(t.key)}
-            className={`px-3.5 py-2 -mb-px text-sm font-medium border-b-2 transition-colors duration-fast
+            className={`relative px-3.5 py-2 -mb-px text-sm font-medium border-b-2 border-transparent transition-colors duration-fast
               focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 rounded-t
               ${selected
-                ? 'border-brand-600 text-brand-700'
-                : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'}`}
+                ? 'text-brand-700'
+                : 'text-slate-500 hover:text-slate-800'}`}
           >
             {t.label}
             {t.count != null && (
               <span className={`ml-1.5 text-xs ${selected ? 'text-brand-500' : 'text-slate-400'}`}>
                 {t.count}
               </span>
+            )}
+            {selected && (
+              // Shared-layout underline that glides between tabs as the active
+              // key changes (snaps under reduced motion via the root MotionConfig).
+              <motion.span
+                layoutId={`${testId}-indicator`}
+                className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-brand-600"
+                transition={spring}
+              />
             )}
           </button>
         );

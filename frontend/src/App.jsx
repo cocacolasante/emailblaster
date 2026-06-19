@@ -1,4 +1,5 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
+import { MotionConfig, motion } from 'framer-motion';
 import Campaigns from './pages/Campaigns.jsx';
 import CampaignCreate from './pages/CampaignCreate.jsx';
 import CampaignDetail from './pages/CampaignDetail.jsx';
@@ -22,39 +23,67 @@ import Nav from './components/Nav.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { ToastProvider } from './components/Toast.jsx';
 import NotificationBell from './components/NotificationBell.jsx';
+import { spring } from './utils/motion.js';
+
+/**
+ * Routed content with a calm page-mount transition (Phase 4, UI refinement).
+ * Keyed on the pathname so navigating between pages re-mounts + animates the
+ * content in (fade + a few px rise) — non-blocking: there's no exit animation
+ * to wait on, the new page renders immediately with its initial style and
+ * settles via the shared spring.  Under `prefers-reduced-motion: reduce` the
+ * MotionConfig at the root snaps it instantly.
+ */
+function RoutedContent() {
+  const location = useLocation();
+  return (
+    <motion.div
+      key={location.pathname}
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={spring}
+    >
+      <Routes location={location}>
+        <Route path="/" element={<Campaigns />} />
+        <Route path="/campaigns/new" element={<CampaignCreate />} />
+        <Route path="/campaigns/:id" element={<CampaignDetail />} />
+        <Route path="/campaigns/:id/preview" element={<Preview />} />
+        <Route path="/campaigns/:id/sequence" element={<SequenceBuilder />} />
+        <Route path="/campaigns/:id/analytics" element={<Analytics />} />
+        <Route path="/leads" element={<Leads />} />
+        <Route path="/opportunities" element={<Opportunities />} />
+        <Route path="/opportunities/:id" element={<OpportunityDetail />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/reports/builder" element={<ReportBuilder />} />
+        <Route path="/replies" element={<Replies />} />
+        <Route path="/research-client" element={<ResearchClient />} />
+        <Route path="/signals" element={<Signals />} />
+        <Route path="/lookalikes" element={<Lookalikes />} />
+        <Route path="/social-radar" element={<SocialRadar />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/ui-kit" element={<UiKit />} />{/* internal design-system preview */}
+      </Routes>
+    </motion.div>
+  );
+}
 
 export default function App() {
   return (
-    <ToastProvider>
-      <div className="flex min-h-screen bg-slate-50">
-        <Nav />
-        <main className="flex-1 min-w-0 overflow-auto">
-          <NotificationBell />
-          <ErrorBoundary>
-            <Routes>
-              <Route path="/" element={<Campaigns />} />
-              <Route path="/campaigns/new" element={<CampaignCreate />} />
-              <Route path="/campaigns/:id" element={<CampaignDetail />} />
-              <Route path="/campaigns/:id/preview" element={<Preview />} />
-              <Route path="/campaigns/:id/sequence" element={<SequenceBuilder />} />
-              <Route path="/campaigns/:id/analytics" element={<Analytics />} />
-              <Route path="/leads" element={<Leads />} />
-              <Route path="/opportunities" element={<Opportunities />} />
-              <Route path="/opportunities/:id" element={<OpportunityDetail />} />
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/reports" element={<Reports />} />
-              <Route path="/reports/builder" element={<ReportBuilder />} />
-              <Route path="/replies" element={<Replies />} />
-              <Route path="/research-client" element={<ResearchClient />} />
-              <Route path="/signals" element={<Signals />} />
-              <Route path="/lookalikes" element={<Lookalikes />} />
-              <Route path="/social-radar" element={<SocialRadar />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/ui-kit" element={<UiKit />} />{/* internal design-system preview */}
-            </Routes>
-          </ErrorBoundary>
-        </main>
-      </div>
-    </ToastProvider>
+    // reducedMotion="user" → every framer-motion surface (modals, menus, tab
+    // indicator, list mounts, this page transition) honors the OS
+    // "reduce motion" setting automatically.
+    <MotionConfig reducedMotion="user" transition={spring}>
+      <ToastProvider>
+        <div className="flex min-h-screen bg-slate-50">
+          <Nav />
+          <main className="flex-1 min-w-0 overflow-auto">
+            <NotificationBell />
+            <ErrorBoundary>
+              <RoutedContent />
+            </ErrorBoundary>
+          </main>
+        </div>
+      </ToastProvider>
+    </MotionConfig>
   );
 }

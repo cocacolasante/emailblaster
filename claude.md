@@ -22,7 +22,37 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **UI refinement Phase 3 — shell, IA & tab
+- **Last completed:** **UI refinement Phase 4 — motion &
+  micro-interactions.**  Wired the global reduced-motion guarantee + the
+  page/tab motion the primitives didn't already cover.
+  - **`<MotionConfig reducedMotion="user">` at the app root** (`App.jsx`) —
+    every framer-motion surface (Modal, Menu, the new tab indicator, the
+    Replies list mounts, the page transition) now honors the OS
+    "reduce motion" setting automatically, snapping transform/opacity to
+    target.  A default `transition={spring}` is set there too so motion
+    feels uniform.
+  - **Calm page-mount transition** (`RoutedContent` in `App.jsx`): the routed
+    content is a `motion.div` keyed on `location.pathname`, so navigating
+    re-mounts + animates the page in (fade + 6px rise) on the shared spring.
+    Non-blocking by design — no exit animation to wait on; the new page
+    renders immediately and settles.  Verified all 7 App route-render tests
+    still resolve their headings through the wrapper.
+  - **Sliding tab indicator** (`components/ui/Tabs.jsx`): the active underline
+    is now a shared-layout `motion.span` (`layoutId={testId-indicator}`) that
+    glides between tabs as the active key changes — so all 3 consolidated
+    strips (CampaignDetail / Settings / SocialRadar) get the motion from one
+    place.  Replaced the per-button `border-brand-600`; roving tabindex +
+    `aria-selected` contract unchanged.
+  - **Already covered earlier:** modals/sheets + dropdowns/menus animate via
+    the Phase-2 primitives (`overlayVariants`/`modalVariants`/`popVariants`),
+    the Replies list staggers in (Phase 1), and the Opportunities Kanban
+    reorders via `@dnd-kit`'s own CSS transforms — left untouched to avoid
+    fighting two transform systems.  `whileTap`/`tap` preset stays opt-in per
+    surface.
+  - Verified: frontend **421** green; build clean.  No backend changes
+    (**1117**).
+  - **Checkpoint: Phase 4 done — Phase 5 (states/forms/data-density) next.**
+- **Previously:** **UI refinement Phase 3 — shell, IA & tab
   consolidation.**  Started the primitive-adoption sweep on the highest-drift
   surfaces.
   - **Tabs consolidation:** the 3 hand-rolled tab strips (CampaignDetail,
