@@ -155,6 +155,21 @@ async def send_daily_session(session: AsyncSession) -> dict[str, Any]:
     if not agent_settings.daily_digest_enabled:
         return {"skipped": "daily_digest_disabled"}
 
+    # Close any due/overdue task the user has already acted on (a touch logged
+    # on the lead/deal since it was created) BEFORE building the digest, so the
+    # daily notification doesn't list work that's already done.  build_digest
+    # stays read-only — these are completed here, then excluded by its
+    # completed_at IS NULL filter.
+    candidates = (await session.execute(
+        select(CrmActivity).where(
+            CrmActivity.activity_type == CrmActivityType.TASK,
+            CrmActivity.completed_at.is_(None),
+            CrmActivity.due_at.is_not(None),
+            CrmActivity.due_at <= _now() + timedelta(hours=24),
+        )
+    )).scalars().all()
+    await agent_core.complete_handled_tasks(session, list(candidates))
+
     today = _now().strftime("%Y-%m-%d")
     data = await build_digest(session)
     title, body = render_digest(data)

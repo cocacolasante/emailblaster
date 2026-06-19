@@ -33,7 +33,7 @@ from app.models import (
     Lead,
     Opportunity,
 )
-from app.services import brevo
+from app.services import agent_core, brevo
 from app.services.signature import render_email_with_signature
 
 logger = logging.getLogger(__name__)
@@ -184,6 +184,14 @@ async def send_and_track(
             body=(body[:1000] + "…") if len(body) > 1000 else body,
             direction=CrmActivityDirection.OUTBOUND,
         ))
+        await db.flush()
+        # The outbound touch closes any open due/overdue "reach out" task on
+        # this lead/deal — the reminder's work has now been done.
+        await agent_core.autocomplete_due_tasks_for_record(
+            db,
+            lead_id=target_lead.id,
+            opportunity_id=opportunity.id if opportunity is not None else None,
+        )
         await db.commit()
         result.crm_lead_id = str(target_lead.id)
         result.crm_activity_logged = True

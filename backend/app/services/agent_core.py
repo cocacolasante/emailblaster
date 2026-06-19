@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -125,6 +125,116 @@ async def _open_agent_task_exists(
     if opportunity_id is not None:
         q = q.where(CrmActivity.opportunity_id == opportunity_id)
     return (await session.scalar(q.limit(1))) is not None
+
+
+# --------------------------------------------------------------------------
+# Auto-complete tasks once the lead/deal has been acted on
+# --------------------------------------------------------------------------
+
+# Activity types that count as a real "touch" on a lead/deal.  Logging one
+# means the open to-do for that record has been acted on — so a due/overdue
+# task whose work has clearly been done stops nagging in the reminder sweep
+# and the daily digest.  Creating another TASK is NOT a touch (it's more
+# to-do, not "done").
+TOUCH_ACTIVITY_TYPES = (
+    CrmActivityType.CALL,
+    CrmActivityType.EMAIL,
+    CrmActivityType.MEETING,
+    CrmActivityType.NOTE,
+)
+
+
+async def _task_handled_since_creation(
+    session: AsyncSession, task: CrmActivity
+) -> bool:
+    """True when a touch activity (call/email/meeting/note) was logged on the
+    task's lead OR opportunity at/after the task was created — i.e. the work
+    the task represents has since been acted on.  Backdated touches that
+    occurred BEFORE the task was created don't count."""
+    parents = []
+    if task.lead_id is not None:
+        parents.append(CrmActivity.lead_id == task.lead_id)
+    if task.opportunity_id is not None:
+        parents.append(CrmActivity.opportunity_id == task.opportunity_id)
+    if not parents:
+        return False
+    hit = await session.scalar(
+        select(CrmActivity.id)
+        .where(
+            CrmActivity.activity_type.in_(TOUCH_ACTIVITY_TYPES),
+            CrmActivity.occurred_at >= task.created_at,
+            or_(*parents),
+        )
+        .limit(1)
+    )
+    return hit is not None
+
+
+async def complete_handled_tasks(
+    session: AsyncSession, tasks: list[CrmActivity]
+) -> list[CrmActivity]:
+    """Among the given OPEN tasks, mark complete the ones already handled by a
+    logged touch activity (sets ``completed_at`` = now + an audit row).  Returns
+    the tasks that were completed; the caller owns the transaction.
+
+    Single source of truth for the rule, shared by the reminder sweep + daily
+    digest (so neither nags about a task the user already acted on) and the
+    activity-create path (so the task closes the moment the touch is logged).
+    """
+    completed: list[CrmActivity] = []
+    now = datetime.now(timezone.utc)
+    for task in tasks:
+        if task.completed_at is not None:
+            continue
+        if await _task_handled_since_creation(session, task):
+            task.completed_at = now
+            completed.append(task)
+            record_agent_action(
+                session,
+                action_type=AgentActionType.LOG_ACTIVITY,
+                status=AgentActionStatus.SUCCESS,
+                summary=(
+                    "Auto-completed task — activity logged on the record "
+                    f"since it was created: {task.subject}"
+                )[:500],
+                lead_id=task.lead_id,
+                opportunity_id=task.opportunity_id,
+                activity_id=task.id,
+                detail={"reason": "activity_logged_after_task"},
+            )
+    return completed
+
+
+async def autocomplete_due_tasks_for_record(
+    session: AsyncSession,
+    *,
+    lead_id: uuid.UUID | None = None,
+    opportunity_id: uuid.UUID | None = None,
+) -> list[CrmActivity]:
+    """Complete the record's OPEN, currently due-or-overdue tasks that have been
+    handled by a logged touch.  Call right after logging a touch activity on a
+    lead/opportunity so the matching reminder closes immediately.
+
+    Scoped to due/overdue tasks (``due_at <= now``) so a touch never prematurely
+    closes a task scheduled for the future — matching "overdue or due task"."""
+    parents = []
+    if lead_id is not None:
+        parents.append(CrmActivity.lead_id == lead_id)
+    if opportunity_id is not None:
+        parents.append(CrmActivity.opportunity_id == opportunity_id)
+    if not parents:
+        return []
+    now = datetime.now(timezone.utc)
+    tasks = (await session.execute(
+        select(CrmActivity).where(
+            CrmActivity.activity_type == CrmActivityType.TASK,
+            CrmActivity.completed_at.is_(None),
+            CrmActivity.due_at.is_not(None),
+            CrmActivity.due_at <= now,
+            or_(*parents),
+        )
+    )).scalars().all()
+    return await complete_handled_tasks(session, list(tasks))
 
 
 async def process_inbound_reply(

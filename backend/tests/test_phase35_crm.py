@@ -312,6 +312,47 @@ async def test_task_complete_and_reopen(client):
     assert reopened.json()["completed_at"] is None
 
 
+async def test_logging_activity_autocompletes_due_task(client):
+    """Logging a touch (call/email/meeting/note) on a lead closes that lead's
+    open due/overdue tasks — the reminder's work has now been done."""
+    lead = (await client.post("/crm/leads", json={"email": "autoc@x.com"})).json()
+    overdue = (_now() - timedelta(days=1)).isoformat()
+    task = (await client.post("/crm/activities", json={
+        "lead_id": lead["id"], "activity_type": "task",
+        "subject": "Reach out", "due_at": overdue,
+    })).json()
+    assert task["completed_at"] is None
+
+    # Log a call on the lead → the overdue reach-out task auto-completes.
+    logged = await client.post("/crm/activities", json={
+        "lead_id": lead["id"], "activity_type": "call",
+        "subject": "Called them back", "direction": "outbound",
+    })
+    assert logged.status_code == 201
+
+    open_tasks = (await client.get(
+        f"/crm/activities?lead_id={lead['id']}&open_tasks=true"
+    )).json()
+    assert open_tasks["total"] == 0  # the task is no longer open
+
+
+async def test_logging_activity_leaves_future_task_open(client):
+    """A touch must not prematurely close a task scheduled for the future."""
+    lead = (await client.post("/crm/leads", json={"email": "future@x.com"})).json()
+    future = (_now() + timedelta(days=5)).isoformat()
+    await client.post("/crm/activities", json={
+        "lead_id": lead["id"], "activity_type": "task",
+        "subject": "Send proposal next week", "due_at": future,
+    })
+    await client.post("/crm/activities", json={
+        "lead_id": lead["id"], "activity_type": "note", "subject": "quick note",
+    })
+    open_tasks = (await client.get(
+        f"/crm/activities?lead_id={lead['id']}&open_tasks=true"
+    )).json()
+    assert open_tasks["total"] == 1  # future task stays open
+
+
 async def test_open_tasks_view_orders_by_due_date(client):
     lead = (await client.post("/crm/leads", json={"email": "due@x.com"})).json()
     later = (_now() + timedelta(days=5)).isoformat()

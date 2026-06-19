@@ -33,6 +33,7 @@ from app.models import (
     Pipeline,
     PipelineStage,
 )
+from app.services import agent_core
 from app.schemas.crm import (
     ActivityCreate,
     ActivityResponse,
@@ -553,6 +554,15 @@ async def create_activity(
         occurred_at=payload.occurred_at or _now(),
     )
     db.add(activity)
+    await db.flush()
+    # Logging a touch (call/email/meeting/note) on a lead/deal closes that
+    # record's open due/overdue tasks — the work the reminder was nagging
+    # about has now been done.  No-op for TASK activities (more to-do, not
+    # "done") and for future-dated tasks.
+    if activity.activity_type in agent_core.TOUCH_ACTIVITY_TYPES:
+        await agent_core.autocomplete_due_tasks_for_record(
+            db, lead_id=activity.lead_id, opportunity_id=activity.opportunity_id,
+        )
     await db.commit()
     await db.refresh(activity)
     return ActivityResponse.model_validate(activity)

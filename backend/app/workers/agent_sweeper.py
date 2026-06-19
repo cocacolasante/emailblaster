@@ -58,7 +58,7 @@ async def sweep_reminders_session(session: AsyncSession) -> dict[str, Any]:
     """Notify about open tasks due within AGENT_TASK_DUE_SOON_HOURS or
     already overdue, once per task (``reminder_sent_at`` anchor).
     Caller owns the transaction."""
-    counts = {"due_soon": 0, "overdue": 0, "checked": 0}
+    counts = {"due_soon": 0, "overdue": 0, "checked": 0, "auto_completed": 0}
     if not settings.AGENT_ENABLED:
         return {**counts, "skipped": "agent_disabled"}
 
@@ -77,7 +77,15 @@ async def sweep_reminders_session(session: AsyncSession) -> dict[str, Any]:
     )).scalars().all()
     counts["checked"] = len(tasks)
 
+    # Close any candidate the user has already acted on (a touch activity logged
+    # on the lead/deal since the task was created) rather than nagging about it.
+    autocompleted = await agent_core.complete_handled_tasks(session, list(tasks))
+    counts["auto_completed"] = len(autocompleted)
+    done_ids = {t.id for t in autocompleted}
+
     for task in tasks:
+        if task.id in done_ids:
+            continue
         overdue = task.due_at <= now
         kind = NotificationKind.TASK_OVERDUE if overdue else NotificationKind.TASK_DUE
         outcome = await notifications.notify(

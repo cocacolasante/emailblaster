@@ -22,7 +22,56 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **UI refinement Phase 6 — accessibility, final
+- **Last completed:** **Auto-complete CRM tasks once the lead/deal has
+  been acted on.**  When a *touch* activity (call / email / meeting / note) is
+  logged on a lead or opportunity, that record's open **due/overdue** tasks
+  auto-complete — so the reminder sweep + daily digest stop nagging about work
+  that's already done.
+  - **Single rule, in `agent_core.py`:** `_task_handled_since_creation` (a
+    touch on the task's lead/opp with `occurred_at >= task.created_at`),
+    `complete_handled_tasks(tasks)` (completes the handled ones + writes a
+    `LOG_ACTIVITY` audit row), and `autocomplete_due_tasks_for_record(...)` (the
+    inline hook — scoped to `due_at <= now` so a touch never prematurely closes
+    a future-scheduled task).  `TOUCH_ACTIVITY_TYPES` = call/email/meeting/note
+    (a new TASK is more to-do, not "done", so it triggers nothing).
+  - **Three entry points, one rule:** (1) inline on `POST /crm/activities`
+    (`routers/crm.py`, flush → autocomplete → commit) and the outbound-send
+    path (`outreach.send_and_track`) so the task closes the instant the touch is
+    logged; (2) the reminder sweep (`agent_sweeper.sweep_reminders_session`)
+    reconciles before notifying (new `auto_completed` count); (3) the daily
+    digest (`digest.send_daily_session`) reconciles before counting, so the
+    **daily notification** never lists handled tasks.  `build_digest` stays
+    read-only — handled tasks are completed just before it runs and excluded by
+    its `completed_at IS NULL` filter.
+  - **"after the task is created"** is exact: a back-dated touch that occurred
+    *before* the task was created doesn't count.  Stays within the agent
+    autonomy boundary (closing a reminder once the user acted is benign
+    bookkeeping — never converts/sends/restages/deletes).
+  - Tests: 6 backend (sweeper auto-complete + predates-guard + inline due-close
+    + inline future-skip; CRM-router auto-complete + future-stays-open).
+    Verified: backend **1124** green.  No frontend change needed (the lead
+    modal / ActivityLog refetch shows the completion).
+- **Previously:** **Two sequencer send fixes (live + committed `0f870e9`).**
+  Found investigating campaigns whose `email_reply` steps showed endless
+  "skipped" rows + ×N clusters that looked like duplicate sends.
+  - **Deferred gate-trips no longer write execution rows.**  A `deferred`
+    result (paused / outside window / min_delay / hourly_cap / daily_cap) is
+    "try again later", not a skipped attempt — the step never reached Brevo.
+    Recording it as a SKIPPED row made a parked lead (re-checking every few
+    minutes, e.g. a follow-up starved behind the first-email pacer for the
+    shared rate budget) look identical to a real skip AND grew
+    `lead_step_executions` without bound.  Now it parks + reschedules without a
+    row (like `stale_dispatch`).  Remediation: deleted the historical
+    deferral-noise rows on the affected reply nodes.
+  - **At-most-once send guard.**  `_already_executed_ever` is a READ and the
+    SENT row isn't written until after the send returns — a race where a
+    redelivered / concurrent / task-retried send could double-send.  Added an
+    atomic Redis claim keyed `seq:emailsent:{lead}:{node}` (`SET NX`) right
+    before the Brevo call; first claimer is the only sender.  Released on a
+    genuine send failure (never drops a real send), and the post-send counter
+    bump is best-effort (a raise there would retry the whole task).  Confirmed
+    DB-wide: 0 leads with >1 reply send.
+- **Previously:** **UI refinement Phase 6 — accessibility, final
   consistency hunt & QA report (final phase).**  Completes the six-phase
   "Apple-feel" UI refinement (tokens → primitives → shell → motion → states →
   this).  QA report: [`docs/ui-refinement-qa.md`](docs/ui-refinement-qa.md).
@@ -3041,7 +3090,7 @@ honest result; the regex + worker plumbing is verified by unit tests):
 $0 marginal Anthropic spend.  Migration 0020 + 28 new backend tests +
 2 new frontend tests._
 
-_Backend tests: **1117 passing**.  Frontend tests: **423 passing**._
+_Backend tests: **1124 passing**.  Frontend tests: **423 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

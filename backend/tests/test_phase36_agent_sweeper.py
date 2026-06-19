@@ -116,6 +116,86 @@ async def test_sweep_skipped_when_agent_disabled(db_session, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# auto-complete tasks once the lead/deal has been acted on
+# --------------------------------------------------------------------------
+
+
+async def _add_touch(db_session, task, *, kind=CrmActivityType.NOTE, occurred_at=None):
+    db_session.add(CrmActivity(
+        lead_id=task.lead_id,
+        opportunity_id=task.opportunity_id,
+        activity_type=kind,
+        subject="touch",
+        occurred_at=occurred_at or _now(),
+    ))
+    await db_session.commit()
+
+
+async def test_sweep_autocompletes_task_with_touch_since_creation(db_session):
+    """A touch logged on the deal after the task was created closes the task —
+    the reminder sweep auto-completes it instead of notifying."""
+    task = await _make_task(db_session, due_in_hours=-30)  # overdue
+    await _add_touch(db_session, task)  # logged now (after task creation)
+
+    counts = await sweep_reminders_session(db_session)
+    await db_session.commit()
+
+    assert counts["auto_completed"] == 1
+    assert counts["overdue"] == 0 and counts["due_soon"] == 0
+    await db_session.refresh(task)
+    assert task.completed_at is not None
+    # No reminder for a task that's already been handled.
+    assert (await db_session.scalar(select(Notification))) is None
+
+
+async def test_sweep_does_not_autocomplete_when_touch_predates_task(db_session):
+    """A touch that occurred BEFORE the task was created doesn't count — the
+    reminder still fires."""
+    task = await _make_task(db_session, due_in_hours=-30)
+    await _add_touch(db_session, task, occurred_at=task.created_at - timedelta(hours=1))
+
+    counts = await sweep_reminders_session(db_session)
+    await db_session.commit()
+
+    assert counts["auto_completed"] == 0
+    assert counts["overdue"] == 1
+    await db_session.refresh(task)
+    assert task.completed_at is None
+
+
+async def test_autocomplete_due_tasks_for_record_closes_due_task(db_session):
+    """The inline path (called when an activity is logged) closes the record's
+    open due/overdue tasks."""
+    task = await _make_task(db_session, due_in_hours=-2)
+    await _add_touch(db_session, task, kind=CrmActivityType.EMAIL)
+
+    completed = await agent_core.autocomplete_due_tasks_for_record(
+        db_session, opportunity_id=task.opportunity_id,
+    )
+    await db_session.commit()
+
+    assert len(completed) == 1
+    await db_session.refresh(task)
+    assert task.completed_at is not None
+
+
+async def test_autocomplete_leaves_future_dated_task_open(db_session):
+    """A touch must NOT prematurely close a task scheduled for the future —
+    only currently due/overdue tasks are auto-completed."""
+    task = await _make_task(db_session, due_in_hours=24 * 7)  # next week
+    await _add_touch(db_session, task)
+
+    completed = await agent_core.autocomplete_due_tasks_for_record(
+        db_session, opportunity_id=task.opportunity_id,
+    )
+    await db_session.commit()
+
+    assert completed == []
+    await db_session.refresh(task)
+    assert task.completed_at is None
+
+
+# --------------------------------------------------------------------------
 # quiet hours
 # --------------------------------------------------------------------------
 
