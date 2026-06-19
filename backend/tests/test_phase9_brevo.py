@@ -67,8 +67,10 @@ async def test_posts_with_expected_payload_and_headers(monkeypatch):
     assert payload["subject"] == "Hello"
     assert payload["htmlContent"] == "<p>Hi</p>"
     assert payload["textContent"] == "Hi"
-    assert payload["headers"]["X-Campaign-ID"] == "campaign-1"
-    assert payload["headers"]["X-Lead-ID"] == "lead-1"
+    # No custom X-Campaign-ID / X-Lead-ID headers — they were dead metadata
+    # and read as mailshot/bulk markers to receiving gateways.  With no
+    # threading either, the headers block is omitted entirely.
+    assert "headers" not in payload
 
 
 async def test_omits_recipient_name_when_none(monkeypatch):
@@ -145,6 +147,6 @@ async def test_no_threading_headers_without_in_reply_to(monkeypatch):
             sender_name="S", sender_email="s@x.com",
             campaign_id="c", lead_id="l",
         )
-    headers = post.call_args.kwargs["json"]["headers"]
-    assert "In-Reply-To" not in headers
-    assert "References" not in headers
+    # With no threading and no custom headers, the block is omitted entirely.
+    payload = post.call_args.kwargs["json"]
+    assert "headers" not in payload

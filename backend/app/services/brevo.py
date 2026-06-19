@@ -66,10 +66,14 @@ async def send_email(
     if to_name:
         recipient["name"] = to_name
 
-    headers: dict[str, Any] = {
-        "X-Campaign-ID": str(campaign_id),
-        "X-Lead-ID": str(lead_id),
-    }
+    # NOTE: we deliberately send NO custom ``X-Campaign-ID`` / ``X-Lead-ID``
+    # headers.  They were dead metadata — nothing reads them (Brevo events are
+    # matched by messageId via polling, and the inbound Brevo webhook was
+    # removed) — and custom ``X-Campaign-*`` headers read as mailshot/bulk
+    # metadata to receiving gateways (Cisco IronPort / Mimecast etc.), which is
+    # part of what gets a personalised 1:1 outreach email tagged ``[BULK]``.
+    # Brevo still tracks per-message internally via its own messageId.
+    headers: dict[str, Any] = {}
     ref = _wrap_message_id(in_reply_to)
     if ref:
         # RFC 5322 threading: clients group by References (root id) + subject.
@@ -82,8 +86,11 @@ async def send_email(
         "subject": subject,
         "htmlContent": html_body,
         "textContent": text_body,
-        "headers": headers,
     }
+    # Only attach a headers block when we actually have threading headers —
+    # an empty/cruft header set is needless surface for bulk classification.
+    if headers:
+        payload["headers"] = headers
 
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
         resp = await client.post(
