@@ -194,7 +194,7 @@ export default function ReportBuilder() {
             <button key={r.id} type="button" onClick={() => loadSaved(r)}
               data-testid={`saved-report-${r.id}`}
               className={`w-full text-left px-2.5 py-2 rounded-lg text-sm hover:bg-slate-100 ${
-                def.id === r.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700'}`}>
+                def.id === r.id ? 'bg-brand-50 text-brand-700 font-medium' : 'text-slate-700'}`}>
               {r.name}
               <span className="block text-[11px] text-slate-400">{r.data_source}</span>
             </button>
@@ -229,7 +229,7 @@ export default function ReportBuilder() {
                   {['table', 'summary'].map((m) => (
                     <button key={m} type="button" onClick={() => patch({ mode: m })}
                       data-testid={`mode-${m}`} aria-pressed={def.mode === m}
-                      className={`px-3 py-1.5 text-sm font-medium ${def.mode === m ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                      className={`px-3 py-1.5 text-sm font-medium ${def.mode === m ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
                       {m === 'table' ? 'Table' : 'Summary (grouped)'}
                     </button>
                   ))}
@@ -302,7 +302,7 @@ export default function ReportBuilder() {
                       ))}
                       <button type="button" data-testid="add-aggregate-btn"
                         onClick={() => patch({ aggregates: [...def.aggregates, { fn: 'count' }] })}
-                        className="text-xs text-blue-600 hover:underline">+ Add aggregate</button>
+                        className="text-xs text-brand-600 hover:underline">+ Add aggregate</button>
                     </fieldset>
                   </div>
                 )}
@@ -337,7 +337,7 @@ export default function ReportBuilder() {
                   })}
                   <button type="button" data-testid="add-filter-btn"
                     onClick={() => patch({ filters: [...def.filters, { field: '', op: '', value: '' }] })}
-                    className="text-xs text-blue-600 hover:underline">+ Add filter</button>
+                    className="text-xs text-brand-600 hover:underline">+ Add filter</button>
                 </fieldset>
 
                 {/* Actions */}

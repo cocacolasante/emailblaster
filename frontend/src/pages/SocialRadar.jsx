@@ -67,7 +67,7 @@ const FREQUENCY_OPTIONS = [
 ];
 
 const STATUS_PILL = {
-  new: 'bg-blue-100 text-blue-700',
+  new: 'bg-brand-100 text-brand-700',
   saved: 'bg-amber-100 text-amber-700',
   commented: 'bg-emerald-100 text-emerald-700',
   connected: 'bg-emerald-100 text-emerald-700',
@@ -146,7 +146,7 @@ export default function SocialRadar() {
           type="button"
           onClick={() => setEditing('new')}
           data-testid="new-search-btn"
-          className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700"
         >
           + New search
         </button>
@@ -409,7 +409,7 @@ function OpportunityCard({ opp }) {
         {expanded || post.post_text.length <= 280 ? post.post_text : `${post.post_text.slice(0, 280)}…`}
       </p>
       {post.post_text.length > 280 && (
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="text-xs text-blue-600">
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="text-xs text-brand-600">
           {expanded ? 'show less' : 'show more'}
         </button>
       )}
@@ -532,7 +532,7 @@ function SearchesTab({ onView, onEdit }) {
                         because both targets call the same handler. */}
                     <button type="button" onClick={() => onView(s)}
                       data-testid={`view-${s.id}`}
-                      className="text-slate-900 font-medium hover:text-blue-700 text-left">
+                      className="text-slate-900 font-medium hover:text-brand-700 text-left">
                       {s.name}
                     </button>
                   </td>
@@ -551,7 +551,7 @@ function SearchesTab({ onView, onEdit }) {
                     <button type="button" onClick={() => runMut.mutate(s.id)}
                       disabled={runMut.isPending || s.last_run_status === 'running'}
                       data-testid={`run-${s.id}`}
-                      className="text-xs text-blue-600 hover:text-blue-700 mr-3 disabled:opacity-50">
+                      className="text-xs text-brand-600 hover:text-brand-700 mr-3 disabled:opacity-50">
                       Run now
                     </button>
                     <button type="button" onClick={() => onEdit(s)}
@@ -712,7 +712,7 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
             disabled={runMut.isPending || search.last_run_status === 'running'}
             data-testid="detail-run-btn"
             title={estimate ? `Estimated cost: $${estimate.total_cost_usd.toFixed(2)} (cap $${estimate.max_run_cost_usd.toFixed(2)})` : undefined}
-            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50">
             {search.last_run_status === 'running'
               ? 'Running…'
               : (estimate
@@ -799,7 +799,7 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
           {search.expanded_queries?.length ? (
             <div className="flex flex-wrap gap-1.5" data-testid="detail-expanded-queries">
               {search.expanded_queries.map((q) => (
-                <span key={q} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded">{q}</span>
+                <span key={q} className="px-2 py-0.5 bg-brand-50 text-brand-700 text-xs rounded">{q}</span>
               ))}
             </div>
           ) : (
@@ -878,7 +878,7 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
 
 const LAST_RUN_PILL = {
   pending: 'bg-slate-100 text-slate-700',
-  running: 'bg-blue-100 text-blue-700',
+  running: 'bg-brand-100 text-brand-700',
   done: 'bg-emerald-100 text-emerald-700',
   failed: 'bg-red-100 text-red-700',
 };
@@ -1341,7 +1341,7 @@ function SearchEditorModal({ search, onClose }) {
                     title={s.help}
                     className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
                       active
-                        ? 'bg-blue-600 text-white border-blue-600'
+                        ? 'bg-brand-600 text-white border-brand-600'
                         : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                     }`}
                   >
@@ -1406,7 +1406,7 @@ function SearchEditorModal({ search, onClose }) {
               rows={5}
               data-testid="input-watchlist"
               placeholder={'https://www.linkedin.com/in/jane-doe\nhttps://www.linkedin.com/in/bob-smith\n... (or paste a CSV column)'}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
             {(() => {
               const { valid, invalid } = classifyWatchlistEntries(
@@ -1486,7 +1486,7 @@ function SearchEditorModal({ search, onClose }) {
                   rows={8}
                   data-testid="input-expanded-queries"
                   placeholder={'frustrated with our msp\nanyone else fed up with their phone vendor\nlooking for a new internet provider for our DC office'}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
               </Field>
             </div>
@@ -1511,7 +1511,7 @@ function SearchEditorModal({ search, onClose }) {
                 {preview.length === 0
                   ? <span className="text-xs text-slate-400 italic">No queries returned.</span>
                   : preview.map((q) => (
-                    <span key={q} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded">{q}</span>
+                    <span key={q} className="px-2 py-0.5 bg-brand-50 text-brand-700 text-xs rounded">{q}</span>
                   ))
                 }
               </div>
@@ -1527,7 +1527,7 @@ function SearchEditorModal({ search, onClose }) {
               onClick={() => saveMut.mutate()}
               disabled={!canSave}
               data-testid="save-search-btn"
-              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+              className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50">
               {saveMut.isPending ? 'Saving…' : (isNew ? 'Create search' : 'Save changes')}
             </button>
           </div>

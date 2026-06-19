@@ -196,7 +196,7 @@ const SEQ_KIND_LABELS = {
 };
 
 const SEQ_KIND_COLORS = {
-  email: 'bg-blue-100 text-blue-700',
+  email: 'bg-brand-100 text-brand-700',
   email_reply: 'bg-indigo-100 text-indigo-700',
   wait: 'bg-slate-100 text-slate-500',
   linkedin_view_profile: 'bg-sky-100 text-sky-700',
@@ -235,7 +235,7 @@ function SequencePerformance({ id }) {
 
   const summary = [
     { label: 'Active', value: data.active, color: 'text-emerald-700' },
-    { label: 'Completed', value: data.completed, color: 'text-blue-700' },
+    { label: 'Completed', value: data.completed, color: 'text-brand-700' },
     { label: 'Pending', value: data.pending, color: 'text-amber-600' },
     { label: 'Halted', value: data.halted, color: 'text-red-600' },
   ];
@@ -288,7 +288,7 @@ function SequencePerformance({ id }) {
               <td className="px-4 py-2.5 text-right tabular font-medium text-emerald-700">{n.sent}</td>
               <td className="px-4 py-2.5 text-right tabular text-slate-500">{n.skipped}</td>
               <td className="px-4 py-2.5 text-right tabular text-red-600">{n.failed}</td>
-              <td className="px-4 py-2.5 text-right tabular text-blue-700">{n.currently_here}</td>
+              <td className="px-4 py-2.5 text-right tabular text-brand-700">{n.currently_here}</td>
             </tr>
           ))}
         </tbody>
@@ -338,7 +338,7 @@ export function AnalyticsContent({ id, includeLeadTable = true }) {
       {!replyTracking && (
         <div data-testid="reply-tracking-banner" className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 mb-4">
           Reply tracking is not configured for this campaign.{' '}
-          <a href="/settings" className="text-blue-600 hover:underline">Connect an inbox</a>{' '}
+          <a href="/settings" className="text-brand-600 hover:underline">Connect an inbox</a>{' '}
           in Settings to track replies on future campaigns.
         </div>
       )}

@@ -14,7 +14,7 @@ export default {
         brand: {
           50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
           400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8',
-          800: '#1e40af',
+          800: '#1e40af', 900: '#1e3a8a',
         },
         // Semantic scales (Phase 1, UI refinement) — aliased to the hues the
         // app already uses for status, so adoption is drop-in.  One source of

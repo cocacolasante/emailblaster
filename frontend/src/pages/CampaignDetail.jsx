@@ -31,7 +31,7 @@ import { AnalyticsContent } from './Analytics.jsx';
 const STATUS_CLASSES = {
   draft:      'bg-slate-100 text-slate-600',
   previewing: 'bg-yellow-100 text-yellow-700',
-  approved:   'bg-blue-100 text-blue-700',
+  approved:   'bg-brand-100 text-brand-700',
   running:    'bg-emerald-100 text-emerald-700',
   paused:     'bg-amber-100 text-amber-700',
   complete:   'bg-indigo-100 text-indigo-700',
@@ -56,7 +56,7 @@ function pct(v) {
   return `${(v * 100).toFixed(1)}%`;
 }
 
-function ProgressBar({ value, max, color = 'bg-blue-500' }) {
+function ProgressBar({ value, max, color = 'bg-brand-500' }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
     <div className="flex items-center gap-3">
@@ -122,26 +122,26 @@ function PipelineCard({ progress, status, onLaunch, launchLoading }) {
       {showRewriteCard && (
         <div
           data-testid="goal-rewrite-card"
-          className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3"
+          className="mb-4 rounded-lg border border-brand-200 bg-brand-50 px-4 py-3"
         >
-          <div className="flex items-center justify-between text-xs text-blue-900 mb-1.5">
+          <div className="flex items-center justify-between text-xs text-brand-900 mb-1.5">
             <span className="font-semibold">
               Rewriting emails with new goal
               {goalUpdatedAt && (
-                <span className="font-normal text-blue-700"> · saved {_fmtGoalStamp(goalUpdatedAt)}</span>
+                <span className="font-normal text-brand-700"> · saved {_fmtGoalStamp(goalUpdatedAt)}</span>
               )}
             </span>
             <span className="tabular-nums font-medium" data-testid="rewrite-fraction">
               {rewriteDone} / {rewriteTotal}
             </span>
           </div>
-          <ProgressBar value={rewriteDone} max={rewriteTotal} color="bg-blue-500" />
+          <ProgressBar value={rewriteDone} max={rewriteTotal} color="bg-brand-500" />
           {composing > 0 && (
-            <p className="mt-2 text-xs text-blue-700" data-testid="rewrite-composing">
+            <p className="mt-2 text-xs text-brand-700" data-testid="rewrite-composing">
               {composing} currently being rewritten…
             </p>
           )}
-          <p className="mt-1.5 text-xs text-blue-700">
+          <p className="mt-1.5 text-xs text-brand-700">
             Sent emails are left as-is. Reuses each lead's existing research — no new research runs.
           </p>
         </div>
@@ -158,7 +158,7 @@ function PipelineCard({ progress, status, onLaunch, launchLoading }) {
           <div className="flex justify-between text-xs text-slate-500 mb-1">
             <span>Composed</span>
           </div>
-          <ProgressBar value={composed} max={total} color="bg-blue-500" />
+          <ProgressBar value={composed} max={total} color="bg-brand-500" />
         </div>
         <div>
           <div className="flex justify-between text-xs text-slate-500 mb-1">
@@ -190,7 +190,7 @@ function LinkedInAccountCard({ campaign, linkedinAccounts, onSave, saving }) {
       {linkedinAccounts.length === 0 ? (
         <p className="text-sm text-slate-500">
           No LinkedIn accounts connected.{' '}
-          <a href="/settings" className="text-blue-600 hover:underline">Add one in Settings.</a>
+          <a href="/settings" className="text-brand-600 hover:underline">Add one in Settings.</a>
         </p>
       ) : (
         <div className="space-y-3">
@@ -207,7 +207,7 @@ function LinkedInAccountCard({ campaign, linkedinAccounts, onSave, saving }) {
             <select
               value={selected}
               onChange={(e) => setSelected(e.target.value)}
-              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white"
             >
               <option value="">— none —</option>
               {linkedinAccounts.map((a) => (
@@ -220,7 +220,7 @@ function LinkedInAccountCard({ campaign, linkedinAccounts, onSave, saving }) {
               type="button"
               onClick={() => onSave(selected || null)}
               disabled={saving || selected === (campaign.linkedin_account_id || '')}
-              className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
@@ -286,7 +286,7 @@ function WhatsWorkingPanel({ campaignId }) {
       )}
       {(data.winning_examples || []).length > 0 && (
         <details data-testid="winning-examples">
-          <summary className="text-xs font-medium text-blue-600 cursor-pointer">
+          <summary className="text-xs font-medium text-brand-600 cursor-pointer">
             {data.winning_examples.length} example message{data.winning_examples.length > 1 ? 's' : ''} that earned positive replies
           </summary>
           <div className="mt-2 space-y-2">
@@ -468,7 +468,7 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onStop, 
           )}
           <div className="text-sm text-slate-500 mb-2">{sent} of {total} sent</div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-            <div className="h-full bg-blue-600 rounded-full transition-all" style={{ width: `${sendProgress}%` }} />
+            <div className="h-full bg-brand-600 rounded-full transition-all" style={{ width: `${sendProgress}%` }} />
           </div>
         </div>
 
@@ -571,7 +571,7 @@ function fmtDatetime(isoStr) {
 
 const PILL = {
   pending:   'bg-slate-100 text-slate-500',
-  running:   'bg-blue-100 text-blue-700',
+  running:   'bg-brand-100 text-brand-700',
   done:      'bg-emerald-100 text-emerald-700',
   sent:      'bg-emerald-100 text-emerald-700',
   failed:    'bg-red-100 text-red-600',
@@ -601,7 +601,7 @@ const NODE_KIND_LABELS = {
 };
 
 const NODE_KIND_COLORS = {
-  email: 'bg-blue-100 text-blue-700',
+  email: 'bg-brand-100 text-brand-700',
   wait: 'bg-slate-100 text-slate-500',
   linkedin_view_profile: 'bg-sky-100 text-sky-700',
   linkedin_follow_profile: 'bg-sky-100 text-sky-700',
@@ -753,8 +753,8 @@ function ActivityTab({ campaignId, campaign }) {
           <h3 className="text-sm font-semibold text-slate-900 mb-3">Email pipeline</h3>
           <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
             {[
-              { label: 'Researching', value: activity.researching, color: 'text-blue-700' },
-              { label: 'Composing', value: activity.composing, color: 'text-blue-700' },
+              { label: 'Researching', value: activity.researching, color: 'text-brand-700' },
+              { label: 'Composing', value: activity.composing, color: 'text-brand-700' },
               { label: 'Pending send', value: activity.pending_send, color: 'text-amber-700' },
               { label: 'Scheduled', value: activity.scheduled_send, color: 'text-amber-600' },
               { label: 'Sent', value: activity.sent, color: 'text-emerald-700' },
@@ -777,7 +777,7 @@ function ActivityTab({ campaignId, campaign }) {
             {[
               { label: 'Active', value: activity.sequence_active, color: 'text-emerald-700' },
               { label: 'Pending', value: activity.sequence_pending, color: 'text-amber-600' },
-              { label: 'Completed', value: activity.sequence_completed, color: 'text-blue-700' },
+              { label: 'Completed', value: activity.sequence_completed, color: 'text-brand-700' },
               { label: 'Halted', value: activity.sequence_halted, color: 'text-red-600' },
             ].map(({ label, value, color }) => (
               <div key={label} className="text-center">
@@ -1032,7 +1032,7 @@ function GoalEditor({ campaignId, campaign }) {
             type="button"
             onClick={() => { setGoal(campaign.goal || ''); setEditing(true); }}
             data-testid="edit-goal-btn"
-            className="text-sm text-blue-600 hover:text-blue-700"
+            className="text-sm text-brand-600 hover:text-brand-700"
           >
             Edit
           </button>
@@ -1051,7 +1051,7 @@ function GoalEditor({ campaignId, campaign }) {
             rows={3}
             data-testid="goal-input"
             placeholder="Book a 15-minute intro call to demo our onboarding tool"
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-[inherit]"
           />
           <p className="text-xs text-slate-500 mt-1">
             Saving rewrites every email not yet sent — reusing each lead's
@@ -1072,7 +1072,7 @@ function GoalEditor({ campaignId, campaign }) {
               onClick={() => saveMutation.mutate()}
               disabled={!trimmed || !dirty || saveMutation.isPending}
               data-testid="save-goal-btn"
-              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
             >
               {saveMutation.isPending ? 'Saving…' : 'Save goal'}
             </button>
@@ -1186,7 +1186,7 @@ function ScheduleEditor({ campaignId, campaign }) {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="text-sm text-blue-600 hover:text-blue-700"
+          className="text-sm text-brand-600 hover:text-brand-700"
           data-testid="schedule-editor-toggle"
         >
           {open ? 'Cancel' : 'Edit'}
@@ -1211,7 +1211,7 @@ function ScheduleEditor({ campaignId, campaign }) {
                     aria-pressed={active}
                     className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
                       active
-                        ? 'bg-blue-600 text-white border-blue-600'
+                        ? 'bg-brand-600 text-white border-brand-600'
                         : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                     }`}
                   >
@@ -1231,7 +1231,7 @@ function ScheduleEditor({ campaignId, campaign }) {
                 value={draft.schedule_time_start}
                 onChange={(e) => setDraft({ ...draft, schedule_time_start: e.target.value })}
                 data-testid="schedule-time-start"
-                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
             </div>
             <div>
@@ -1241,7 +1241,7 @@ function ScheduleEditor({ campaignId, campaign }) {
                 value={draft.schedule_time_end}
                 onChange={(e) => setDraft({ ...draft, schedule_time_end: e.target.value })}
                 data-testid="schedule-time-end"
-                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
             </div>
           </div>
@@ -1253,7 +1253,7 @@ function ScheduleEditor({ campaignId, campaign }) {
               value={draft.schedule_timezone}
               onChange={(e) => setDraft({ ...draft, schedule_timezone: e.target.value })}
               data-testid="schedule-timezone"
-              className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white"
             >
               {TIMEZONES.map((tz) => (
                 <option key={tz} value={tz}>{tz}</option>
@@ -1273,7 +1273,7 @@ function ScheduleEditor({ campaignId, campaign }) {
                 value={draft.min_delay_seconds}
                 onChange={(e) => setDraft({ ...draft, min_delay_seconds: e.target.value })}
                 data-testid="min-delay-seconds"
-                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
             </div>
             <div>
@@ -1284,7 +1284,7 @@ function ScheduleEditor({ campaignId, campaign }) {
                 onChange={(e) => setDraft({ ...draft, max_per_hour: e.target.value })}
                 placeholder="—"
                 data-testid="max-per-hour"
-                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
             </div>
             <div>
@@ -1295,7 +1295,7 @@ function ScheduleEditor({ campaignId, campaign }) {
                 onChange={(e) => setDraft({ ...draft, max_per_day: e.target.value })}
                 placeholder="—"
                 data-testid="max-per-day"
-                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
             </div>
           </div>
@@ -1344,7 +1344,7 @@ function ScheduleEditor({ campaignId, campaign }) {
               onClick={() => saveMutation.mutate()}
               disabled={!dirty || !!validationError || saveMutation.isPending}
               data-testid="save-schedule-btn"
-              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
             >
               {saveMutation.isPending ? 'Saving…' : 'Save'}
             </button>
@@ -1406,7 +1406,7 @@ function SignatureEditor({ campaignId, campaign }) {
       disabled={!effective || dirty || applyMutation.isPending}
       title={dirty ? 'Save the signature first' : 'Apply to all composed, unsent emails'}
       data-testid="apply-signature-btn"
-      className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+      className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
     >
       {applyMutation.isPending ? 'Applying…' : 'Apply to all emails'}
     </button>
@@ -1464,7 +1464,7 @@ function SignatureEditor({ campaignId, campaign }) {
             onChange={(e) => setSig(e.target.value)}
             rows={5}
             placeholder={'Anthony Colasante\nVP Sales, Acme\n555-123-4567\nacme.com\ncal.com/anthony'}
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-[inherit]"
           />
           <p className="text-xs text-slate-400 mt-1">
             This overrides your Settings signature for this campaign only.
@@ -1625,7 +1625,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                   type="button"
                   onClick={startEdit}
                   data-testid="edit-email-btn"
-                  className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                  className="text-xs text-brand-600 hover:text-brand-800 hover:underline bg-transparent border-none cursor-pointer p-0"
                 >
                   Edit
                 </button>
@@ -1638,7 +1638,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                   <input
                     value={subject}
                     onChange={(e) => setSubject(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   />
                 </div>
                 <div>
@@ -1647,7 +1647,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                     value={body}
                     onChange={(e) => setBody(e.target.value)}
                     rows={12}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-[inherit]"
                   />
                 </div>
                 <div className="flex justify-end gap-2">
@@ -1663,7 +1663,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                     onClick={() => saveMutation.mutate()}
                     disabled={saveMutation.isPending}
                     data-testid="save-email-btn"
-                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
                   >
                     {saveMutation.isPending ? 'Saving…' : 'Save'}
                   </button>
@@ -1704,7 +1704,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                   onClick={() => replyMutation.mutate(undefined)}
                   disabled={replyMutation.isPending}
                   data-testid="preview-reply-btn"
-                  className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
+                  className="text-xs text-brand-600 hover:text-brand-800 hover:underline bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
                 >
                   {replyMutation.isPending
                     ? 'Composing…'
@@ -1727,7 +1727,7 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                       value={replyNodeId || reply.node_id}
                       onChange={(e) => replyMutation.mutate(e.target.value)}
                       aria-label="Reply step"
-                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-2 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
                     >
                       {reply.available_nodes.map((n, i) => (
                         <option key={n.node_id} value={n.node_id}>
@@ -1910,7 +1910,7 @@ export default function CampaignDetail() {
         <button
           type="button"
           onClick={() => navigate('/')}
-          className="text-sm text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+          className="text-sm text-brand-600 hover:text-brand-800 hover:underline bg-transparent border-none cursor-pointer p-0"
         >
           ← All campaigns
         </button>
@@ -1930,7 +1930,7 @@ export default function CampaignDetail() {
           <button
             type="button"
             onClick={() => setShowAddLeads(true)}
-            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700"
             data-testid="add-leads-button"
           >
             + Add leads

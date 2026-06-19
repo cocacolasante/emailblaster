@@ -6,7 +6,7 @@ const SEND_STATUSES = ['', 'pending', 'scheduled', 'sent', 'failed'];
 
 const PILL = {
   pending:   'bg-slate-100 text-slate-500',
-  running:   'bg-blue-100 text-blue-700',
+  running:   'bg-brand-100 text-brand-700',
   done:      'bg-emerald-100 text-emerald-700',
   sent:      'bg-emerald-100 text-emerald-700',
   failed:    'bg-red-100 text-red-600',
@@ -24,7 +24,7 @@ function StatusPill({ value }) {
 }
 
 const STAGE_PILL = {
-  active:    'bg-blue-100 text-blue-700',
+  active:    'bg-brand-100 text-brand-700',
   completed: 'bg-emerald-100 text-emerald-700',
   halted:    'bg-red-100 text-red-600',
   pending:   'bg-slate-100 text-slate-500',
@@ -111,13 +111,13 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           aria-label="Search leads"
-          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
         />
         <select
           aria-label="Filter by send status"
           value={sendStatus}
           onChange={(e) => { setSendStatus(e.target.value); setPage(1); }}
-          className="px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+          className="px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
         >
           {SEND_STATUSES.map((s) => (
             <option key={s} value={s}>{s ? s : 'All statuses'}</option>
@@ -182,7 +182,7 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
                         <button
                           type="button"
                           onClick={() => onViewLead(lead)}
-                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                          className="text-xs text-brand-600 hover:text-brand-800 hover:underline bg-transparent border-none cursor-pointer p-0"
                         >
                           View email
                         </button>

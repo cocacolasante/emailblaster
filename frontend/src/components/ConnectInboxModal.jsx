@@ -200,7 +200,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
               value={form.label}
               onChange={(e) => update('label', e.target.value)}
               placeholder="e.g. Work Gmail"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
             />
           </div>
 
@@ -211,7 +211,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
               value={form.email_address}
               onChange={(e) => update('email_address', e.target.value)}
               placeholder="you@example.com"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
             />
           </div>
 
@@ -238,7 +238,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
               id="inbox-imap-host"
               value={form.imap_host}
               onChange={(e) => update('imap_host', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
             />
           </div>
 
@@ -250,7 +250,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
                 type="number"
                 value={form.imap_port}
                 onChange={(e) => update('imap_port', Number(e.target.value))}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
               />
             </div>
             <div className="flex-1 flex items-end pb-2">
@@ -259,7 +259,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
                   type="checkbox"
                   checked={form.imap_use_ssl}
                   onChange={(e) => update('imap_use_ssl', e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  className="w-4 h-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                 />
                 Use SSL
               </label>
@@ -272,7 +272,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
               id="inbox-username"
               value={form.username}
               onChange={(e) => update('username', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
             />
             <p className="mt-1 text-xs text-slate-500">
               For Gmail aliases, set this to your primary mailbox login (not the alias). Aliases share their parent mailbox and cannot log in over IMAP on their own.
@@ -290,7 +290,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
                 type={showPassword ? 'text' : 'password'}
                 value={form.password}
                 onChange={(e) => update('password', e.target.value)}
-                className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
               />
               <button
                 type="button"
@@ -303,7 +303,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+          <div className="flex items-center gap-3 p-4 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-800">
             <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
             </svg>
@@ -327,7 +327,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
                 type="button"
                 onClick={() => setSignaturePreview((v) => !v)}
                 data-testid="signature-preview-toggle"
-                className="text-xs text-blue-600 hover:text-blue-700"
+                className="text-xs text-brand-600 hover:text-brand-700"
               >
                 {signaturePreview ? 'Edit' : 'Preview'}
               </button>
@@ -391,7 +391,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
                   '<a href="https://calendly.com/anthony">book a call</a>\n' +
                   '<img src="https://example.com/logo.png" style="max-width:120px;">'
                 }
-                className="w-full px-3 py-2 border border-slate-300 rounded-b-lg text-sm text-slate-900 font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                className="w-full px-3 py-2 border border-slate-300 rounded-b-lg text-sm text-slate-900 font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
               />
             )}
             <p className="text-xs text-slate-500 mt-1">
@@ -439,7 +439,7 @@ export default function ConnectInboxModal({ account, onClose, onSaved }) {
             type="button"
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? 'Saving…' : 'Save'}
           </button>

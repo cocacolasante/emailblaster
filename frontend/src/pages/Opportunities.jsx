@@ -109,7 +109,7 @@ function OpportunityCard({ opp, onOpen, reducedMotion }) {
         if (e.key === 'Enter') { e.preventDefault(); onOpen(opp.id); }
       }}
       className="w-full text-left bg-white rounded-lg border border-slate-200 shadow-sm p-3
-                 cursor-grab active:cursor-grabbing hover:border-blue-300 hover:shadow
+                 cursor-grab active:cursor-grabbing hover:border-brand-300 hover:shadow
                  focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
     >
       <div className="text-sm font-medium text-slate-900 truncate">{opp.name}</div>
@@ -297,7 +297,7 @@ export default function Opportunities() {
                 data-testid={`view-${v}`}
                 aria-pressed={view === v}
                 className={`px-3 py-1.5 text-sm font-medium ${
-                  view === v ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+                  view === v ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
                 }`}
               >
                 {v === 'board' ? 'Board' : 'List'}
@@ -357,7 +357,7 @@ export default function Opportunities() {
           </div>
           <DragOverlay dropAnimation={reducedMotion ? null : undefined}>
             {activeOpp ? (
-              <div className="bg-white rounded-lg border border-blue-300 shadow-lg p-3 w-[230px] rotate-2">
+              <div className="bg-white rounded-lg border border-brand-300 shadow-lg p-3 w-[230px] rotate-2">
                 <div className="text-sm font-medium text-slate-900 truncate">{activeOpp.name}</div>
                 <div className="text-xs text-slate-500 mt-0.5 truncate">{cardSubtitle(activeOpp)}</div>
                 <div className="mt-1.5 text-xs font-semibold tabular-nums text-slate-700">{fmtAmount(activeOpp.amount)}</div>

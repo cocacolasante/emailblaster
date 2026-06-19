@@ -193,7 +193,7 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
         type="button"
         onClick={() => setStage('editing')}
         data-testid="add-email-btn"
-        className="px-3 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md"
+        className="px-3 py-1.5 text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-md"
       >
         + Add email
       </button>
@@ -318,7 +318,7 @@ function EmailActionPanel({ initialSubject, initialBody, senderName, profile }) 
           onClick={() => mut.mutate()}
           disabled={!canSend}
           data-testid="send-email-btn"
-          className="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-md"
+          className="px-4 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-md"
         >
           {mut.isPending ? 'Sending…' : 'Send email'}
         </button>

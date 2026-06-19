@@ -118,7 +118,7 @@ export default function Leads() {
           type="button"
           onClick={() => setCreating(true)}
           data-testid="new-lead-btn"
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg"
+          className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg"
         >
           + New lead
         </button>
@@ -135,13 +135,13 @@ export default function Leads() {
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           placeholder="Search email, name, company…"
           aria-label="Search leads"
-          className="flex-1 min-w-[200px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="flex-1 min-w-[200px] px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         <select
           value={campaignId}
           onChange={(e) => { setCampaignId(e.target.value); setPage(1); }}
           aria-label="Filter by campaign"
-          className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white"
         >
           <option value="">All campaigns</option>
           {campaigns.map((c) => (
@@ -162,9 +162,9 @@ export default function Leads() {
       {checked.size > 0 && (
         <div
           data-testid="add-to-campaign-bar"
-          className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-3"
+          className="bg-brand-50 border border-brand-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-3"
         >
-          <span className="text-sm font-medium text-blue-900">
+          <span className="text-sm font-medium text-brand-900">
             {checked.size} lead{checked.size > 1 ? 's' : ''} selected
           </span>
           <select
@@ -185,7 +185,7 @@ export default function Leads() {
             data-testid="add-to-campaign-btn"
             onClick={() => addMutation.mutate()}
             disabled={!targetCampaignId || addMutation.isPending}
-            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+            className="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
           >
             {addMutation.isPending ? 'Adding…' : 'Add to campaign'}
           </button>
@@ -196,7 +196,7 @@ export default function Leads() {
           >
             Clear
           </button>
-          <span className="text-xs text-blue-700/70 basis-full">
+          <span className="text-xs text-brand-700/70 basis-full">
             Leads are copied in — the original record (and its CRM history)
             stays put. Suppressed emails and duplicates are skipped.
           </span>
@@ -694,7 +694,7 @@ function LeadCrmModal({ lead, onClose }) {
                 </span>
               )}
               {counts.replied > 0 && (
-                <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-brand-50 text-brand-700">
                   💬 {counts.replied} repl{counts.replied === 1 ? 'y' : 'ies'}
                 </span>
               )}
@@ -797,7 +797,7 @@ function LeadCrmModal({ lead, onClose }) {
                 type="button"
                 data-testid="lead-edit-contact-btn"
                 onClick={startEditContact}
-                className="text-xs text-blue-600 hover:underline bg-transparent border-none cursor-pointer p-0"
+                className="text-xs text-brand-600 hover:underline bg-transparent border-none cursor-pointer p-0"
               >
                 Edit
               </button>
@@ -834,7 +834,7 @@ function LeadCrmModal({ lead, onClose }) {
                   data-testid="lead-edit-save-btn"
                   onClick={() => editContactMut.mutate()}
                   disabled={editContactMut.isPending || !(cform.email || '').trim()}
-                  className="px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                  className="px-2.5 py-1 text-xs bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50"
                 >
                   {editContactMut.isPending ? 'Saving…' : 'Save'}
                 </button>
@@ -844,14 +844,14 @@ function LeadCrmModal({ lead, onClose }) {
             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
               <InfoRow label="Email">
                 {(view?.email || lead.email)
-                  ? <a href={`mailto:${view?.email || lead.email}`} className="text-blue-600 hover:underline">{view?.email || lead.email}</a>
+                  ? <a href={`mailto:${view?.email || lead.email}`} className="text-brand-600 hover:underline">{view?.email || lead.email}</a>
                   : <span className="text-slate-400">—</span>}
               </InfoRow>
               {(view?.company || lead.company) && <InfoRow label="Company">{view?.company || lead.company}</InfoRow>}
               {(view?.job_title || lead.job_title) && <InfoRow label="Title">{view?.job_title || lead.job_title}</InfoRow>}
               {view?.phone && (
                 <InfoRow label="Phone">
-                  <a href={`tel:${view.phone}`} className="text-blue-600 hover:underline">{view.phone}</a>
+                  <a href={`tel:${view.phone}`} className="text-brand-600 hover:underline">{view.phone}</a>
                 </InfoRow>
               )}
               {view?.linkedin_url && (
@@ -860,7 +860,7 @@ function LeadCrmModal({ lead, onClose }) {
                     href={view.linkedin_url}
                     target="_blank" rel="noopener noreferrer"
                     data-testid="lead-linkedin-link"
-                    className="text-blue-600 hover:underline"
+                    className="text-brand-600 hover:underline"
                   >
                     Open profile ↗
                   </a>
@@ -880,7 +880,7 @@ function LeadCrmModal({ lead, onClose }) {
                         : `https://${view.company_website}`
                     }
                     target="_blank" rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline"
+                    className="text-brand-600 hover:underline"
                   >
                     {view.company_website} ↗
                   </a>
@@ -1007,7 +1007,7 @@ function LeadCrmModal({ lead, onClose }) {
             rows={5}
             placeholder="Met at Lattice summit; warm intro from Sara…"
             data-testid="lead-notes-textarea"
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 font-[inherit]"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 font-[inherit]"
           />
           <div className="flex justify-end">
             <button
@@ -1015,7 +1015,7 @@ function LeadCrmModal({ lead, onClose }) {
               onClick={() => saveMutation.mutate()}
               disabled={!dirty || saveMutation.isPending}
               data-testid="save-notes-btn"
-              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
             >
               {saveMutation.isPending ? 'Saving…' : 'Save notes'}
             </button>

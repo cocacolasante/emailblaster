@@ -86,7 +86,7 @@ export default function OpportunityDetail() {
     return (
       <div className="p-6">
         <p className="text-slate-500">Opportunity not found.</p>
-        <Link to="/opportunities" className="text-blue-600 hover:underline text-sm">
+        <Link to="/opportunities" className="text-brand-600 hover:underline text-sm">
           ← Back to pipeline
         </Link>
       </div>
@@ -111,7 +111,7 @@ export default function OpportunityDetail() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto" data-testid="opportunity-detail-page">
-      <Link to="/opportunities" className="text-sm text-blue-600 hover:underline">
+      <Link to="/opportunities" className="text-sm text-brand-600 hover:underline">
         ← Pipeline
       </Link>
 
@@ -128,14 +128,14 @@ export default function OpportunityDetail() {
           </div>
           <div className="text-xs text-slate-400 mt-0.5">
             {opp.email && (
-              <a href={`mailto:${opp.email}`} className="text-blue-600 hover:underline">{opp.email}</a>
+              <a href={`mailto:${opp.email}`} className="text-brand-600 hover:underline">{opp.email}</a>
             )}
             {opp.phone && <> · {opp.phone}</>}
             {opp.linkedin_url && (
               <>
                 {' · '}
                 <a href={opp.linkedin_url} target="_blank" rel="noopener noreferrer"
-                  className="text-blue-600 hover:underline">LinkedIn ↗</a>
+                  className="text-brand-600 hover:underline">LinkedIn ↗</a>
               </>
             )}
           </div>
@@ -180,7 +180,7 @@ export default function OpportunityDetail() {
                     ? 'bg-emerald-600 text-white border-emerald-600'
                     : s.value === 'closed_lost'
                     ? 'bg-slate-500 text-white border-slate-500'
-                    : 'bg-blue-600 text-white border-blue-600')
+                    : 'bg-brand-600 text-white border-brand-600')
                   : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
               }`}
             >
@@ -250,7 +250,7 @@ export default function OpportunityDetail() {
             {opp.source_lead_id && (
               <div className="mt-1">
                 Converted from a lead —{' '}
-                <Link to="/leads" className="text-blue-600 hover:underline">
+                <Link to="/leads" className="text-brand-600 hover:underline">
                   find them in Leads
                 </Link>
               </div>
@@ -391,7 +391,7 @@ function ProductsCard({ oppId, dealAmount }) {
           type="button"
           onClick={() => setAdding((v) => !v)}
           data-testid="add-product-toggle"
-          className="px-2.5 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md"
+          className="px-2.5 py-1 text-xs font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-md"
         >
           {adding ? 'Cancel' : '+ Add product'}
         </button>
@@ -429,7 +429,7 @@ function ProductsCard({ oppId, dealAmount }) {
               onClick={() => addMut.mutate()}
               disabled={!name.trim() || addMut.isPending}
               data-testid="product-save-btn"
-              className="ml-auto px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md"
+              className="ml-auto px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white rounded-md"
             >
               {addMut.isPending ? 'Adding…' : 'Add'}
             </button>
@@ -524,7 +524,7 @@ function DocumentsCard({ oppId }) {
         <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
           Documents
         </span>
-        <label className="px-2.5 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md cursor-pointer">
+        <label className="px-2.5 py-1 text-xs font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-md cursor-pointer">
           {uploadMut.isPending ? 'Uploading…' : '⬆ Upload'}
           <input
             ref={fileRef}
@@ -554,7 +554,7 @@ function DocumentsCard({ oppId }) {
               <div className="flex-1 min-w-0">
                 <a
                   href={documentDownloadUrl(d.id)}
-                  className="font-medium text-blue-600 hover:underline truncate block"
+                  className="font-medium text-brand-600 hover:underline truncate block"
                   data-testid={`document-download-${d.id}`}
                 >
                   {d.filename}

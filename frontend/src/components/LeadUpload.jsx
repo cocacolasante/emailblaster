@@ -167,11 +167,11 @@ export default function LeadUpload({ campaignId, onComplete }) {
             </div>
           </div>
 
-          <label className="inline-flex flex-col items-center justify-center w-full border-2 border-dashed border-slate-300 rounded-xl p-10 text-center hover:border-blue-400 cursor-pointer transition-colors">
+          <label className="inline-flex flex-col items-center justify-center w-full border-2 border-dashed border-slate-300 rounded-xl p-10 text-center hover:border-brand-400 cursor-pointer transition-colors">
             <svg className="w-10 h-10 text-slate-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
-            <span className="text-sm font-medium text-blue-600">
+            <span className="text-sm font-medium text-brand-600">
               {loading ? 'Parsing…' : 'Choose CSV'}
             </span>
             <span className="text-xs text-slate-500 mt-1">or drag and drop a file</span>
@@ -214,7 +214,7 @@ export default function LeadUpload({ campaignId, onComplete }) {
                         aria-label={`Map ${col}`}
                         value={mapping[col] || ''}
                         onChange={(e) => updateMapping(col, e.target.value)}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
                       >
                         {LEAD_FIELDS.map((f) => (
                           <option key={f.value} value={f.value}>
@@ -248,7 +248,7 @@ export default function LeadUpload({ campaignId, onComplete }) {
               type="button"
               onClick={handleConfirm}
               disabled={confirming}
-              className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {confirming ? 'Importing…' : `Import ${preview.total_rows} leads`}
             </button>

@@ -139,7 +139,7 @@ function DealsTable({ range }) {
             onClick={() => setOutcome(t.key)}
             className={`px-3 py-1 text-sm rounded-lg border ${
               outcome === t.key
-                ? 'bg-blue-600 text-white border-blue-600'
+                ? 'bg-brand-600 text-white border-brand-600'
                 : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
             }`}
           >
@@ -309,7 +309,7 @@ export default function Reports() {
               onClick={() => setPreset(p.key)}
               className={`px-2.5 py-1 text-xs rounded-lg border ${
                 preset === p.key
-                  ? 'bg-blue-600 text-white border-blue-600'
+                  ? 'bg-brand-600 text-white border-brand-600'
                   : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
               }`}
             >
@@ -354,7 +354,7 @@ export default function Reports() {
             <Kpi label="Win rate" value={pct(k.win_rate)} sub="of closed deals" />
             <Kpi label="Avg deal size" value={fmtAmount(k.avg_deal_size)} sub="won deals" />
             <Kpi label="Avg sales cycle" value={k.avg_sales_cycle_days != null ? `${k.avg_sales_cycle_days} days` : '—'} sub="create → won" />
-            <Kpi label="Open pipeline" value={fmtAmount(k.open_value)} sub={`${k.open_count} open · ${fmtAmount(k.open_weighted_value)} weighted`} accent="text-blue-600" />
+            <Kpi label="Open pipeline" value={fmtAmount(k.open_value)} sub={`${k.open_count} open · ${fmtAmount(k.open_weighted_value)} weighted`} accent="text-brand-600" />
             <Kpi label="New leads" value={k.new_leads} sub={`${k.conversions} converted`} />
             <Kpi label="Activities" value={k.activities_logged} sub={`${k.deals_created} deals created`} />
           </div>

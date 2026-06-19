@@ -397,7 +397,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                     value={unipileLabel}
                     onChange={(e) => setUnipileLabel(e.target.value)}
                     placeholder="e.g. Anthony — main"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
                   />
                 </div>
 
@@ -444,7 +444,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                               type="button"
                               onClick={() => handleImport(d)}
                               disabled={importing != null}
-                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-xs font-medium rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {importing === d.unipile_account_id ? 'Importing…' : 'Import'}
                             </button>
@@ -473,7 +473,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                     type="button"
                     onClick={handleUnipileLaunch}
                     disabled={unipileLaunching}
-                    className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {unipileLaunching ? 'Starting…' : 'Connect via Unipile'}
                   </button>
@@ -482,7 +482,7 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
             )}
             {unipileWaiting && (
               <div className="space-y-3">
-                <div className="p-4 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-900">
+                <div className="p-4 rounded-lg bg-brand-50 border border-brand-200 text-sm text-brand-900">
                   <div className="font-medium mb-1">Waiting for you to finish in the new tab…</div>
                   <p className="text-xs">
                     A Unipile login window should have opened. Complete the

@@ -108,7 +108,7 @@ export default function ActivityLog({ leadId, opportunityId }) {
           type="button"
           onClick={() => setOpen((v) => !v)}
           data-testid="log-activity-toggle"
-          className="px-2.5 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md"
+          className="px-2.5 py-1 text-xs font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-md"
         >
           {open ? 'Cancel' : '+ Log activity'}
         </button>
@@ -129,7 +129,7 @@ export default function ActivityLog({ leadId, opportunityId }) {
                 aria-pressed={type === value}
                 className={`px-2.5 py-1 text-xs font-medium rounded-md border ${
                   type === value
-                    ? 'bg-blue-600 text-white border-blue-600'
+                    ? 'bg-brand-600 text-white border-brand-600'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
                 }`}
               >
@@ -189,7 +189,7 @@ export default function ActivityLog({ leadId, opportunityId }) {
               onClick={() => logMut.mutate()}
               disabled={!subject.trim() || logMut.isPending}
               data-testid="activity-save-btn"
-              className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-md"
+              className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white rounded-md"
             >
               {logMut.isPending ? 'Saving…' : 'Save'}
             </button>

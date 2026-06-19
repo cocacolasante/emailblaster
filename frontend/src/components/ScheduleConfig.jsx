@@ -64,8 +64,8 @@ export default function ScheduleConfig({ value, onChange }) {
                 onClick={() => toggleDay(d.value)}
                 className={`px-3 py-1.5 text-xs rounded-full border font-medium transition-colors ${
                   active
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'border-slate-300 text-slate-600 hover:border-blue-400 bg-white'
+                    ? 'bg-brand-600 text-white border-brand-600'
+                    : 'border-slate-300 text-slate-600 hover:border-brand-400 bg-white'
                 }`}
               >
                 {d.label}
@@ -83,7 +83,7 @@ export default function ScheduleConfig({ value, onChange }) {
             aria-label="Start time"
             value={value.schedule_time_start.slice(0, 5)}
             onChange={(e) => onChange({ ...value, schedule_time_start: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
           />
         </div>
         <div className="flex-1">
@@ -93,7 +93,7 @@ export default function ScheduleConfig({ value, onChange }) {
             aria-label="End time"
             value={value.schedule_time_end.slice(0, 5)}
             onChange={(e) => onChange({ ...value, schedule_time_end: e.target.value })}
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
           />
         </div>
       </div>
@@ -104,7 +104,7 @@ export default function ScheduleConfig({ value, onChange }) {
           aria-label="Timezone"
           value={value.schedule_timezone}
           onChange={(e) => onChange({ ...value, schedule_timezone: e.target.value })}
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
         >
           {TIMEZONES.map((tz) => (
             <option key={tz} value={tz}>{tz}</option>
@@ -127,7 +127,7 @@ export default function ScheduleConfig({ value, onChange }) {
                 max_per_hour: e.target.value === '' ? null : Number(e.target.value),
               })
             }
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
           />
         </div>
         <div className="flex-1">
@@ -144,7 +144,7 @@ export default function ScheduleConfig({ value, onChange }) {
                 max_per_day: e.target.value === '' ? null : Number(e.target.value),
               })
             }
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
           />
         </div>
       </div>
@@ -158,13 +158,13 @@ export default function ScheduleConfig({ value, onChange }) {
             aria-label="Min delay"
             value={displayDelay}
             onChange={(e) => setDelayValue(e.target.value)}
-            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
           />
           <select
             aria-label="Min delay unit"
             value={delayInMinutes ? 'minutes' : 'seconds'}
             onChange={(e) => setDelayUnit(e.target.value)}
-            className="w-28 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+            className="w-28 px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
           >
             <option value="seconds">seconds</option>
             <option value="minutes">minutes</option>

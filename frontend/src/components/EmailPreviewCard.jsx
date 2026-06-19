@@ -74,7 +74,7 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
       <button
         type="button"
         onClick={() => setShowResearch((v) => !v)}
-        className="mt-3 text-sm text-blue-600 hover:text-blue-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+        className="mt-3 text-sm text-brand-600 hover:text-brand-800 hover:underline bg-transparent border-none cursor-pointer p-0"
         aria-expanded={showResearch}
       >
         {showResearch ? '▾ Hide research' : '▸ Show research'}
@@ -92,7 +92,7 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
           onBlur={handleBlur}
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
         />
       </div>
 
@@ -104,7 +104,7 @@ export default function EmailPreviewCard({ sample, remainingSamples, onSave, onA
           onChange={(e) => setBody(e.target.value)}
           onBlur={handleBlur}
           rows={8}
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white font-[inherit] resize-y"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white font-[inherit] resize-y"
         />
       </div>
 

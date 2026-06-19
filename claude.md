@@ -22,7 +22,40 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **UI refinement Phase 5 — states, forms &
+- **Last completed:** **UI refinement Phase 6 — accessibility, final
+  consistency hunt & QA report (final phase).**  Completes the six-phase
+  "Apple-feel" UI refinement (tokens → primitives → shell → motion → states →
+  this).  QA report: [`docs/ui-refinement-qa.md`](docs/ui-refinement-qa.md).
+  - **Accent fully tokenized (the dominant audit finding).**  The audit flagged
+    the accent split between a one-off `blue-*` palette and the unused `brand`
+    token (`bg-blue-600` ×57, `focus:ring-blue-500` ×49).  `brand` is a
+    **hex-exact alias** of Tailwind blue — after adding `brand-900` (#1e3a8a)
+    to complete the scale, a global `blue-*` → `brand-*` rename is a **pure
+    visual no-op**.  Swept all non-test source: **0** `blue-*` left (was ~330
+    occurrences across 25 files); no test asserted a `blue-*` class so nothing
+    repointed.  Verified by build (Tailwind compiles every `brand-*` shade) +
+    the full suite.
+  - **A11y verified:** global `:focus-visible` brand ring (base layer) covers
+    every focusable element; `MotionConfig reducedMotion="user"` honors
+    `prefers-reduced-motion` app-wide (skeletons gate `animate-pulse` behind
+    `motion-safe:`); the primitives carry custom-control ARIA (Tabs/Menu/Modal/
+    Toggle/Tooltip/Table/Field); every icon-only `×`/`✕` close button already
+    has an `aria-label`; white-on-`brand-600` + slate text meet WCAG AA.
+  - **QA report** `docs/ui-refinement-qa.md`: per-phase shipped table,
+    consistency metrics, a11y status, responsive notes, definition-of-done
+    check, and the prioritized **deferred follow-ups** (each large + mechanical
+    with its own test-contract risk, none behavior-changing): button-primitive
+    fan-out (218 hand-rolled vs 24 `<Button>`); **modal consolidation** — 7
+    hand-rolled `fixed inset-0` dialogs still lack the `Modal` primitive's focus
+    trap + Esc (the highest-value a11y follow-up); `Table`-primitive migration
+    for the interactive Leads/`LeadTable`/contacts tables (needs a `rowTestId`
+    extension to preserve per-id testids); semantic `info` palette adoption;
+    micro-consistency (`shadow-2xl`→`shadow-overlay`, `rounded-2xl`→
+    `rounded-card`, `focus:`→`focus-visible:`).
+  - No code changes beyond the token sweep + `brand-900`.  Verified: frontend
+    **423** green; build clean.  No backend changes (**1117**).
+  - **UI REFINEMENT COMPLETE** — all 6 phases shipped + checkpointed.
+- **Previously:** **UI refinement Phase 5 — states, forms &
   data density.**  Fanned the shared `states` primitives + `Field`
   inline-validation + tabular numerics across the primary views that were
   still bare.

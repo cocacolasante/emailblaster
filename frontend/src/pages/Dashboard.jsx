@@ -118,7 +118,7 @@ export default function Dashboard() {
     <div className="p-6 max-w-[100rem] mx-auto" data-testid="dashboard">
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-2xl font-bold text-slate-900 m-0">Dashboard</h1>
-        <Link to="/reports/builder" className="text-sm text-blue-600 hover:underline">
+        <Link to="/reports/builder" className="text-sm text-brand-600 hover:underline">
           Build a custom report →
         </Link>
       </div>
@@ -155,7 +155,7 @@ export default function Dashboard() {
           <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="dashboard-saved-reports">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-700 m-0">Saved reports</h2>
-              <Link to="/reports/builder" className="text-xs text-blue-600 hover:underline">Manage →</Link>
+              <Link to="/reports/builder" className="text-xs text-brand-600 hover:underline">Manage →</Link>
             </div>
             {savedReports.length === 0 ? (
               <EmptyState title="No saved reports yet" hint="Build one in the report builder to pin it here." icon="📋" />
@@ -173,7 +173,7 @@ export default function Dashboard() {
                         <span className="text-sm font-medium text-slate-800">{r.name}</span>
                         <span className="block text-xs text-slate-400">{r.data_source}{r.description ? ` · ${r.description}` : ''}</span>
                       </span>
-                      <span className="text-xs text-blue-600">
+                      <span className="text-xs text-brand-600">
                         {runMut.isPending && runMut.variables === r.id ? 'Running…' : 'Run ▸'}
                       </span>
                     </button>

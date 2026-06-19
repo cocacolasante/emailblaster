@@ -120,7 +120,7 @@ function CandidateRow({ candidate }) {
       <td className="py-2.5 pr-3">
         <div className="font-medium text-slate-800">{candidate.company}</div>
         {candidate.company_website && (
-          <a href={candidate.company_website} target="_blank" rel="noreferrer" className="text-xs text-blue-600">
+          <a href={candidate.company_website} target="_blank" rel="noreferrer" className="text-xs text-brand-600">
             {candidate.company_website.replace(/^https?:\/\//, '')}
           </a>
         )}

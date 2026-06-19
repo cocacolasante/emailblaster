@@ -199,7 +199,7 @@ const HANDLE_STYLE = {
 };
 
 const KIND_COLORS = {
-  email: 'bg-blue-500',
+  email: 'bg-brand-500',
   email_reply: 'bg-indigo-500',
   wait: 'bg-amber-400',
   linkedin_view_profile: 'bg-sky-500',
@@ -224,7 +224,7 @@ function NodeCard({ data, selected }) {
   return (
     <div
       className={`px-3 py-2 rounded-lg border bg-white shadow-sm min-w-[180px] relative ${statusBorder} ${
-        selected ? 'border-blue-500 ring-2 ring-blue-200' : 'border-slate-200'
+        selected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-slate-200'
       }`}
     >
       {/* Target handle on the left — edges come INTO the node here. The
@@ -259,7 +259,7 @@ function NodeCard({ data, selected }) {
             <span title="Failed" className="text-red-600">✗ {stats.failed}</span>
           )}
           {stats.currently_here > 0 && (
-            <span title="Currently here" className="text-blue-600">⏳ {stats.currently_here}</span>
+            <span title="Currently here" className="text-brand-600">⏳ {stats.currently_here}</span>
           )}
         </div>
       )}
@@ -330,7 +330,7 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
       </div>
 
       {node.data.isEntry && node.data.kind !== 'email' && (
-        <div className="p-3 bg-blue-50 rounded text-xs text-blue-700">
+        <div className="p-3 bg-brand-50 rounded text-xs text-brand-700">
           This is the start node — the sequence begins here. No standalone
           first email is sent; the campaign launches straight into running.
           Add an email node downstream if you want to email these leads.
@@ -378,7 +378,7 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
 
       {node.data.kind === 'email_reply' && (
         <>
-          <div className="p-3 bg-blue-50 rounded text-xs text-blue-700">
+          <div className="p-3 bg-brand-50 rounded text-xs text-brand-700">
             Replies in-thread to the lead’s original campaign email (same
             subject, threaded — not a new conversation). Only fires once the
             first email has been sent.
@@ -535,7 +535,7 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
                 type="checkbox"
                 checked={!!cfg.no_note}
                 onChange={(e) => setCfg({ no_note: e.target.checked })}
-                className="w-4 h-4 rounded border-slate-300 text-blue-600"
+                className="w-4 h-4 rounded border-slate-300 text-brand-600"
               />
               Send WITHOUT a note
             </label>
@@ -581,13 +581,13 @@ function NodeEditor({ node, onChange, onDelete, onMakeEntry }) {
                 type="checkbox"
                 checked={!!cfg.ai_compose}
                 onChange={(e) => setCfg({ ai_compose: e.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
               />
               <span className="text-xs font-medium text-slate-700">AI-compose (uses lead research data)</span>
             </label>
           </div>
           {cfg.ai_compose ? (
-            <div className="p-3 bg-blue-50 border border-blue-100 rounded text-xs text-blue-800 leading-relaxed">
+            <div className="p-3 bg-brand-50 border border-brand-100 rounded text-xs text-brand-800 leading-relaxed">
               Claude will write a personalized DM for each lead using the research data collected
               during ingest (LinkedIn headline, news, company context). Generated at send time —
               no preview until it fires.
@@ -750,7 +750,7 @@ function defaultsForOp(op) {
 function ConditionEditor({ condition, onChange, depth = 0 }) {
   const op = (condition && condition.op) || 'always';
   const borderColor =
-    op === 'and' ? 'border-blue-300'
+    op === 'and' ? 'border-brand-300'
     : op === 'or' ? 'border-purple-300'
     : op === 'not' ? 'border-red-300'
     : 'border-slate-300';
@@ -795,7 +795,7 @@ function ConditionEditor({ condition, onChange, depth = 0 }) {
       )}
 
       {(op === 'and' || op === 'or') && (
-        <div className={`mt-2 pl-3 space-y-2 border-l-2 ${op === 'and' ? 'border-blue-200' : 'border-purple-200'}`}>
+        <div className={`mt-2 pl-3 space-y-2 border-l-2 ${op === 'and' ? 'border-brand-200' : 'border-purple-200'}`}>
           {(condition.children || []).map((child, i) => (
             <div key={i} className="relative">
               <button
@@ -829,7 +829,7 @@ function ConditionEditor({ condition, onChange, depth = 0 }) {
                 children: [...(condition.children || []), { op: 'always' }],
               })
             }
-            className="text-[11px] text-blue-600 hover:underline"
+            className="text-[11px] text-brand-600 hover:underline"
           >
             + Add condition
           </button>
@@ -972,7 +972,7 @@ function EdgeEditor({ edge, onChange, onDelete }) {
             if (!showJson) setJsonDraft(JSON.stringify(cond, null, 2));
             setShowJson((v) => !v);
           }}
-          className="text-[11px] text-blue-600 hover:underline"
+          className="text-[11px] text-brand-600 hover:underline"
         >
           {showJson ? 'Switch to visual builder' : 'Show JSON'}
         </button>
@@ -1363,7 +1363,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
             key={p.kind}
             draggable
             onDragStart={(e) => dragKind(e, p.kind)}
-            className="px-3 py-2 rounded-lg border border-slate-200 bg-white cursor-grab hover:border-blue-400 active:cursor-grabbing"
+            className="px-3 py-2 rounded-lg border border-slate-200 bg-white cursor-grab hover:border-brand-400 active:cursor-grabbing"
           >
             <div className="text-sm font-medium text-slate-900">{p.label}</div>
             <div className="text-[11px] text-slate-500 mt-0.5">{p.hint}</div>
@@ -1414,7 +1414,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
             </Link>
           )}
           <span className="px-3 py-1.5 text-xs text-slate-600 bg-white/80 border border-slate-200 rounded-lg">
-            Drag from the <span className="inline-block w-2 h-2 rounded-full border-2 border-blue-500 bg-white align-middle mx-1" />
+            Drag from the <span className="inline-block w-2 h-2 rounded-full border-2 border-brand-500 bg-white align-middle mx-1" />
             on a node's <strong>right edge</strong> to another node's <strong>left edge</strong> to connect them. Click an arrow to edit its condition.
           </span>
           <div className="flex-1" />
@@ -1464,7 +1464,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
                 publishMut.mutate();
               }}
               disabled={publishMut.isPending}
-              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
             >
               {publishMut.isPending ? 'Publishing…' : 'Save + Publish'}
             </button>
@@ -1495,7 +1495,7 @@ function SequenceCanvas({ campaignId, embedded = false, onContinue = null, onSki
                   if (result?.ok && onContinue) onContinue();
                 }}
                 disabled={saveMut.isPending || publishMut.isPending}
-                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
               >
                 {publishMut.isPending ? 'Publishing…' : 'Continue to upload →'}
               </button>

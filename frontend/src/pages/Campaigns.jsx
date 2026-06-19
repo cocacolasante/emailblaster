@@ -12,7 +12,7 @@ import { PageHeader } from '../components/ui.jsx';
 const STATUS_CLASSES = {
   draft:      'bg-slate-100 text-slate-600',
   previewing: 'bg-yellow-100 text-yellow-700',
-  approved:   'bg-blue-100 text-blue-700',
+  approved:   'bg-brand-100 text-brand-700',
   running:    'bg-emerald-100 text-emerald-700',
   paused:     'bg-amber-100 text-amber-700',
   complete:   'bg-indigo-100 text-indigo-700',
@@ -88,7 +88,7 @@ function CampaignCard({ campaign }) {
       <div className="h-2 bg-slate-200 rounded-full overflow-hidden mb-4">
         <div
           data-testid="progress-bar"
-          className="h-full bg-blue-600 rounded-full transition-all"
+          className="h-full bg-brand-600 rounded-full transition-all"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -196,7 +196,7 @@ function EmptyState() {
       </p>
       <Link
         to="/campaigns/new"
-        className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors no-underline"
+        className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors no-underline"
       >
         + Create your first campaign
       </Link>

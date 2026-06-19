@@ -103,7 +103,7 @@ function ConnectedInboxesTab() {
         <h2 className="text-lg font-semibold text-slate-900 m-0">Connected inboxes</h2>
         <button
           onClick={openCreate}
-          className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+          className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors"
         >
           + Connect inbox
         </button>
@@ -239,7 +239,7 @@ function LinkedInAccountsTab() {
         <h2 className="text-lg font-semibold text-slate-900 m-0">LinkedIn accounts</h2>
         <button
           onClick={() => setModalAccount(null)}
-          className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+          className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors"
         >
           + Connect LinkedIn account
         </button>
@@ -693,7 +693,7 @@ function FundingSourceCard({ source, hunterConfigured }) {
             data-testid={`funding-save-${source.source}`}
             onClick={() => saveMut.mutate()}
             disabled={saveMut.isPending}
-            className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+            className="px-3 py-1.5 text-sm bg-brand-600 hover:bg-brand-700 text-white rounded-lg disabled:opacity-50"
           >
             {saveMut.isPending ? 'Saving…' : 'Save'}
           </button>

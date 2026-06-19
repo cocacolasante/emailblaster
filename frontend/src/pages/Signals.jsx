@@ -93,7 +93,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
     <div
       data-testid={`signal-card-${signal.id}`}
       onClick={() => onOpen(signal)}
-      className="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3 cursor-pointer hover:border-blue-300 hover:shadow-sm transition"
+      className="bg-white border border-slate-200 rounded-xl p-4 flex items-start gap-3 cursor-pointer hover:border-brand-300 hover:shadow-sm transition"
     >
       {signal.status === 'new' && onToggle && (
         <input
@@ -128,7 +128,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
               <a
                 href={detail.source_url} target="_blank" rel="noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="text-blue-600"
+                className="text-brand-600"
               >
                 source ↗
               </a>
@@ -143,7 +143,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
               type="button"
               data-testid={`draft-signal-${signal.id}`}
               onClick={stop(() => onOpen(signal))}
-              className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+              className="text-sm px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700"
             >
               Draft &amp; send
             </button>
@@ -162,7 +162,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
               data-testid={`enrich-signal-${signal.id}`}
               disabled={enrichMut.isPending}
               onClick={stop(() => enrichMut.mutate())}
-              className="text-sm px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+              className="text-sm px-3 py-1.5 rounded-lg border border-brand-300 text-brand-700 hover:bg-brand-50 disabled:opacity-50"
             >
               {enrichMut.isPending ? 'Searching…' : 'Find contact'}
             </button>
@@ -385,7 +385,7 @@ function SignalDetailModal({ signal, onClose }) {
               {lead.email && (
                 <div>
                   ✉{' '}
-                  <a className="text-blue-600 hover:underline" href={`mailto:${lead.email}`}>
+                  <a className="text-brand-600 hover:underline" href={`mailto:${lead.email}`}>
                     {lead.email}
                   </a>
                 </div>
@@ -396,7 +396,7 @@ function SignalDetailModal({ signal, onClose }) {
                   <a
                     data-testid="signal-website-link"
                     href={href} target="_blank" rel="noreferrer"
-                    className="text-blue-600 hover:underline break-all"
+                    className="text-brand-600 hover:underline break-all"
                   >
                     {website}
                   </a>
@@ -408,7 +408,7 @@ function SignalDetailModal({ signal, onClose }) {
                   <a
                     data-testid="signal-linkedin-link"
                     href={lead.linkedin_url} target="_blank" rel="noreferrer"
-                    className="text-blue-600 hover:underline break-all"
+                    className="text-brand-600 hover:underline break-all"
                   >
                     LinkedIn profile
                   </a>
@@ -429,7 +429,7 @@ function SignalDetailModal({ signal, onClose }) {
               data-testid="signal-enrich-btn"
               disabled={enrichMut.isPending}
               onClick={() => enrichMut.mutate()}
-              className="mt-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 disabled:opacity-50"
+              className="mt-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-brand-300 text-brand-700 bg-white hover:bg-brand-50 disabled:opacity-50"
             >
               {enrichMut.isPending ? 'Searching…' : '🔎 Find contact (web + LinkedIn)'}
             </button>
@@ -446,7 +446,7 @@ function SignalDetailModal({ signal, onClose }) {
               <a
                 data-testid="signal-found-linkedin"
                 href={foundLinkedin} target="_blank" rel="noreferrer"
-                className="inline-block mt-2 text-blue-600 underline"
+                className="inline-block mt-2 text-brand-600 underline"
               >
                 {foundLinkedin}
               </a>
@@ -513,7 +513,7 @@ function SignalDetailModal({ signal, onClose }) {
               data-testid="signal-draft-btn"
               onClick={() => draftMut.mutate()}
               disabled={draftMut.isPending}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+              className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
             >
               {draftMut.isPending ? 'Drafting…' : '✦ Draft email'}
             </button>
@@ -570,7 +570,7 @@ function SignalDetailModal({ signal, onClose }) {
                   type="button"
                   data-testid="signal-signature-reset"
                   onClick={() => setSigOverride(null)}
-                  className="mt-1 text-xs text-blue-600 hover:underline"
+                  className="mt-1 text-xs text-brand-600 hover:underline"
                 >
                   Reset to account signature
                 </button>
@@ -592,7 +592,7 @@ function SignalDetailModal({ signal, onClose }) {
                 data-testid="signal-send-btn"
                 onClick={() => sendMut.mutate()}
                 disabled={sendMut.isPending || !subject.trim() || !body.trim()}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
               >
                 {sendMut.isPending ? 'Sending…' : 'Send email'}
               </button>
@@ -634,7 +634,7 @@ function SignalDetailModal({ signal, onClose }) {
                 data-testid="signal-add-campaign-btn"
                 onClick={() => addToCampaignMut.mutate()}
                 disabled={!campaignId || addToCampaignMut.isPending}
-                className="text-sm px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                className="text-sm px-3 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
               >
                 {addToCampaignMut.isPending ? 'Adding…' : 'Add'}
               </button>
@@ -740,7 +740,7 @@ function NewWatchForm({ onDone }) {
             onClick={() => { setForm({ ...form, watch_type: value }); setBulkMode(false); }}
             className={`px-3 py-1.5 text-sm font-medium rounded-lg border ${
               form.watch_type === value
-                ? 'bg-blue-600 text-white border-blue-600'
+                ? 'bg-brand-600 text-white border-brand-600'
                 : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
             }`}
           >
@@ -834,7 +834,7 @@ function NewWatchForm({ onDone }) {
           data-testid="save-watch-btn"
           onClick={() => (bulkMode && bulkAvailable ? bulkMut.mutate() : createMut.mutate())}
           disabled={pending || !canSave}
-          className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg disabled:opacity-50"
+          className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg disabled:opacity-50"
         >
           {pending ? 'Saving…' : bulkMode && bulkAvailable
             ? `Create ${bulkList.length || ''} watch${bulkList.length === 1 ? '' : 'es'}`
@@ -876,7 +876,7 @@ function WatchesTab() {
           type="button"
           data-testid="new-watch-btn"
           onClick={() => setShowForm((v) => !v)}
-          className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg"
+          className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg"
         >
           {showForm ? 'Cancel' : '+ New watch'}
         </button>
@@ -921,7 +921,7 @@ function WatchesTab() {
               </p>
             </div>
             <div className="flex gap-2 shrink-0 text-sm">
-              <button type="button" onClick={() => runMut.mutate(w.id)} className="text-blue-600 hover:text-blue-800">Run now</button>
+              <button type="button" onClick={() => runMut.mutate(w.id)} className="text-brand-600 hover:text-brand-800">Run now</button>
               <button
                 type="button"
                 onClick={() => pauseMut.mutate({ id: w.id, status: w.status === 'active' ? 'paused' : 'active' })}
@@ -999,9 +999,9 @@ export default function Signals() {
         reach out while the trigger is fresh.
       </p>
 
-      <details data-testid="signals-help" className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4 text-sm text-blue-900">
+      <details data-testid="signals-help" className="bg-brand-50 border border-brand-200 rounded-xl px-4 py-3 mb-4 text-sm text-brand-900">
         <summary className="font-medium cursor-pointer">How signals work</summary>
-        <div className="mt-2 space-y-2 text-blue-900/90">
+        <div className="mt-2 space-y-2 text-brand-900/90">
           <p className="m-0">
             A <strong>watch</strong> monitors one target on a schedule. When
             something changes, a <strong>signal</strong> lands in this feed —
@@ -1032,7 +1032,7 @@ export default function Signals() {
             aria-selected={tab === key}
             onClick={() => setTab(key)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px bg-transparent cursor-pointer ${
-              tab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500'
+              tab === key ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-500'
             }`}
           >
             {label}
@@ -1069,9 +1069,9 @@ export default function Signals() {
           {checked.size > 0 && (
             <div
               data-testid="signal-add-to-campaign-bar"
-              className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-3 flex flex-wrap items-center gap-3"
+              className="bg-brand-50 border border-brand-200 rounded-xl p-3 mb-3 flex flex-wrap items-center gap-3"
             >
-              <span className="text-sm font-medium text-blue-900">
+              <span className="text-sm font-medium text-brand-900">
                 {checked.size} signal{checked.size > 1 ? 's' : ''} selected
               </span>
               <select
@@ -1090,7 +1090,7 @@ export default function Signals() {
                 data-testid="signal-add-to-campaign-btn"
                 onClick={() => addMutation.mutate()}
                 disabled={!targetCampaignId || addMutation.isPending}
-                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+                className="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
               >
                 {addMutation.isPending ? 'Adding…' : 'Add to campaign'}
               </button>
@@ -1101,7 +1101,7 @@ export default function Signals() {
               >
                 Clear
               </button>
-              <span className="text-xs text-blue-700/70 basis-full">
+              <span className="text-xs text-brand-700/70 basis-full">
                 Their staged leads are copied into the campaign and run the
                 normal research → compose → send pipeline. Signals without a
                 contact are skipped.

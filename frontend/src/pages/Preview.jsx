@@ -110,7 +110,7 @@ export default function Preview() {
             type="button"
             onClick={() => approveAllMutation.mutate()}
             disabled={approveAllMutation.isPending || total === 0}
-            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {approveAllMutation.isPending ? 'Launching…' : 'Approve all & launch'}
           </button>
@@ -156,7 +156,7 @@ export default function Preview() {
             type="button"
             onClick={() => approveAllMutation.mutate()}
             disabled={approveAllMutation.isPending || total === 0}
-            className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {approveAllMutation.isPending ? 'Launching…' : 'Approve and launch campaign'}
           </button>
