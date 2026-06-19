@@ -28,6 +28,7 @@ from app.models import (
     SuppressionReason,
     WebhookEvent,
 )
+from app.services.brevo_events import process_event
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +216,20 @@ def _verify_unipile_auth(header_value: str | None) -> bool:
         # No secret configured → refuse everything to avoid running on
         # forged payloads.  Set UNIPILE_WEBHOOK_SECRET in .env and add the
         # same value to each Unipile webhook's headers list.
+        return False
+    if not header_value:
+        return False
+    return hmac.compare_digest(header_value.strip(), expected)
+
+
+def _verify_brevo_auth(header_value: str | None) -> bool:
+    """Same static-shared-secret-header pattern as Unipile, for Brevo's
+    outbound event webhook.  Brevo lets you attach custom headers when you
+    create a webhook; we set ``X-Brevo-Auth: <secret>`` there and constant-time
+    compare it against ``settings.BREVO_WEBHOOK_SECRET``.  No secret configured
+    → reject everything (don't act on forged payloads)."""
+    expected = settings.BREVO_WEBHOOK_SECRET
+    if not expected:
         return False
     if not header_value:
         return False
@@ -576,3 +591,63 @@ async def unipile_webhook(
 
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/webhooks/brevo")
+async def brevo_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Receive Brevo transactional event pushes in real time.
+
+    Auth: static shared-secret header (``X-Brevo-Auth`` by default) configured
+    on the webhook in Brevo and constant-time compared against
+    ``settings.BREVO_WEBHOOK_SECRET``.  Missing/wrong → 401, no DB writes.
+
+    Idempotency: Brevo retries on non-2xx (at-least-once).  We claim the event
+    id (payload ``id``, else a SHA-256 of the body) in ``webhook_events`` up
+    front; a duplicate delivery short-circuits with 200.
+
+    Events funnel through the SAME ``process_event`` the poller uses, so a
+    hard bounce / spam / unsubscribe / blocked is suppressed (added to the
+    ignore list, halted in current campaigns, blocked from future ones) within
+    seconds.  The poller stays on as the reconciliation backstop for anything
+    missed while the tunnel/app was down (webhooks aren't replayed).
+    """
+    raw = await request.body()
+    auth_value = request.headers.get(settings.BREVO_WEBHOOK_AUTH_HEADER.lower())
+    if not _verify_brevo_auth(auth_value):
+        raise HTTPException(status_code=401, detail="invalid auth header")
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    # Brevo's transactional event webhook posts one event per request; accept a
+    # list too defensively.
+    events = payload if isinstance(payload, list) else [payload]
+    if not events or not all(isinstance(e, dict) for e in events):
+        raise HTTPException(status_code=400, detail="payload must be an event object or list")
+
+    first = events[0]
+    event_id = str(first.get("id")) if first.get("id") is not None else None
+    if not event_id:
+        # No id (or a batch) → hash the body so byte-identical retries dedup.
+        event_id = "sha256:" + hashlib.sha256(raw).hexdigest()
+    try:
+        db.add(WebhookEvent(provider="brevo", event_id=event_id))
+        await db.commit()
+    except Exception:  # noqa: BLE001 — UniqueViolation = already processed
+        await db.rollback()
+        logger.info("Brevo webhook: duplicate event_id=%r — skipping", event_id)
+        return {"ok": True, "duplicate": True}
+
+    recorded = 0
+    for ev in events:
+        try:
+            if await process_event(db, ev):
+                recorded += 1
+        except Exception:  # noqa: BLE001 — one bad event mustn't drop the rest
+            logger.exception("Brevo webhook: process_event failed for %r", ev)
+    await db.commit()
+    logger.info("Brevo webhook: processed %d/%d event(s) id=%r", recorded, len(events), event_id)
+    return {"ok": True, "recorded": recorded}

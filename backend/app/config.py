@@ -177,6 +177,13 @@ class Settings(BaseSettings):
     UNIPILE_API_KEY: str = ""
     UNIPILE_WEBHOOK_SECRET: str = ""
     UNIPILE_WEBHOOK_AUTH_HEADER: str = "X-Unipile-Auth"
+    # Brevo outbound (transactional event) webhook — real-time delivery of
+    # delivered/opened/clicked/bounce/spam/unsubscribe/blocked events, on top
+    # of the polling backstop.  Brevo doesn't HMAC-sign bodies; like Unipile we
+    # use a static shared-secret header (configured on the webhook in Brevo,
+    # echoed on every delivery).  Empty secret → the route rejects everything.
+    BREVO_WEBHOOK_SECRET: str = ""
+    BREVO_WEBHOOK_AUTH_HEADER: str = "X-Brevo-Auth"
 
     # LinkedIn rate limits.  Unipile manages humanization on its side, but
     # we still enforce daily caps + a per-account min-delay as a burst floor

@@ -9,6 +9,7 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
+    SendStatus,
     Suppression,
     SuppressionReason,
 )
@@ -176,12 +177,56 @@ async def test_duplicate_hard_bounce_only_adds_one_suppression(db_session):
     assert len(bounces) == 1
 
 
-async def test_brevo_webhook_route_no_longer_exists(client):
-    """We deliberately removed the inbound webhook route — events come from
-    polling.  Any caller still POSTing to /webhooks/brevo should get a
-    404."""
+async def test_brevo_webhook_route_requires_auth(client):
+    """The inbound Brevo webhook was re-added for real-time events (the poller
+    stays on as the backstop).  Without the shared-secret header it rejects
+    with 401 — never 404, never processed on a forged payload."""
     resp = await client.post("/webhooks/brevo", json=[])
-    assert resp.status_code == 404
+    assert resp.status_code == 401
+
+
+async def test_brevo_webhook_rejects_wrong_and_missing_secret(client, monkeypatch):
+    monkeypatch.setattr("app.routers.webhooks.settings.BREVO_WEBHOOK_SECRET", "shh")
+    bad = await client.post(
+        "/webhooks/brevo", json={"event": "delivered"}, headers={"X-Brevo-Auth": "nope"},
+    )
+    assert bad.status_code == 401
+    none = await client.post("/webhooks/brevo", json={"event": "delivered"})
+    assert none.status_code == 401
+
+
+async def test_brevo_webhook_suppresses_on_bounce(client, db_session, monkeypatch):
+    """A real-time hard-bounce event funnels through process_event → suppression
+    (added to the ignore list + the lead pulled from the send queue)."""
+    monkeypatch.setattr("app.routers.webhooks.settings.BREVO_WEBHOOK_SECRET", "shh")
+    _, lead = await _make_campaign_and_lead(db_session, brevo_id="wh-msg-1")
+
+    resp = await client.post(
+        "/webhooks/brevo",
+        json={"event": "hard_bounce", "email": lead.email, "message-id": "wh-msg-1", "id": 999},
+        headers={"X-Brevo-Auth": "shh"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["recorded"] == 1
+
+    sup = await db_session.scalar(select(Suppression).where(Suppression.email == lead.email))
+    assert sup is not None and sup.reason is SuppressionReason.HARD_BOUNCE
+    await db_session.refresh(lead)
+    assert lead.send_status is SendStatus.SUPPRESSED
+
+
+async def test_brevo_webhook_dedups_retries(client, db_session, monkeypatch):
+    """Brevo retries at-least-once; the second identical delivery short-circuits
+    via the webhook_events event-id guard."""
+    monkeypatch.setattr("app.routers.webhooks.settings.BREVO_WEBHOOK_SECRET", "shh")
+    _, lead = await _make_campaign_and_lead(db_session, brevo_id="dd-1")
+
+    ev = {"event": "unsubscribed", "email": lead.email, "message-id": "dd-1", "id": 555}
+    r1 = await client.post("/webhooks/brevo", json=ev, headers={"X-Brevo-Auth": "shh"})
+    r2 = await client.post("/webhooks/brevo", json=ev, headers={"X-Brevo-Auth": "shh"})
+
+    assert r1.json()["recorded"] == 1
+    assert r2.json().get("duplicate") is True
 
 
 # ---------- Unsubscribe link (HMAC tokenised, POST-confirm) ----------

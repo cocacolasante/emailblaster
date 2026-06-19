@@ -223,6 +223,104 @@ class Unipile:
         })
 
 
+# ---- Brevo API -------------------------------------------------------------
+
+BREVO_API = "https://api.brevo.com/v3"
+BREVO_AUTH_HEADER = "X-Brevo-Auth"
+# Events we want pushed in real time (suppression + engagement).
+BREVO_EVENTS = [
+    "delivered", "opened", "click", "hardBounce", "softBounce",
+    "spam", "unsubscribed", "blocked", "invalid",
+]
+
+
+class Brevo:
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+
+    def _req(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"{BREVO_API}{path}", data=data, method=method,
+            headers={
+                "api-key": self.api_key,
+                "accept": "application/json",
+                "content-type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            # 404 "document_not_found" just means no webhook exists yet.
+            if exc.code == 404:
+                return None
+            die(f"Brevo {method} {path} → {exc.code}: "
+                f"{exc.read().decode(errors='replace')[:300]}")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw.decode(errors="replace")
+
+    def list_transactional(self) -> list[dict[str, Any]]:
+        data = self._req("GET", "/webhooks?type=transactional")
+        if isinstance(data, dict):
+            return list(data.get("webhooks") or [])
+        return []
+
+    def delete(self, webhook_id: Any) -> None:
+        self._req("DELETE", f"/webhooks/{webhook_id}")
+
+    def create(self, url: str, secret: str) -> dict[str, Any]:
+        return self._req("POST", "/webhooks", body={
+            "type": "transactional",
+            "url": url,
+            "description": "Email Blaster real-time events",
+            "events": BREVO_EVENTS,
+            "headers": [{"key": BREVO_AUTH_HEADER, "value": secret}],
+        })
+
+
+def refresh_brevo_webhook(
+    env: dict[str, str], tunnel_url: str, tunnel_host: str,
+    *, dry_run: bool, rotate_secret: bool,
+) -> dict[str, str]:
+    """Best-effort: point Brevo's transactional webhook at the live tunnel.
+    Returns the .env keys to update.  No-op (with a note) when BREVO_API_KEY
+    isn't configured."""
+    api_key = env.get("BREVO_API_KEY")
+    if not api_key:
+        info("BREVO_API_KEY not set — skipping Brevo webhook refresh.")
+        return {}
+    secret = env.get("BREVO_WEBHOOK_SECRET") or ""
+    if rotate_secret or not secret:
+        secret = secrets.token_hex(32)
+        info(f"using a fresh BREVO_WEBHOOK_SECRET (rotate-secret={rotate_secret})")
+    webhook_url = f"{tunnel_url.rstrip('/')}/webhooks/brevo"
+
+    br = Brevo(api_key)
+    existing = br.list_transactional()
+    if dry_run:
+        for w in existing:
+            print(f"  would delete Brevo webhook id={w.get('id')} url={w.get('url')}")
+        print(f"  would create Brevo webhook url={webhook_url} header={BREVO_AUTH_HEADER}")
+        return {}
+    for w in existing:
+        wid = w.get("id")
+        if wid is not None:
+            info(f"deleting Brevo webhook {wid} ({(w.get('url') or '')[:60]}…)")
+            br.delete(wid)
+    created = br.create(webhook_url, secret)
+    ok(f"created Brevo webhook id={created.get('id') if isinstance(created, dict) else '?'}")
+
+    updates = {}
+    if env.get("BREVO_WEBHOOK_SECRET", "") != secret:
+        updates["BREVO_WEBHOOK_SECRET"] = secret
+    return updates
+
+
 # ---- main ------------------------------------------------------------------
 
 
@@ -284,6 +382,7 @@ def main() -> None:
                   f"url={w.get('request_url')}")
         for src in WEBHOOK_SOURCES:
             print(f"  would create: source={src:14}  url={webhook_url}")
+        refresh_brevo_webhook(env, tunnel_url, tunnel_host, dry_run=True, rotate_secret=args.rotate_secret)
         env_changes: list[str] = []
         if env.get("WEBHOOK_BASE_URL", "") != tunnel_url:
             env_changes.append(f"WEBHOOK_BASE_URL={tunnel_url}")
@@ -312,12 +411,18 @@ def main() -> None:
         created.append(up.create_webhook(src, webhook_url, secret, auth_header=auth_header))
     ok(f"created {len(created)} webhook(s)")
 
+    # 5b. Brevo transactional webhook (best-effort; no-op without BREVO_API_KEY).
+    brevo_updates = refresh_brevo_webhook(
+        env, tunnel_url, tunnel_host, dry_run=False, rotate_secret=args.rotate_secret,
+    )
+
     # 6. patch .env — only when something actually changed
     updates: dict[str, str] = {}
     if env.get("WEBHOOK_BASE_URL", "") != tunnel_url:
         updates["WEBHOOK_BASE_URL"] = tunnel_url
     if env.get("UNIPILE_WEBHOOK_SECRET", "") != secret:
         updates["UNIPILE_WEBHOOK_SECRET"] = secret
+    updates.update(brevo_updates)
     if updates:
         write_env_in_place(ENV_PATH, updates)
         ok(f".env updated: {', '.join(updates.keys())}")
