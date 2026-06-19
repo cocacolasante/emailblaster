@@ -948,8 +948,10 @@ async def test_re_enroll_halted_skips_suppressed_leads(client, db_session):
 
     resp = await client.post(f"/campaigns/{cid}/re-enroll-halted")
     assert resp.status_code == 200
-    # Only the non-suppressed lead is re-enrolled.
+    # Only the non-suppressed lead is re-enrolled; the suppressed one is
+    # reported as skipped so the UI can explain a 0/low re-enrolled result.
     assert resp.json()["re_enrolled"] == 1
+    assert resp.json()["skipped_suppressed"] == 1
 
     states = {
         s.lead_id: s for s in (await db_session.execute(
@@ -959,6 +961,41 @@ async def test_re_enroll_halted_skips_suppressed_leads(client, db_session):
     }
     assert states[normal.id].status == LeadSequenceStatus.ACTIVE
     assert states[ignored.id].status == LeadSequenceStatus.HALTED
+
+
+async def test_activity_splits_suppressed_out_of_halted(client, db_session):
+    """A halted-but-suppressed lead is counted as sequence_suppressed (not
+    sequence_halted) and kept out of the re-enroll halted_leads list — so the
+    UI doesn't prompt to re-enroll leads that can never be re-enrolled."""
+    from app.models import (
+        LeadSequenceState, LeadSequenceStatus, Sequence,
+        SequenceNode, Suppression, SuppressionReason,
+    )
+    from sqlalchemy import select as _select
+
+    c = (await client.post("/campaigns/", json=_campaign_payload(name="ACT"))).json()
+    cid = uuid.UUID(c["id"])
+    supp = Lead(campaign_id=cid, email="supp@x.com")
+    reenrollable = Lead(campaign_id=cid, email="reenroll@x.com")
+    db_session.add_all([supp, reenrollable])
+    db_session.add(Suppression(email="supp@x.com", reason=SuppressionReason.HARD_BOUNCE))
+    await db_session.flush()
+    seq = (await db_session.execute(_select(Sequence).where(Sequence.campaign_id == cid))).scalar_one()
+    node = (await db_session.execute(_select(SequenceNode).where(
+        SequenceNode.sequence_id == seq.id, SequenceNode.is_entry.is_(True),
+    ))).scalar_one()
+    for lead in (supp, reenrollable):
+        db_session.add(LeadSequenceState(
+            sequence_id=seq.id, lead_id=lead.id, current_node_id=node.id,
+            status=LeadSequenceStatus.HALTED, halt_reason="x",
+        ))
+    await db_session.commit()
+
+    body = (await client.get(f"/campaigns/{cid}/activity")).json()
+    assert body["sequence_halted"] == 1       # only the re-enrollable one
+    assert body["sequence_suppressed"] == 1    # the bounced one, counted apart
+    emails = {h["email"] for h in body["halted_leads"]}
+    assert emails == {"reenroll@x.com"}        # suppressed lead not in the panel
 
 
 async def test_apply_signature_400_when_campaign_has_no_signature(client):

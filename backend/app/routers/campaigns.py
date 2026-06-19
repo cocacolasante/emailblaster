@@ -840,9 +840,26 @@ async def get_campaign_activity(
     )
     seq_by_status: dict[LeadSequenceStatus, int] = {row[0]: row[1] for row in seq_state_q.all()}
     sequence_active = seq_by_status.get(LeadSequenceStatus.ACTIVE, 0)
-    sequence_halted = seq_by_status.get(LeadSequenceStatus.HALTED, 0)
     sequence_completed = seq_by_status.get(LeadSequenceStatus.COMPLETED, 0)
     sequence_pending = seq_by_status.get(LeadSequenceStatus.PENDING, 0)
+
+    # Split HALTED into re-enrollable vs suppressed.  A lead halted because its
+    # email was suppressed (bounce / unsubscribe / spam / blocked) is terminal —
+    # re-enroll deliberately won't touch it — so surfacing it as a re-enrollable
+    # "Halted" lead just produces the confusing "0 re-enrolled" click.  Count
+    # them separately and keep them out of the re-enroll panel below.
+    total_halted = seq_by_status.get(LeadSequenceStatus.HALTED, 0)
+    sequence_suppressed = (await db.scalar(
+        select(func.count())
+        .select_from(LeadSequenceState)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadSequenceState.status == LeadSequenceStatus.HALTED,
+            func.lower(Lead.email).in_(select(Suppression.email)),
+        )
+    )) or 0
+    sequence_halted = total_halted - sequence_suppressed
 
     # Recent sequence step executions (includes LinkedIn + follow-up emails).
     # Pull a wider window than we display so we can dedupe consecutive
@@ -903,7 +920,9 @@ async def get_campaign_activity(
         for key in cluster_order[:30]
     ]
 
-    # Halted leads (leads whose sequence cursor points at a deleted/blocked node)
+    # Halted leads available to RE-ENROLL (sequence rebuilt etc.).  Excludes
+    # suppressed emails to match the re-enroll endpoint — those are terminal,
+    # not re-enrollable, so they don't belong in this panel/prompt.
     halted_rows = (await db.execute(
         select(LeadSequenceState, Lead, SequenceNode)
         .join(Lead, Lead.id == LeadSequenceState.lead_id)
@@ -911,6 +930,7 @@ async def get_campaign_activity(
         .where(
             Lead.campaign_id == campaign_id,
             LeadSequenceState.status == LeadSequenceStatus.HALTED,
+            func.lower(Lead.email).notin_(select(Suppression.email)),
         )
         .order_by(LeadSequenceState.updated_at.desc())
         .limit(20)
@@ -969,6 +989,7 @@ async def get_campaign_activity(
         failed=failed,
         sequence_active=sequence_active,
         sequence_halted=sequence_halted,
+        sequence_suppressed=sequence_suppressed,
         sequence_completed=sequence_completed,
         sequence_pending=sequence_pending,
         next_window_at=next_window_at,
@@ -1011,8 +1032,22 @@ async def re_enroll_halted_leads(
         )
     )).scalars().all()
 
+    # Halted-but-suppressed leads are deliberately NOT re-enrolled (bounced /
+    # unsubscribed / blocked); report the count so the UI can explain a
+    # 0-re-enrolled result instead of leaving it a mystery.
+    skipped_suppressed = (await db.scalar(
+        select(func.count())
+        .select_from(LeadSequenceState)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadSequenceState.status == LeadSequenceStatus.HALTED,
+            func.lower(Lead.email).in_(suppressed_emails),
+        )
+    )) or 0
+
     if not halted_states:
-        return {"re_enrolled": 0}
+        return {"re_enrolled": 0, "skipped_suppressed": skipped_suppressed}
 
     seq = (await db.execute(
         select(Sequence).where(Sequence.campaign_id == campaign_id)
@@ -1041,7 +1076,7 @@ async def re_enroll_halted_leads(
         state.entered_current_at = now
 
     await db.commit()
-    return {"re_enrolled": len(halted_states)}
+    return {"re_enrolled": len(halted_states), "skipped_suppressed": skipped_suppressed}
 
 
 # --------------------------------------------------------------------------

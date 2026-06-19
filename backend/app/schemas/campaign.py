@@ -237,6 +237,9 @@ class CampaignActivity(BaseModel):
     failed: int
     sequence_active: int
     sequence_halted: int
+    # Halted specifically because the email is suppressed (bounce/unsub/spam/
+    # blocked) — terminal, not re-enrollable; counted apart from sequence_halted.
+    sequence_suppressed: int = 0
     sequence_completed: int
     sequence_pending: int
     # When the send window next opens (None = open right now)

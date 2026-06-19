@@ -657,7 +657,18 @@ function ActivityTab({ campaignId, campaign }) {
   const reEnrollMutation = useMutation({
     mutationFn: () => reEnrollHalted(campaignId),
     onSuccess: (data) => {
-      toast.success(`Re-enrolled ${data.re_enrolled} lead${data.re_enrolled !== 1 ? 's' : ''}`);
+      const skipped = data.skipped_suppressed || 0;
+      if (data.re_enrolled === 0 && skipped > 0) {
+        toast.success(
+          `No leads re-enrolled — ${skipped} halted lead${skipped !== 1 ? 's are' : ' is'} suppressed `
+          + '(bounced / unsubscribed / blocked) and can’t be re-contacted.',
+        );
+      } else {
+        toast.success(
+          `Re-enrolled ${data.re_enrolled} lead${data.re_enrolled !== 1 ? 's' : ''}`
+          + (skipped > 0 ? ` (${skipped} suppressed, skipped)` : ''),
+        );
+      }
       queryClient.invalidateQueries({ queryKey: ['campaign-activity', campaignId] });
     },
     onError: (e) => toast.error(e?.response?.data?.detail || e.message || 'Re-enroll failed'),
@@ -779,12 +790,13 @@ function ActivityTab({ campaignId, campaign }) {
       {hasSequenceActivity && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
           <h3 className="text-sm font-semibold text-slate-900 mb-3">Sequence state</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {[
               { label: 'Active', value: activity.sequence_active, color: 'text-emerald-700' },
               { label: 'Pending', value: activity.sequence_pending, color: 'text-amber-600' },
               { label: 'Completed', value: activity.sequence_completed, color: 'text-brand-700' },
               { label: 'Halted', value: activity.sequence_halted, color: 'text-red-600' },
+              { label: 'Suppressed', value: activity.sequence_suppressed ?? 0, color: 'text-slate-500' },
             ].map(({ label, value, color }) => (
               <div key={label} className="text-center">
                 <div className={`text-2xl font-bold ${color}`}>{value}</div>
