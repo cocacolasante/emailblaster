@@ -54,8 +54,7 @@ from app.models import (
     Suppression,
 )
 from app.services import brevo
-from app.services.email_template import render_html, render_text
-from app.services.signature import apply_signature, resolve_campaign_signature
+from app.services.signature import render_email_with_signature, resolve_campaign_signature
 from app.services.linkedin import get_provider as get_linkedin_provider
 from app.services.linkedin.base import (
     AccountRestricted,
@@ -924,12 +923,15 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 original_body=ctx["original_body"],
                 idea=ctx["ai_prompt"],
             )
-            body = apply_signature(body, ctx["signature"])
         else:
             body = ctx["manual_body"]
 
-        html_body = render_html(body)
-        text_body = render_text(body)
+        # One shared renderer for EVERY send path (first email, follow-up,
+        # reply, one-off): the HTML signature + inserted links render as real
+        # HTML, and the plain-text fallback collapses them to "text (url)" with
+        # no raw <a> tags.  ``signature`` is None for manual/non-AI nodes, so
+        # render_email_with_signature just renders the body verbatim there.
+        html_body, text_body = render_email_with_signature(body, ctx["signature"])
 
         # At-most-once guard: atomically CLAIM (lead, node) before the send.
         # Whoever claims first is the only task that sends — this closes the

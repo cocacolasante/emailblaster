@@ -275,6 +275,39 @@ async def test_send_email_step_records_execution_and_advances(db_session, monkey
     assert state.current_node_id is None
 
 
+async def test_followup_email_renders_inserted_html_links(db_session, monkeypatch):
+    """The sequencer send path goes through the shared render_email_with_signature,
+    so an HTML link in a follow-up body renders as a real anchor in the HTML
+    body (not escaped) — consistent with the first-email/one-off paths."""
+    campaign = await _make_campaign(db_session)
+    _, entry, wait_node, followup = await _build_three_node_sequence(db_session, campaign)
+    followup.config = {
+        "subject_template": "Hi {{first_name}}",
+        "body_template": 'Click <a href="https://grantmind.pro">here</a>',
+    }
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    await db_session.commit()
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=followup.sequence_id,
+        current_node_id=followup.id, status=LeadSequenceStatus.ACTIVE,
+        next_run_at=_now(), entered_current_at=_now(),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    captured: dict = {}
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return "mid-1"
+    monkeypatch.setattr(sequencer.brevo, "send_email", fake_send)
+
+    result = await sequencer._send_email_step_async(str(lead.id), str(followup.id))
+    assert result["status"] == "sent"
+    assert '<a href="https://grantmind.pro"' in captured["html_body"]
+    assert "&lt;a" not in captured["html_body"]  # NOT escaped
+
+
 async def test_send_email_step_never_double_sends(db_session, monkeypatch):
     """Two dispatches of the same (lead, node) BEFORE the SENT row is recorded
     — the redelivery / concurrent-dispatch / task-retry race — must deliver the
