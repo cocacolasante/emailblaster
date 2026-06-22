@@ -58,3 +58,44 @@ def group_by_state(orgs: list[Org]) -> dict[str, list[Org]]:
         if o.state:
             by_state[o.state.upper()].append(o)
     return dict(by_state)
+
+
+# Trailing legal/boilerplate tokens to ignore when matching employer names.
+_NAME_NOISE = {"inc", "incorporated", "llc", "co", "corp", "corporation", "ltd"}
+
+
+def name_keys(name: str | None) -> set[str]:
+    """Normalized lookup keys for an org/employer name, for HIGH-PRECISION
+    matching: the full normalized name, plus variants with a leading "the" or a
+    trailing legal suffix dropped (so "The X Foundation, Inc." matches "X
+    Foundation").  Conservative on purpose — a false dev-role attribution to the
+    wrong org is worse than a missed one (Track 1 accepts partial recall)."""
+    norm = normalize_name(name)
+    tokens = [t for t in norm.split() if t]
+    if not tokens:
+        return set()
+    keys = {" ".join(tokens)}
+    if tokens[0] == "the":
+        tokens = tokens[1:]
+        keys.add(" ".join(tokens))
+    while tokens and tokens[-1] in _NAME_NOISE:
+        tokens = tokens[:-1]
+        keys.add(" ".join(tokens))
+    return {k for k in keys if k}
+
+
+def index_orgs_by_name(orgs: list[Org]) -> dict[str, Org]:
+    """Map every name key → org (first writer wins) for employer-name lookup."""
+    index: dict[str, Org] = {}
+    for o in orgs:
+        for key in name_keys(o.name):
+            index.setdefault(key, o)
+    return index
+
+
+def match_employer(employer: str | None, index: dict[str, Org]) -> Org | None:
+    """Find the monitored org an employer name refers to, or None."""
+    for key in name_keys(employer):
+        if key in index:
+            return index[key]
+    return None

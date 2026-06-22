@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.services.intent import (
-    collect_grants_gov, collect_propublica, collect_usaspending, orgs, promote,
-    scoring,
+    collect_dev_roles, collect_grants_gov, collect_propublica,
+    collect_usaspending, orgs, promote, scoring,
 )
 from app.workers.celery_app import celery_app
 
@@ -108,6 +108,25 @@ async def _collect_grants_gov_async() -> dict[str, int]:
 @celery_app.task(name="intent.collect_grants_gov", acks_late=False)
 def collect_grants_gov_task() -> dict[str, int]:
     return asyncio.run(_collect_grants_gov_async())
+
+
+async def _collect_dev_roles_async() -> dict[str, int]:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            profile = await scoring.get_active_profile(session)
+            causes = geos = None
+            if profile is not None:
+                causes, geos = _profile_lists(profile)
+            return await collect_dev_roles.collect_dev_roles(
+                session, cause_prefixes=causes, geographies=geos)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="intent.collect_dev_roles", acks_late=False)
+def collect_dev_roles_task() -> dict[str, int]:
+    return asyncio.run(_collect_dev_roles_async())
 
 
 async def _collect_usaspending_peer_async() -> dict[str, int]:

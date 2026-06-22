@@ -179,6 +179,12 @@ celery_app.conf.beat_schedule = {
         "task": "intent.collect_usaspending_peer",
         "schedule": crontab(minute=30, hour=6),  # daily, 06:30 UTC
     },
+    "intent-collect-dev-roles": {
+        # Posted dev/grant roles at monitored nonprofits → Tier-1
+        # dev_role_posted (Adzuna).  Daily.  No-ops without an Adzuna key.
+        "task": "intent.collect_dev_roles",
+        "schedule": crontab(minute=45, hour=6),  # daily, 06:45 UTC
+    },
     "intent-recompute": {
         # Time-decay + ICP-weight + org-fit roll-up over every org with signals.
         # Daily — decay advances daily even when no new signals land, and the

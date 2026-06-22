@@ -189,6 +189,14 @@ class Settings(BaseSettings):
     # Skip peer awards above this size (large grants go to big, well-funded
     # orgs — weaker "a comparable peer got funded" signal).  0 = no cap.
     INTENT_USASPENDING_MAX_AWARD_AMOUNT: float = 1_000_000.0
+    # Adzuna job-aggregator API — sources the Tier-1 dev_role_posted signal.
+    # No key → the collector no-ops (opt-in, like Hunter).  Free tier:
+    # https://developer.adzuna.com (register an app → app_id + app_key).
+    ADZUNA_APP_ID: str = ""
+    ADZUNA_APP_KEY: str = ""
+    ADZUNA_COUNTRY: str = "us"
+    INTENT_DEV_ROLE_LOOKBACK_DAYS: int = 30
+    INTENT_DEV_ROLE_MAX_PER_RUN: int = 200
 
     # Encryption
     ENCRYPTION_KEY: str = ""
