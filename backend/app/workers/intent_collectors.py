@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.config import settings
 from app.services.intent import (
     collect_ats, collect_careers, collect_dev_roles, collect_grants_gov,
-    collect_propublica, collect_usaspending, orgs, promote, scoring,
+    collect_propublica, collect_usaspending, enrich, orgs, promote, scoring,
 )
 from app.workers.celery_app import celery_app
 
@@ -190,3 +190,18 @@ async def _promote_async() -> dict[str, int]:
 def promote_eligible() -> dict[str, int]:
     """Stage approval-pending DRAFTS for promotable orgs.  NEVER sends."""
     return asyncio.run(_promote_async())
+
+
+async def _enrich_draft_async(lead_id: str) -> dict:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            return await enrich.enrich_draft_lead(session, lead_id)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="intent.enrich_draft_contact", acks_late=False)
+def enrich_draft_contact(lead_id: str) -> dict:
+    """Resolve + attach a recipient to a promoted draft lead.  NEVER sends."""
+    return asyncio.run(_enrich_draft_async(lead_id))

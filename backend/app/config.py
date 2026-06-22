@@ -202,6 +202,10 @@ class Settings(BaseSettings):
     INTENT_CAREERS_MAX_ORGS_PER_RUN: int = 50
     # ATS public-board poll (Track 3): max dev_role signals emitted per run.
     INTENT_ATS_MAX_PER_RUN: int = 200
+    # On promotion, fire an async task to resolve a recipient contact for the
+    # draft lead (domain/scrape/Hunter/ProPublica). Off → drafts stay
+    # recipient-less until set by hand / "Find contact".
+    INTENT_PROMOTE_ENRICH_CONTACT: bool = True
 
     # Encryption
     ENCRYPTION_KEY: str = ""

@@ -185,5 +185,20 @@ async def promote_eligible(
         res = await promote_org(session, org, row, profile, now=now)
         counts[res["status"]] = counts.get(res["status"], 0) + 1
         await session.commit()
+        # Post-commit (so the lead row exists): fire async contact resolution
+        # for the freshly-staged draft.  Best-effort — promotion already
+        # succeeded, and the resolver fills the recipient if it can.
+        if res["status"] == "promoted" and settings.INTENT_PROMOTE_ENRICH_CONTACT:
+            _enqueue_contact_enrichment(res["lead_id"])
     logger.info("intent.promote_eligible: %s", counts)
     return counts
+
+
+def _enqueue_contact_enrichment(lead_id: str) -> None:
+    """Fire the recipient-resolution task; never break promotion if the broker
+    is unreachable."""
+    try:
+        from app.workers.celery_app import celery_app
+        celery_app.send_task("intent.enrich_draft_contact", args=[str(lead_id)])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("could not enqueue intent contact enrichment for %s: %s", lead_id, e)
