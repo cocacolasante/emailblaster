@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
 from app.services.intent import (
-    collect_grants_gov, collect_propublica, collect_usaspending, orgs, scoring,
+    collect_grants_gov, collect_propublica, collect_usaspending, orgs, promote,
+    scoring,
 )
 from app.workers.celery_app import celery_app
 
@@ -128,3 +129,18 @@ async def _collect_usaspending_peer_async() -> dict[str, int]:
 @celery_app.task(name="intent.collect_usaspending_peer", acks_late=False)
 def collect_usaspending_peer_task() -> dict[str, int]:
     return asyncio.run(_collect_usaspending_peer_async())
+
+
+async def _promote_async() -> dict[str, int]:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            return await promote.promote_eligible(session)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="intent.promote_eligible", acks_late=False)
+def promote_eligible() -> dict[str, int]:
+    """Stage approval-pending DRAFTS for promotable orgs.  NEVER sends."""
+    return asyncio.run(_promote_async())

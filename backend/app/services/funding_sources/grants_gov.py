@@ -16,6 +16,7 @@ can't be crashed by Grants.gov being down.
 """
 from __future__ import annotations
 
+import html
 import logging
 from datetime import date, datetime
 from typing import Any
@@ -44,11 +45,14 @@ def _map_opportunity(row: dict[str, Any]) -> dict[str, Any] | None:
     opp_id = row.get("id") or row.get("number")
     if not opp_id:
         return None
+    # Grants.gov returns HTML-encoded titles/agencies (e.g. "&ndash;").
+    title = html.unescape((row.get("title") or "").strip())
+    agency = html.unescape((row.get("agency") or row.get("agencyName") or "").strip())
     return {
         "id": str(opp_id),
         "number": row.get("number"),
-        "title": (row.get("title") or "").strip() or None,
-        "agency": (row.get("agency") or row.get("agencyName") or "").strip() or None,
+        "title": title or None,
+        "agency": agency or None,
         "open_date": _parse_date(row.get("openDate")),
         "close_date": _parse_date(row.get("closeDate")),
         "status": (row.get("oppStatus") or "").strip().lower() or None,

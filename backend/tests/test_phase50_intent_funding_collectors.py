@@ -31,11 +31,12 @@ async def test_grants_gov_parse_and_map():
     assert grants_gov._parse_date("") is None
     assert grants_gov._parse_date(None) is None
     opp = grants_gov._map_opportunity({
-        "id": "362903", "number": "OFOP123", "title": "  Capacity Building  ",
+        "id": "362903", "number": "OFOP123", "title": "  Capacity &amp; Training &ndash; 2026  ",
         "agency": "HHS", "openDate": "06/01/2026", "closeDate": "08/01/2026",
         "oppStatus": "posted",
     })
-    assert opp["id"] == "362903" and opp["title"] == "Capacity Building"
+    # HTML entities decoded.
+    assert opp["id"] == "362903" and opp["title"] == "Capacity & Training – 2026"
     assert opp["open_date"] == date(2026, 6, 1) and opp["close_date"] == date(2026, 8, 1)
     assert opp["evidence_url"].endswith("/search-results-detail/362903")
     assert grants_gov._map_opportunity({"title": "no id"}) is None

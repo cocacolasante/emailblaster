@@ -186,4 +186,10 @@ celery_app.conf.beat_schedule = {
         "task": "intent.recompute_intent",
         "schedule": crontab(minute=30, hour=7),  # daily, 07:30 UTC (after collectors)
     },
+    "intent-promote-eligible": {
+        # Stage approval-pending DRAFTS for orgs over the ICP promotion
+        # threshold.  NEVER sends — a human approves through the normal flow.
+        "task": "intent.promote_eligible",
+        "schedule": crontab(minute=0, hour=8),  # daily, 08:00 UTC (after recompute)
+    },
 }
