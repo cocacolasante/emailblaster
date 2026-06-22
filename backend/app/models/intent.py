@@ -236,6 +236,17 @@ class IcpIntentProfile(Base):
     signal_weights: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default="{}",
     )
+    # Grants.gov search keywords for the new_rfp collector (migration 0042).
+    rfp_keywords: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, server_default="[]",
+    )
+    # signal_type -> half_life_days override (migration 0042).  Falls back to
+    # the per-type defaults in scoring.SIGNAL_PROFILE when a type is absent.
+    half_life_overrides: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default="{}",
+    )
+    # Global half-life fallback for signal types absent from SIGNAL_PROFILE
+    # AND half_life_overrides.
     half_life_days: Mapped[Decimal] = mapped_column(
         Numeric(8, 2), nullable=False, server_default="30",
     )

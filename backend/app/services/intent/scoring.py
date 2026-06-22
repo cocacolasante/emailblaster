@@ -104,11 +104,21 @@ def _half_life_and_max_age(
     signal_type: IntentSignalType, profile: IcpIntentProfile | None,
 ) -> tuple[float, int]:
     prof = SIGNAL_PROFILE.get(signal_type)
-    if prof:
-        return prof[1], prof[2]
-    # Unknown type — fall back to the profile's global knobs (or the defaults).
-    hl = float(profile.half_life_days) if profile else _FALLBACK_HALF_LIFE_DAYS
-    max_age = profile.max_signal_age_days if profile else _FALLBACK_MAX_AGE_DAYS
+    hl = prof[1] if prof else None
+    max_age = prof[2] if prof else None
+    # A profile may override the per-type half-life (Phase 5; closes the
+    # Phase-3 "half-life from the profile, not hardcoded" flag).
+    if profile is not None:
+        override = (profile.half_life_overrides or {}).get(signal_type.value)
+        if override is not None:
+            try:
+                hl = float(override)
+            except (TypeError, ValueError):
+                pass
+    if hl is None:  # unknown type, no override → profile global / defaults
+        hl = float(profile.half_life_days) if profile else _FALLBACK_HALF_LIFE_DAYS
+    if max_age is None:
+        max_age = profile.max_signal_age_days if profile else _FALLBACK_MAX_AGE_DAYS
     return hl, max_age
 
 
@@ -160,6 +170,64 @@ async def get_active_profile(
     return await session.scalar(q.order_by(IcpIntentProfile.created_at.desc()))
 
 
+def score_signals(
+    signals: list[Signal], size_band: OrgSizeBand | None,
+    profile: IcpIntentProfile | None, now: datetime,
+) -> dict:
+    """PURE roll-up (no DB, no mutation) of a set of signals under a profile.
+
+    Returns ``{intent_score, tier, top_signal_id, fit_multiplier}`` plus the
+    ``expired`` / ``newly_scored`` signal lists so the persisting caller can
+    apply the lifecycle.  Used by both ``recompute_org_intent`` (persists) and
+    ``preview_org_intent`` (read-only cross-profile comparison)."""
+    contributions: list[tuple[Signal, float]] = []
+    expired: list[Signal] = []
+    newly_scored: list[Signal] = []
+    for s in signals:
+        if s.status not in _LIVE_STATUSES:
+            continue  # SUPPRESSED / already-EXPIRED never contribute
+        half_life, max_age = _half_life_and_max_age(s.signal_type, profile)
+        age = _age_days(now, s.event_date)
+        if age > max_age:
+            expired.append(s)
+            continue
+        if s.status is IntentSignalStatus.NEW:
+            newly_scored.append(s)
+        weight = _signal_weight(s.signal_type, profile)
+        contributions.append((s, float(s.score) * (0.5 ** (age / half_life)) * weight))
+
+    fit = fit_multiplier_for(size_band, profile)
+    intent_score = sum(d for _, d in contributions) * fit
+    if contributions:
+        tier = min(tier_for_signal(s.signal_type) for s, _ in contributions)
+        top_signal = max(contributions, key=lambda c: c[1])[0]
+    else:
+        tier = DEFAULT_TIER
+        top_signal = None
+    return {
+        "intent_score": intent_score, "tier": tier, "fit_multiplier": fit,
+        "top_signal_id": top_signal.id if top_signal else None,
+        "expired": expired, "newly_scored": newly_scored,
+    }
+
+
+async def _load_signals(session: AsyncSession, org_id) -> list[Signal]:
+    return list((await session.execute(
+        select(Signal).where(Signal.org_id == org_id)
+    )).scalars().all())
+
+
+async def preview_org_intent(
+    session: AsyncSession, org: Org, *,
+    profile: IcpIntentProfile | None = None, now: datetime | None = None,
+) -> dict:
+    """Score an org under a profile WITHOUT persisting or mutating signal
+    statuses — for cross-profile comparison / API preview."""
+    now = now or _now()
+    signals = await _load_signals(session, org.id)
+    return score_signals(signals, org.size_band, profile, now)
+
+
 async def recompute_org_intent(
     session: AsyncSession, org: Org, *,
     profile: IcpIntentProfile | None = None, now: datetime | None = None,
@@ -170,42 +238,22 @@ async def recompute_org_intent(
     NEW→SCORED / over-age→EXPIRED in place.  Upserts the ``OrgIntentScore``
     row.  Caller commits."""
     now = now or _now()
-    signals = (await session.execute(
-        select(Signal).where(Signal.org_id == org.id)
-    )).scalars().all()
+    signals = await _load_signals(session, org.id)
+    result = score_signals(signals, org.size_band, profile, now)
 
-    contributions: list[tuple[Signal, float]] = []
-    for s in signals:
-        if s.status not in _LIVE_STATUSES:
-            continue  # SUPPRESSED / already-EXPIRED never contribute
-        half_life, max_age = _half_life_and_max_age(s.signal_type, profile)
-        age = _age_days(now, s.event_date)
-        if age > max_age:
-            s.status = IntentSignalStatus.EXPIRED
-            continue
-        if s.status is IntentSignalStatus.NEW:
-            s.status = IntentSignalStatus.SCORED
-        weight = _signal_weight(s.signal_type, profile)
-        decayed = float(s.score) * (0.5 ** (age / half_life)) * weight
-        contributions.append((s, decayed))
-
-    fit = fit_multiplier_for(org.size_band, profile)
-    intent_score = sum(d for _, d in contributions) * fit
-    if contributions:
-        tier = min(tier_for_signal(s.signal_type) for s, _ in contributions)
-        top_signal = max(contributions, key=lambda c: c[1])[0]
-    else:
-        tier = DEFAULT_TIER
-        top_signal = None
+    for s in result["expired"]:
+        s.status = IntentSignalStatus.EXPIRED
+    for s in result["newly_scored"]:
+        s.status = IntentSignalStatus.SCORED
 
     row = await session.get(OrgIntentScore, org.id)
     if row is None:
         row = OrgIntentScore(org_id=org.id, tenant_id=org.tenant_id)
         session.add(row)
-    row.intent_score = Decimal(str(round(intent_score, 4)))
-    row.tier = tier
-    row.fit_multiplier = Decimal(str(round(fit, 3)))
-    row.top_signal_id = top_signal.id if top_signal else None
+    row.intent_score = Decimal(str(round(result["intent_score"], 4)))
+    row.tier = result["tier"]
+    row.fit_multiplier = Decimal(str(round(result["fit_multiplier"], 3)))
+    row.top_signal_id = result["top_signal_id"]
     row.last_computed_at = now
     return row
 

@@ -78,11 +78,10 @@ def _profile_lists(profile) -> tuple[list[str], list[str]]:
 
 
 def _rfp_keywords(profile) -> list[str]:
-    """Grants.gov search keywords for the profile.  Prefers an explicit
-    ``rfp_keywords`` list (Phase-5 config); falls back to the cause-code list
-    so the task is still functional when only causes are set."""
-    kws = (profile.signal_weights or {}).get("_rfp_keywords") if profile.signal_weights else None
-    if isinstance(kws, list) and kws:
+    """Grants.gov search keywords for the profile (Phase-5 ``rfp_keywords``);
+    falls back to the cause-code list when none are set."""
+    kws = profile.rfp_keywords or []
+    if kws:
         return [str(k) for k in kws]
     return [str(c) for c in (profile.cause_codes or [])]
 

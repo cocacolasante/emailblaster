@@ -9,6 +9,7 @@ from app.config import settings, validate_required_settings
 from app.routers import (
     agent,
     icp,
+    intent_profiles,
     signals,
     analytics,
     campaigns,
@@ -127,3 +128,4 @@ app.include_router(report_builder.router)
 app.include_router(agent.router)
 app.include_router(signals.router)
 app.include_router(icp.router)
+app.include_router(intent_profiles.router)
