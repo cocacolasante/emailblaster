@@ -16,6 +16,8 @@ within the autonomy boundary: it only fills a draft's recipient; it never sends.
 from __future__ import annotations
 
 import logging
+import re
+from urllib.parse import unquote
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +27,18 @@ from app.services.funding_sources.enrichment import ContactResult, resolve_conta
 from app.services.template_render import build_merge_context, render_template
 
 logger = logging.getLogger(__name__)
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _clean_email(raw: str | None) -> str | None:
+    """Sanitize a resolved email: URL-decode scrape artifacts (e.g. a leading
+    ``%20``), strip, lowercase, and validate the shape.  None if not a valid
+    address."""
+    if not raw:
+        return None
+    e = unquote(raw).strip().lower()
+    return e if _EMAIL_RE.match(e) else None
 
 
 def _org_to_discovered(org: Org) -> DiscoveredOrg:
@@ -61,8 +75,12 @@ async def enrich_draft_lead(session: AsyncSession, lead_id) -> dict:
     result = await resolve_org_contact(org)
     if result.status != "resolved" or not result.email:
         return {"status": result.status}
+    clean = _clean_email(result.email)
+    if not clean:
+        logger.warning("intent.enrich: rejecting malformed email %r for lead %s", result.email, lead_id)
+        return {"status": "invalid_email"}
 
-    lead.email = result.email.strip().lower()
+    lead.email = clean
     if not lead.first_name and result.first_name:
         lead.first_name = result.first_name
     if not lead.last_name and result.last_name:

@@ -91,6 +91,35 @@ async def test_enrich_noop_when_no_contact(db_session, monkeypatch):
     assert lead.email is None       # left recipient-less; promotion still stands
 
 
+async def test_enrich_sanitizes_scrape_artifact_email(db_session, monkeypatch):
+    org, camp, lead = await _draft(db_session)
+    await db_session.commit()
+
+    async def fake_resolve(o):
+        # URL-encoded space artifact from a scrape.
+        return ContactResult(status="resolved", email="%20donorserv@tulsacf.org", via="website")
+    monkeypatch.setattr(enrich, "resolve_contact", fake_resolve)
+
+    res = await enrich.enrich_draft_lead(db_session, lead.id)
+    assert res["status"] == "resolved"
+    await db_session.refresh(lead)
+    assert lead.email == "donorserv@tulsacf.org"   # %20 stripped
+
+
+async def test_enrich_rejects_unsalvageable_email(db_session, monkeypatch):
+    org, camp, lead = await _draft(db_session)
+    await db_session.commit()
+
+    async def fake_resolve(o):
+        return ContactResult(status="resolved", email="not an email", via="website")
+    monkeypatch.setattr(enrich, "resolve_contact", fake_resolve)
+
+    res = await enrich.enrich_draft_lead(db_session, lead.id)
+    assert res["status"] == "invalid_email"
+    await db_session.refresh(lead)
+    assert lead.email is None
+
+
 async def test_enrich_missing_lead(db_session):
     import uuid
     res = await enrich.enrich_draft_lead(db_session, uuid.uuid4())
