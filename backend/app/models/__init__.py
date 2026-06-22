@@ -65,6 +65,16 @@ from app.models.funding import (
     FundingEnrichmentStatus,
     FundingSourceState,
 )
+from app.models.intent import (
+    IcpIntentProfile,
+    IntentSignalSource,
+    IntentSignalStatus,
+    IntentSignalType,
+    Org,
+    OrgIntentScore,
+    OrgSizeBand,
+    Signal,
+)
 from app.models.sequence import (
     LeadSequenceState,
     LeadSequenceStatus,
@@ -147,6 +157,14 @@ __all__ = [
     "FundingEnrichmentQueue",
     "FundingEnrichmentStatus",
     "FundingSourceState",
+    "IcpIntentProfile",
+    "IntentSignalSource",
+    "IntentSignalStatus",
+    "IntentSignalType",
+    "Org",
+    "OrgIntentScore",
+    "OrgSizeBand",
+    "Signal",
     "ProspectSignal",
     "ProspectSignalStatus",
     "SignalWatch",

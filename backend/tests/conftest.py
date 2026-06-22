@@ -78,6 +78,7 @@ async def _engine():
     async with engine.begin() as conn:
         await conn.execute(text(
             "TRUNCATE TABLE lookalike_candidates, icp_profiles, "
+            "org_intent_scores, signals, orgs, icp_intent_profiles, "
             "funding_enrichment_queue, "
             "funding_source_state, prospect_signals, signal_watches, "
             "reply_outcomes, campaign_copy_insights, "
