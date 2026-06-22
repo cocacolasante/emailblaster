@@ -161,6 +161,29 @@ async def test_domain_search_no_key_returns_empty(monkeypatch):
     assert await hunter.domain_search("helpinghands.org") == []
 
 
+async def test_domain_search_respects_free_plan_limit(monkeypatch):
+    # The free Hunter plan 400s on limit > 10 — domain_search must send the
+    # configured (capped) limit, not a hardcoded 25.
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"data": {"emails": []}}
+
+    class _FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None):
+            captured["params"] = params
+            return _Resp()
+
+    monkeypatch.setattr(hunter.settings, "HUNTER_API_KEY", "k")
+    monkeypatch.setattr(hunter.httpx, "AsyncClient", lambda *a, **k: _FakeClient())
+    await hunter.domain_search("helpinghands.org")
+    assert captured["params"]["limit"] == hunter.settings.HUNTER_DOMAIN_SEARCH_LIMIT
+    assert captured["params"]["limit"] <= 10
+
+
 # ---------------------------------------------------------------------------
 # resolve_contact statuses + role priority
 # ---------------------------------------------------------------------------

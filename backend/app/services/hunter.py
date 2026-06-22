@@ -56,8 +56,11 @@ async def domain_search(domain: str) -> list[dict[str, Any]]:
         return []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
+            # The free Hunter plan rejects limit > 10 with a 400, so this is
+            # capped (configurable for paid plans via HUNTER_DOMAIN_SEARCH_LIMIT).
             resp = await client.get(HUNTER_DOMAIN_URL, params={
-                "domain": domain, "api_key": settings.HUNTER_API_KEY, "limit": 25,
+                "domain": domain, "api_key": settings.HUNTER_API_KEY,
+                "limit": settings.HUNTER_DOMAIN_SEARCH_LIMIT,
             })
             resp.raise_for_status()
             emails = ((resp.json() or {}).get("data") or {}).get("emails") or []
@@ -118,8 +121,11 @@ async def find_email_hunter(
                 }
 
             # No name → domain search, then rank toward the wanted role.
+            # The free Hunter plan rejects limit > 10 with a 400, so this is
+            # capped (configurable for paid plans via HUNTER_DOMAIN_SEARCH_LIMIT).
             resp = await client.get(HUNTER_DOMAIN_URL, params={
-                "domain": domain, "api_key": settings.HUNTER_API_KEY, "limit": 25,
+                "domain": domain, "api_key": settings.HUNTER_API_KEY,
+                "limit": settings.HUNTER_DOMAIN_SEARCH_LIMIT,
             })
             resp.raise_for_status()
             emails = ((resp.json() or {}).get("data") or {}).get("emails") or []

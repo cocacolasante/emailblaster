@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     # Enrichment (optional)
     APOLLO_API_KEY: str = ""
     HUNTER_API_KEY: str = ""
+    # Hunter Domain Search result cap. The FREE plan rejects limit > 10 (400);
+    # raise on a paid plan.
+    HUNTER_DOMAIN_SEARCH_LIMIT: int = 10
 
     # --- Nonprofit funding discovery (feeds the prospect_signals queue) ---
     # Each poll task no-ops when its *_ENABLED flag is false (default).
