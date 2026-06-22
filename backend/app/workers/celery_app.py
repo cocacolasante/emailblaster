@@ -166,4 +166,11 @@ celery_app.conf.beat_schedule = {
         "task": "intent.collect_propublica_rev_delta",
         "schedule": crontab(minute=0, hour=7, day_of_week=1),  # Mondays 07:00 UTC
     },
+    "intent-recompute": {
+        # Time-decay + ICP-weight + org-fit roll-up over every org with signals.
+        # Daily — decay advances daily even when no new signals land, and the
+        # job/RFP collectors (next sub-phase) refresh daily.
+        "task": "intent.recompute_intent",
+        "schedule": crontab(minute=30, hour=7),  # daily, 07:30 UTC (after collectors)
+    },
 }

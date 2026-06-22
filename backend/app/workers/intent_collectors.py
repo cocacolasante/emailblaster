@@ -19,7 +19,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
-from app.services.intent import collect_propublica, orgs
+from app.services.intent import collect_propublica, orgs, scoring
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -51,3 +51,17 @@ async def _propublica_async() -> dict[str, int]:
 @celery_app.task(name="intent.collect_propublica_rev_delta", acks_late=False)
 def collect_propublica_rev_delta() -> dict[str, int]:
     return asyncio.run(_propublica_async())
+
+
+async def _recompute_async() -> dict[str, int]:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            return await scoring.recompute_all_intent(session)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="intent.recompute_intent", acks_late=False)
+def recompute_intent() -> dict[str, int]:
+    return asyncio.run(_recompute_async())
