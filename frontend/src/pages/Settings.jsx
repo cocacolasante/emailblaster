@@ -23,6 +23,7 @@ import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import ConnectLinkedInModal from '../components/ConnectLinkedInModal.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
+import IntentTab from './IntentSettings.jsx';
 
 const STATUS_LABEL = {
   untested: 'Untested',
@@ -791,6 +792,7 @@ export default function Settings() {
           { key: 'linkedin', label: 'LinkedIn accounts' },
           { key: 'agent', label: 'Agent' },
           { key: 'discovery', label: 'Discovery' },
+          { key: 'intent', label: 'Intent engine' },
           { key: 'api', label: 'API status' },
         ]}
       />
@@ -798,6 +800,7 @@ export default function Settings() {
       {tab === 'linkedin' && <LinkedInAccountsTab />}
       {tab === 'agent' && <AgentTab />}
       {tab === 'discovery' && <DiscoveryTab />}
+      {tab === 'intent' && <IntentTab />}
       {tab === 'api' && <ApiStatusTab />}
     </div>
   );

@@ -26,7 +26,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import IcpIntentProfile, Org
+from app.models import IcpIntentProfile, Org, Signal
 from app.services.intent import scoring
 
 logger = logging.getLogger(__name__)
@@ -168,9 +168,26 @@ async def rank_orgs(
             "intent_score": round(r["intent_score"], 2), "tier": r["tier"],
             "fit_multiplier": round(r["fit_multiplier"], 3),
             "top_signal_id": str(r["top_signal_id"]) if r["top_signal_id"] else None,
+            "why_now": None, "evidence_url": None, "top_signal_type": None,
         })
     ranked.sort(key=lambda x: (x["tier"], -x["intent_score"]))
-    return ranked[:limit]
+    ranked = ranked[:limit]
+
+    # Attach the top signal's "why now" + evidence for the visible rows only.
+    sig_ids = [r["top_signal_id"] for r in ranked if r["top_signal_id"]]
+    if sig_ids:
+        sigs = {
+            str(s.id): s for s in (await session.execute(
+                select(Signal).where(Signal.id.in_(sig_ids))
+            )).scalars().all()
+        }
+        for r in ranked:
+            s = sigs.get(r["top_signal_id"])
+            if s is not None:
+                r["why_now"] = s.summary
+                r["evidence_url"] = s.evidence_url
+                r["top_signal_type"] = s.signal_type.value
+    return ranked
 
 
 async def compare_profiles(

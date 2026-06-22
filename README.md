@@ -31,7 +31,7 @@ This README is intentionally exhaustive so it can be fed to an LLM as the single
 - **Intent / trigger signals** — watch a lead, deal, or cold company for job changes (Apollo title diff), funding rounds, and hiring sprees. Detected changes land in a review queue with a reach-out task + owner alert; cold targets with a findable email are staged as campaign-less CRM leads. Bulk-watch a pasted list of companies. Never auto-added to a campaign. **Click any signal** to open a detail view, **Draft** a tailored outreach email (opens on the specific trigger), pick which connected inbox to **send** from, and send — the send is logged as an outbound email activity on the lead and the signal is marked actioned.
 - **Nonprofit funding discovery** — two free external feeds surface nonprofits worth contacting into the same signals queue: recent federal grant awards (USAspending) and newly-ruled 501(c)(3)s (IRS EO BMF). Optional Hunter lookup resolves a decision-maker contact (ED → Development Director → Grants Manager) and stages a campaign-less lead; otherwise notification-only. Opt-in per feed; off by default.
 - **ICP lookalike expansion** — derives an ideal-customer profile from your closed-won deals (≥3 needed), then discovers firmographically similar prospects (Apollo search, web-research fallback) and stages them in a ranked accept/reject queue. Accepting creates a campaign-less lead.
-- **Signals & Intent Engine v2** — a separate intent layer that pulls *time-bound, evidenced events* (not list-membership facts) about monitored nonprofit orgs and rolls them into a per-org intent score + tier. Six free/compliant collectors feed it: a posted Development Director / Grant Writer role (Tier 1, via the Adzuna aggregator + careers-page checks + public Greenhouse/Lever/Ashby boards), a new federal RFP matching the org's cause (Grants.gov, Tier 1), a peer's federal award (USAspending, Tier 2), and a year-over-year 990 grant-revenue drop (ProPublica, Tier 2). Each signal carries an event date, an evidence URL, and a one-line "why now". Scoring time-decays each signal by a per-type half-life (990-lagged signals stay warm for years; a fresh job post is short-fused), applies an org-fit multiplier from 990 size bands (sweet spot small/mid), and an ICP-profile weight. An org crossing its ICP promotion threshold is turned into an **approval-pending DRAFT** in the normal campaign system — the draft opens with the real evidenced "why now" and **never sends or converts** until you approve it. Driven by an editable **ICP profile** ("the GrantMind switch") so the same engine can be retargeted per workspace. *(Config/setup is API + env today — no dedicated UI panel yet; see [Signals & Intent Engine v2](#signals--intent-engine-v2-real-buyingfunding-intent).)*
+- **Signals & Intent Engine v2** — a separate intent layer that pulls *time-bound, evidenced events* (not list-membership facts) about monitored nonprofit orgs and rolls them into a per-org intent score + tier. Six free/compliant collectors feed it: a posted Development Director / Grant Writer role (Tier 1, via the Adzuna aggregator + careers-page checks + public Greenhouse/Lever/Ashby boards), a new federal RFP matching the org's cause (Grants.gov, Tier 1), a peer's federal award (USAspending, Tier 2), and a year-over-year 990 grant-revenue drop (ProPublica, Tier 2). Each signal carries an event date, an evidence URL, and a one-line "why now". Scoring time-decays each signal by a per-type half-life (990-lagged signals stay warm for years; a fresh job post is short-fused), applies an org-fit multiplier from 990 size bands (sweet spot small/mid), and an ICP-profile weight. An org crossing its ICP promotion threshold is turned into an **approval-pending DRAFT** in the normal campaign system — the draft opens with the real evidenced "why now" and **never sends or converts** until you approve it. Driven by an editable **ICP profile** ("the GrantMind switch") so the same engine can be retargeted per workspace. Configured end-to-end from **Settings → Intent engine** (dashboard, profile editor, seed/run/recompute/promote controls, ranked intent feed); see [Signals & Intent Engine v2](#signals--intent-engine-v2-real-buyingfunding-intent).
 - **CRM reporting** — a Reports tab with a date-range dashboard: won/lost value + counts, win rate, average deal size + sales cycle, open + probability-weighted pipeline, won-vs-lost monthly trend, pipeline-by-stage, forecast by close month, loss reasons, activity breakdown, and a conversion funnel — plus closed-won / closed-lost / open / activity detail tables with one-click CSV export.
 - **"Research a client" tool** — one-off prospect research generator from a LinkedIn URL (no CSV needed), outputs a draft email OR a LinkedIn DM under a character cap. Includes a **send-and-track** flow: edit and send the generated email from any connected inbox, with the send automatically logged as an outbound email activity in the CRM (creates a new CRM lead if the address isn't already tracked; attaches to a matching deal when one exists).
 - **Social Listening Radar** — type a plain-English topic ("frustrated with our IT provider"), Claude expands it to ~20 LinkedIn search phrases, Anthropic web search finds matching public posts, each post is scored 1-10 for buying intent + categorized, and a suggested comment + connection request + follow-up DM is drafted for each. All LinkedIn writes stay manual — the system never auto-posts. Per-search frequency (manual / 6h / 12h / daily / weekly) and soft cost caps per run.
@@ -220,14 +220,18 @@ relevant **API key** (Adzuna). See [Set up the Intent Engine](#set-up-the-intent
 
 ### API (`/intent`)
 
-No dedicated UI panel yet — manage it via the REST API (usable through the
-Swagger UI at `http://localhost:8000/docs`):
+The engine is managed from **Settings → Intent engine** in the app (see the
+walkthrough below). The same operations are available over the REST API
+(usable through the Swagger UI at `http://localhost:8000/docs`):
 
 - `GET /intent/profiles` · `POST /intent/profiles` · `PATCH /intent/profiles/{id}` · `DELETE …`
 - `POST /intent/profiles/preset?kind=grantmind|generic` — create from a preset
 - `POST /intent/profiles/{id}/activate` — make it the single active profile
-- `GET /intent/profiles/{id}/intent` — the ranked intent list under that profile
+- `GET /intent/profiles/{id}/intent` — the ranked intent list under that profile (incl. each org's top-signal "why now" + evidence URL)
 - `GET /intent/compare?profile_a=…&profile_b=…` — rank the same orgs under two profiles
+- `GET /intent/status` — dashboard counts (orgs, signals-by-type, tier distribution, pending drafts, Adzuna-configured)
+- `POST /intent/orgs/seed` `{query, limit}` — seed monitored orgs from ProPublica by cause keyword
+- `POST /intent/collectors/run` — enqueue all collectors · `POST /intent/recompute` · `POST /intent/promote`
 
 ---
 
@@ -680,12 +684,11 @@ Sidebar → **Social Radar**.  An "intent feed" — discover LinkedIn posts wher
 
 ### Set up the Intent Engine v2
 
-> **There is no dedicated UI panel for the v2 intent engine yet.** You drive it
-> through the **Swagger UI** (the FastAPI docs page at
-> `http://localhost:8000/docs`, which is a real point-and-click UI for the API)
-> plus a couple of `.env` keys. The product UI surfaces its *output*: promoted
-> orgs become approval-pending DRAFT campaigns under **Campaigns**, and you get
-> a bell **notification** for each. Here is the end-to-end path.
+Everything is configured from **Settings → Intent engine** in the app — a
+dashboard (monitored-org count + tier distribution + pending drafts), an ICP
+profile editor, seed/run/recompute/promote buttons, and the ranked intent feed.
+The same operations are also on the REST API / Swagger UI
+(`http://localhost:8000/docs`) if you prefer scripting.
 
 **1. (Optional) add the Adzuna key for the job-posting signal.** Register a free
 app at <https://developer.adzuna.com>, then in `.env`:
@@ -700,79 +703,42 @@ Recreate so the containers pick it up (a plain restart won't re-read `.env`):
 
 ```bash
 docker compose up -d --force-recreate backend worker beat
-docker compose exec worker printenv ADZUNA_APP_ID   # confirm non-empty
 ```
 
-Skip this and the dev-role collector simply no-ops; the careers-page + ATS
+Skip this and the dev-role collector simply no-ops (the **Settings → Intent
+engine** tab shows an "Adzuna not configured" notice); the careers-page + ATS
 dev-role collectors and all the funding collectors still work without it.
 
 **2. Apply migrations** (if you haven't): `docker compose exec backend alembic upgrade head`.
 
-**3. Create + activate an ICP profile.** Open `http://localhost:8000/docs`,
-find **POST `/intent/profiles/preset`**, click *Try it out*, set `kind` to
-`grantmind`, and Execute. (The GrantMind preset targets nonprofit cause codes,
-favors small/mid orgs, pushes dev-role / lapsed-funder / RFP signals, and sets a
-promotion threshold of 80.) The preset is created **active**. To tweak it later,
-use **PATCH `/intent/profiles/{id}`** (e.g. change `cause_codes`, `geographies`,
-`rfp_keywords`, `promotion_threshold`, `signal_weights`).
+**3. Open Settings → Intent engine** and **create an ICP profile** — click
+*Create GrantMind profile* (targets nonprofit cause codes, favors small/mid
+orgs, pushes dev-role / lapsed-funder / RFP signals, promotion threshold 80).
+It's created active. Edit any field inline — name, cause codes, geographies, RFP
+keywords, promotion threshold, and (under *Advanced weights*) the size-band /
+signal-weight / half-life-override maps — then **Save profile**.
 
-**4. Get some monitored orgs into the system.** The engine only acts on orgs in
-the `orgs` table. They accrue automatically over time (the daily
-`intent.backfill_orgs` task seeds them from EIN-bearing leads/signals), but to
-start immediately you can seed a real set from ProPublica by cause keyword. From
-a shell:
+**4. Seed monitored orgs.** In the *Run the pipeline* card, type a cause keyword
+(e.g. "community foundation") and click **Seed orgs** to pull a real set from
+ProPublica. (Orgs also accrue automatically via the daily `intent.backfill_orgs`
+task from EIN-bearing leads/signals.)
 
-```bash
-docker compose exec backend python -c "
-import asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from app.config import settings
-from app.services.intent import orgs
-async def main():
-    e = create_async_engine(settings.DATABASE_URL)
-    async with AsyncSession(e) as s:
-        print(await orgs.seed_orgs_from_propublica_search(s, 'community foundation', limit=50))
-    await e.dispose()
-asyncio.run(main())"
-```
+**5. Run the collectors + scoring.** Click **Run collectors** (queues all six —
+they hit external APIs), wait ~1 minute, then **Recompute scores**. Both also
+run daily on the Beat schedule (06:00–08:00 UTC).
 
-**5. Let the collectors + scoring run, or trigger them now.** They run daily on
-the Beat schedule (06:00–08:00 UTC). To see results immediately, run the chain
-by hand:
+**6. Review the ranked intent feed** at the bottom of the tab — every monitored
+org ranked by tier + score under the active profile, each row showing the top
+signal's "why now" + an evidence link.
 
-```bash
-docker compose exec backend python -c "
-import asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from app.config import settings
-from app.services.intent import collect_grants_gov, collect_propublica, scoring, profiles
-async def main():
-    e = create_async_engine(settings.DATABASE_URL)
-    async with AsyncSession(e) as s:
-        prof = await scoring.get_active_profile(s)
-        causes = [str(c) for c in (prof.cause_codes or [])]
-        await collect_propublica.collect_propublica_rev_delta(s)
-        await collect_grants_gov.collect_grants_gov(s, keywords=prof.rfp_keywords, cause_prefixes=causes, geographies=[])
-        print(await scoring.recompute_all_intent(s))
-    await e.dispose()
-asyncio.run(main())"
-```
-
-(Or call the matching Celery tasks: `intent.collect_*`, then
-`intent.recompute_intent`.)
-
-**6. Review the ranked intent list.** In Swagger, **GET
-`/intent/profiles/{id}/intent`** returns every monitored org ranked by tier +
-score under your profile. **GET `/intent/compare`** ranks the same orgs under
-two profiles side by side.
-
-**7. Promotion → an approval-pending draft.** When an org crosses the profile's
-`promotion_threshold` (tier ≤ 2), the daily `intent.promote_eligible` task
-stages a DRAFT outreach lead in a campaign named **"Intent drafts — &lt;profile&gt;"**
-and rings the notification bell. **Open that campaign in the Campaigns UI**,
-review the draft (its body opens with the real evidenced "why now"), edit/add a
-recipient, and approve it through the normal campaign flow to send. **Nothing
-sends until you approve** — the engine never sends or converts on its own.
+**7. Promote → approval-pending drafts.** Click **Promote eligible → drafts**
+(or let the daily `intent.promote_eligible` task do it): every org over the
+profile's threshold (tier ≤ 2) becomes a DRAFT outreach lead in a campaign named
+**"Intent drafts — &lt;profile&gt;"**, and the notification bell rings. The tab
+links straight to that campaign — **open it in the Campaigns UI**, review each
+draft (its body opens with the real evidenced "why now"), edit/add a recipient,
+and approve through the normal campaign flow to send. **Nothing sends until you
+approve** — the engine never sends or converts on its own.
 
 ---
 

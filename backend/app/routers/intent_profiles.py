@@ -12,13 +12,33 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
-from app.models import IcpIntentProfile
+from app.models import (
+    Campaign, CampaignStatus, IcpIntentProfile, Lead, Org, OrgIntentScore,
+    SendStatus, Signal,
+)
+from app.services.intent import orgs as orgs_svc
 from app.services.intent import profiles as profiles_svc
+from app.services.intent import promote as promote_svc
+from app.services.intent import scoring
+from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/intent", tags=["intent"])
+
+# The collector Celery tasks the "Run collectors" button fires (by name, so the
+# router doesn't import the worker module).
+_COLLECTOR_TASKS = [
+    "intent.collect_grants_gov",
+    "intent.collect_usaspending_peer",
+    "intent.collect_dev_roles",
+    "intent.collect_ats_dev_roles",
+    "intent.collect_careers_dev_roles",
+    "intent.collect_propublica_rev_delta",
+]
 
 
 class ProfileIn(BaseModel):
@@ -144,3 +164,85 @@ async def compare(
     a = await _require(db, profile_a)
     b = await _require(db, profile_b)
     return await profiles_svc.compare_profiles(db, a, b, limit=limit)
+
+
+# --------------------------------------------------------------------------
+# Engine dashboard + run controls (drive the Settings → Intent tab)
+# --------------------------------------------------------------------------
+
+_DRAFT_NAME_PREFIX = "Intent drafts — "
+
+
+async def _draft_campaign(db: AsyncSession) -> Campaign | None:
+    return await db.scalar(
+        select(Campaign)
+        .where(Campaign.name.like(f"{_DRAFT_NAME_PREFIX}%"),
+               Campaign.status == CampaignStatus.DRAFT)
+        .order_by(Campaign.created_at.desc())
+    )
+
+
+@router.get("/status")
+async def status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Overview for the dashboard: counts, active profile, draft campaign,
+    and whether the Adzuna key is configured."""
+    orgs_total = await db.scalar(select(func.count()).select_from(Org)) or 0
+    by_type = (await db.execute(
+        select(Signal.signal_type, func.count()).group_by(Signal.signal_type)
+    )).all()
+    by_tier = (await db.execute(
+        select(OrgIntentScore.tier, func.count()).group_by(OrgIntentScore.tier)
+    )).all()
+    active = await scoring.get_active_profile(db)
+    draft = await _draft_campaign(db)
+    draft_leads = 0
+    if draft is not None:
+        draft_leads = await db.scalar(
+            select(func.count()).select_from(Lead).where(
+                Lead.campaign_id == draft.id, Lead.send_status == SendStatus.PENDING)
+        ) or 0
+    return {
+        "adzuna_configured": bool(settings.ADZUNA_APP_ID and settings.ADZUNA_APP_KEY),
+        "active_profile_id": active.id if active else None,
+        "orgs_total": orgs_total,
+        "signals_by_type": {t.value: c for t, c in by_type},
+        "tiers": {str(t): c for t, c in by_tier},
+        "draft_campaign_id": draft.id if draft else None,
+        "draft_pending_leads": draft_leads,
+    }
+
+
+class SeedIn(BaseModel):
+    query: str
+    limit: int = Field(50, ge=1, le=100)
+
+
+@router.post("/orgs/seed")
+async def seed_orgs(body: SeedIn, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Seed monitored orgs from ProPublica search by cause keyword (real EINs)."""
+    result = await orgs_svc.seed_orgs_from_propublica_search(db, body.query, limit=body.limit)
+    result["orgs_total"] = await db.scalar(select(func.count()).select_from(Org)) or 0
+    return result
+
+
+@router.post("/collectors/run")
+async def run_collectors(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Enqueue all intent collectors (they hit external APIs — async)."""
+    for name in _COLLECTOR_TASKS:
+        celery_app.send_task(name)
+    return {"queued": _COLLECTOR_TASKS}
+
+
+@router.post("/recompute")
+async def recompute(db: AsyncSession = Depends(get_db)) -> dict[str, int]:
+    """Recompute every org's intent now (decay + ICP weight + fit)."""
+    return await scoring.recompute_all_intent(db)
+
+
+@router.post("/promote")
+async def promote(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Stage approval-pending DRAFTS for promotable orgs now (never sends)."""
+    counts = await promote_svc.promote_eligible(db)
+    draft = await _draft_campaign(db)
+    counts["draft_campaign_id"] = str(draft.id) if draft else None
+    return counts
