@@ -200,6 +200,8 @@ class Settings(BaseSettings):
     # Careers-page check (Track 2): max warm orgs fetched per run (per-org LLM
     # cost; only the high-interest subset is checked).
     INTENT_CAREERS_MAX_ORGS_PER_RUN: int = 50
+    # ATS public-board poll (Track 3): max dev_role signals emitted per run.
+    INTENT_ATS_MAX_PER_RUN: int = 200
 
     # Encryption
     ENCRYPTION_KEY: str = ""

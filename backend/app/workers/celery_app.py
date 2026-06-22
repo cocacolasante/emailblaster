@@ -185,6 +185,12 @@ celery_app.conf.beat_schedule = {
         "task": "intent.collect_dev_roles",
         "schedule": crontab(minute=45, hour=6),  # daily, 06:45 UTC
     },
+    "intent-collect-ats": {
+        # Public ATS boards (Greenhouse/Lever/Ashby) for ATS-configured orgs →
+        # Tier-1 dev_role_posted (Track 3).  Daily.
+        "task": "intent.collect_ats_dev_roles",
+        "schedule": crontab(minute=50, hour=6),  # daily, 06:50 UTC
+    },
     "intent-collect-careers": {
         # Careers-page dev-role check over the warm-org subset → Tier-1
         # dev_role_posted (Track 2).  Daily, bounded per run.

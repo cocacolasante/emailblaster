@@ -54,9 +54,15 @@ def _event_dt(job: dict, now: datetime) -> datetime:
     return job.get("created") or now
 
 
-def _title_matches_role(title: str | None) -> bool:
+def title_matches_role(title: str | None) -> bool:
+    """True if a job title names a development/grants role (shared with the
+    ATS collector)."""
     t = (title or "").lower()
     return any(role in t for role in DEV_ROLE_TITLES)
+
+
+# Backwards-compatible private alias (used within this module).
+_title_matches_role = title_matches_role
 
 
 async def _emit_dev_role_signal(session: AsyncSession, org, job: dict, now: datetime) -> str:

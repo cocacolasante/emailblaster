@@ -1,8 +1,11 @@
 # Phase 6 — Job-posting intent: compliant sourcing assessment
 
-> **Status: assessment only — nothing built.** Per the build prompt, this phase
-> presents sourcing options with honest effort/cost/risk and a recommendation,
-> and stops. No collector is written until a path is chosen.
+> **Status: assessment delivered; Tracks 1–3 chosen and BUILT.**
+> The original assessment (below) presented the options + recommendation and
+> stopped for a choice. The operator chose Track 1, then Tracks 2 + 3. All three
+> are now implemented + tested (Adzuna: `collect_dev_roles`; careers-page:
+> `collect_careers`; ATS public boards: `collect_ats` over Greenhouse/Lever/
+> Ashby). Paid providers (E) and USAJOBS (D) remain deferred/dropped as noted.
 
 ## Why this signal matters
 
