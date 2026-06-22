@@ -40,6 +40,11 @@ _FIELDS = [
     "Awarding Agency",
     "Start Date",
     "Award Type",
+    # USASpending quirk: the display name "Recipient Location State Code"
+    # comes back null, but requesting the raw snake_case key returns the
+    # populated value — and that's the key ``_map_award`` reads first.
+    # Without requesting it the response omits state (all None).
+    "recipient_location_state_code",
 ]
 _TIMEOUT = 30.0
 _DEFAULT_PAGE_LIMIT = 100
@@ -87,6 +92,9 @@ def _map_award(row: dict[str, Any]) -> DiscoveredOrg | None:
             "award_id": award_id,
             "action_date": action_date,
             "recipient_state": recipient_state,
+            # USASpending always returns this id; powers the award-profile
+            # evidence URL (https://www.usaspending.gov/award/<id>).
+            "generated_internal_id": row.get("generated_internal_id"),
         },
     )
 

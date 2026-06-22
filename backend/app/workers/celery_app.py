@@ -166,10 +166,23 @@ celery_app.conf.beat_schedule = {
         "task": "intent.collect_propublica_rev_delta",
         "schedule": crontab(minute=0, hour=7, day_of_week=1),  # Mondays 07:00 UTC
     },
+    "intent-collect-grants-gov": {
+        # New federal RFPs matching the active ICP cause → Tier-1 new_rfp.
+        # Daily — opportunities post continuously and carry deadlines.
+        # No-ops until an ICP intent profile is active (Phase 5).
+        "task": "intent.collect_grants_gov",
+        "schedule": crontab(minute=0, hour=6),  # daily, 06:00 UTC
+    },
+    "intent-collect-usaspending-peer": {
+        # Recent peer nonprofit federal awards in monitored states → Tier-2
+        # peer_funded.  Daily.  No-ops until an ICP profile is active.
+        "task": "intent.collect_usaspending_peer",
+        "schedule": crontab(minute=30, hour=6),  # daily, 06:30 UTC
+    },
     "intent-recompute": {
         # Time-decay + ICP-weight + org-fit roll-up over every org with signals.
         # Daily — decay advances daily even when no new signals land, and the
-        # job/RFP collectors (next sub-phase) refresh daily.
+        # collectors above refresh daily.
         "task": "intent.recompute_intent",
         "schedule": crontab(minute=30, hour=7),  # daily, 07:30 UTC (after collectors)
     },

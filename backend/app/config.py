@@ -176,6 +176,19 @@ class Settings(BaseSettings):
     # Pause between per-org external calls in a collector run (be a good citizen
     # to free public APIs).
     INTENT_COLLECTOR_POLITENESS_SECONDS: float = 0.3
+    # Fan-out collectors (Grants.gov RFP / USASpending peer): cap how many
+    # monitored orgs a single external event fans out to, and total signals
+    # emitted per run (cost + volume control; dedup advances the backlog).
+    INTENT_MATCH_MAX_ORGS_PER_EVENT: int = 25
+    INTENT_GRANTS_GOV_MAX_PER_RUN: int = 200
+    INTENT_USASPENDING_PEER_MAX_PER_RUN: int = 200
+    # Only emit new_rfp for opportunities posted within this many days ("new").
+    INTENT_RFP_LOOKBACK_DAYS: int = 30
+    # Trailing window of recent federal awards scanned for peer_funded.
+    INTENT_USASPENDING_LOOKBACK_DAYS: int = 30
+    # Skip peer awards above this size (large grants go to big, well-funded
+    # orgs — weaker "a comparable peer got funded" signal).  0 = no cap.
+    INTENT_USASPENDING_MAX_AWARD_AMOUNT: float = 1_000_000.0
 
     # Encryption
     ENCRYPTION_KEY: str = ""

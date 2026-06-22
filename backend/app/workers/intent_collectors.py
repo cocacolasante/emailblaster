@@ -19,7 +19,9 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
-from app.services.intent import collect_propublica, orgs, scoring
+from app.services.intent import (
+    collect_grants_gov, collect_propublica, collect_usaspending, orgs, scoring,
+)
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -65,3 +67,64 @@ async def _recompute_async() -> dict[str, int]:
 @celery_app.task(name="intent.recompute_intent", acks_late=False)
 def recompute_intent() -> dict[str, int]:
     return asyncio.run(_recompute_async())
+
+
+def _profile_lists(profile) -> tuple[list[str], list[str]]:
+    """(cause_prefixes, geographies) from an ICP intent profile."""
+    causes = [str(c) for c in (profile.cause_codes or [])]
+    geos = [str(g) for g in (profile.geographies or [])]
+    return causes, geos
+
+
+def _rfp_keywords(profile) -> list[str]:
+    """Grants.gov search keywords for the profile.  Prefers an explicit
+    ``rfp_keywords`` list (Phase-5 config); falls back to the cause-code list
+    so the task is still functional when only causes are set."""
+    kws = (profile.signal_weights or {}).get("_rfp_keywords") if profile.signal_weights else None
+    if isinstance(kws, list) and kws:
+        return [str(k) for k in kws]
+    return [str(c) for c in (profile.cause_codes or [])]
+
+
+async def _collect_grants_gov_async() -> dict[str, int]:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            profile = await scoring.get_active_profile(session)
+            if profile is None:
+                logger.info("intent.collect_grants_gov: no active ICP profile — skipping")
+                return {"skipped": "no_active_profile"}
+            causes, geos = _profile_lists(profile)
+            keywords = _rfp_keywords(profile)
+            if not keywords:
+                logger.info("intent.collect_grants_gov: profile has no keywords — skipping")
+                return {"skipped": "no_keywords"}
+            return await collect_grants_gov.collect_grants_gov(
+                session, keywords=keywords, cause_prefixes=causes, geographies=geos)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="intent.collect_grants_gov", acks_late=False)
+def collect_grants_gov_task() -> dict[str, int]:
+    return asyncio.run(_collect_grants_gov_async())
+
+
+async def _collect_usaspending_peer_async() -> dict[str, int]:
+    engine = create_async_engine(settings.DATABASE_URL)
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as session:
+            profile = await scoring.get_active_profile(session)
+            if profile is None:
+                logger.info("intent.collect_usaspending_peer: no active ICP profile — skipping")
+                return {"skipped": "no_active_profile"}
+            causes, geos = _profile_lists(profile)
+            return await collect_usaspending.collect_usaspending_peer(
+                session, cause_prefixes=causes, geographies=geos)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="intent.collect_usaspending_peer", acks_late=False)
+def collect_usaspending_peer_task() -> dict[str, int]:
+    return asyncio.run(_collect_usaspending_peer_async())
