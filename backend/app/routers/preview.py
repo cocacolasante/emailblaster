@@ -7,6 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.services.sender import campaign_sender_ready
 from app.models import (
     Campaign,
     CampaignStatus,
@@ -214,6 +215,11 @@ async def approve_all(
                 f"Cannot approve a campaign in status '{campaign.status.value}' "
                 "(only previewing)"
             ),
+        )
+    if not campaign_sender_ready(campaign):
+        raise HTTPException(
+            status_code=409,
+            detail="Set a valid sending email (Sender) on the campaign before launching.",
         )
 
     approved, dispatched = await _kick_off_full_campaign(db, campaign)

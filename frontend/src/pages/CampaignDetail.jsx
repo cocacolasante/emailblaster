@@ -20,6 +20,7 @@ import {
   updateLeadEmail,
 } from '../api/campaigns.js';
 import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
+import { listAccounts } from '../api/connectedAccounts.js';
 import LeadTable from '../components/LeadTable.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import { useToast } from '../components/Toast.jsx';
@@ -78,7 +79,14 @@ function _fmtGoalStamp(iso) {
   }
 }
 
-function PipelineCard({ progress, status, onLaunch, launchLoading }) {
+const SENDER_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const PLACEHOLDER_SENDERS = new Set(['you@example.com', 'noreply@example.com']);
+function isValidSenderEmail(email) {
+  const e = (email || '').trim().toLowerCase();
+  return !!e && !PLACEHOLDER_SENDERS.has(e) && SENDER_EMAIL_RE.test(e);
+}
+
+function PipelineCard({ progress, status, onLaunch, launchLoading, senderReady = true }) {
   if (!progress) return null;
   const {
     total_leads: total,
@@ -102,7 +110,7 @@ function PipelineCard({ progress, status, onLaunch, launchLoading }) {
     <div className={`bg-white rounded-xl border shadow-sm p-6 ${isPreviewing ? 'border-amber-300' : 'border-slate-200'}`}>
       <div className="flex items-start justify-between gap-3 mb-4">
         <h2 className="text-base font-semibold text-slate-900">Pipeline progress</h2>
-        {isPreviewing && samplesReady && (
+        {isPreviewing && samplesReady && senderReady && (
           <button
             type="button"
             onClick={onLaunch}
@@ -111,6 +119,14 @@ function PipelineCard({ progress, status, onLaunch, launchLoading }) {
           >
             {launchLoading ? 'Launching…' : 'Review & Launch →'}
           </button>
+        )}
+        {isPreviewing && samplesReady && !senderReady && (
+          <span
+            data-testid="launch-blocked-sender"
+            className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 font-medium shrink-0"
+          >
+            Set a sending email below before launching
+          </span>
         )}
         {isPreviewing && !samplesReady && (
           <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 font-medium shrink-0">
@@ -391,6 +407,7 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onStop, 
             status={campaign.status}
             onLaunch={onLaunch}
             launchLoading={launchLoading}
+            senderReady={campaign.sender_ready !== false}
           />
         )}
 
@@ -521,6 +538,8 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onStop, 
           )}
         </div>
 
+        <SenderEditor campaignId={campaign.id} campaign={campaign} />
+
         <LinkedInAccountCard
           campaign={campaign}
           linkedinAccounts={linkedinAccounts}
@@ -539,7 +558,6 @@ function OverviewTab({ campaign, progress, onPauseToggle, pauseLoading, onStop, 
           <dl className="space-y-2">
             {[
               { label: 'Tone', value: campaign.tone },
-              { label: 'Sender', value: `${campaign.sender_name} <${campaign.sender_email}>` },
               { label: 'Research mode', value: campaign.research_mode },
               { label: 'Sample count', value: campaign.sample_count },
             ].map(({ label, value }) => (
@@ -1016,6 +1034,164 @@ function _normTime(t) {
   // Backend returns "HH:MM:SS"; the <input type="time"> wants "HH:MM".
   return (t || '').slice(0, 5);
 }
+
+function SenderEditor({ campaignId, campaign }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const editable = campaign.status === 'draft' || campaign.status === 'previewing';
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(campaign.sender_name || '');
+  const [email, setEmail] = useState(campaign.sender_email || '');
+  const [accountId, setAccountId] = useState(campaign.connected_account_id || '');
+  const { data: accounts = [] } = useQuery({ queryKey: ['connected-accounts'], queryFn: listAccounts });
+
+  const ready = campaign.sender_ready !== false;
+  const emailValid = isValidSenderEmail(email);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      updateCampaign(campaignId, {
+        sender_name: name.trim(),
+        sender_email: email.trim(),
+        connected_account_id: accountId || null,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+      setEditing(false);
+      toast.success('Sending email saved');
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save sending email'),
+  });
+
+  const startEdit = () => {
+    setName(campaign.sender_name || '');
+    setEmail(campaign.sender_email || '');
+    setAccountId(campaign.connected_account_id || '');
+    setEditing(true);
+  };
+
+  const pickAccount = (id) => {
+    setAccountId(id);
+    const acc = accounts.find((a) => a.id === id);
+    if (acc) {
+      setEmail(acc.email_address || email);
+      if (!name.trim()) setName(acc.label || '');
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-4" data-testid="sender-editor">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-semibold text-slate-900">Sending email</h3>
+        {!editing && editable && (
+          <button
+            type="button"
+            onClick={startEdit}
+            data-testid="edit-sender-btn"
+            className="text-sm text-brand-600 hover:text-brand-700"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+
+      {!ready && (
+        <div
+          data-testid="sender-not-ready"
+          className="mb-2 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2"
+        >
+          No real sending address set — this campaign can&apos;t launch until you set a valid Sender email.
+        </div>
+      )}
+
+      {!editing ? (
+        <div className="text-sm text-slate-800">
+          <div data-testid="sender-value">
+            <span className="font-medium">{campaign.sender_name}</span>{' '}
+            <span className="text-slate-500">&lt;{campaign.sender_email}&gt;</span>
+          </div>
+          <div className="text-xs text-slate-500 mt-1">
+            {campaign.connected_account
+              ? `Replies tracked via ${campaign.connected_account.label}`
+              : 'No inbox bound for reply tracking'}
+          </div>
+          {!editable && (
+            <p className="text-xs text-slate-400 mt-1">
+              Sender is editable only on draft / previewing campaigns.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">
+              Connected inbox (optional — also tracks replies)
+            </label>
+            <select
+              value={accountId}
+              onChange={(e) => pickAccount(e.target.value)}
+              data-testid="sender-account"
+              className="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            >
+              <option value="">— none —</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label} ({a.email_address})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Sender name</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              data-testid="sender-name-input"
+              className="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">
+              Sender email (the From address)
+            </label>
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              data-testid="sender-email-input"
+              className={`w-full text-sm border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 ${
+                email && !emailValid ? 'border-red-400' : 'border-slate-300'
+              }`}
+            />
+            {email && !emailValid && (
+              <p className="text-xs text-red-600 mt-1" data-testid="sender-email-error">
+                Enter a valid, non-placeholder email address.
+              </p>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 mt-2">
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={!emailValid || !name.trim() || saveMutation.isPending}
+              data-testid="save-sender-btn"
+              className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function GoalEditor({ campaignId, campaign }) {
   const queryClient = useQueryClient();

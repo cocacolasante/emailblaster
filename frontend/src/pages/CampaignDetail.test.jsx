@@ -35,6 +35,15 @@ vi.mock('../api/campaigns.js', () => ({
   stopCampaignPipeline: vi.fn(),
 }));
 
+vi.mock('../api/connectedAccounts.js', () => ({
+  listAccounts: vi.fn().mockResolvedValue([
+    { id: 'a1', label: 'Work Gmail', email_address: 'work@x.com' },
+  ]),
+}));
+vi.mock('../api/linkedinAccounts.js', () => ({
+  listLinkedInAccounts: vi.fn().mockResolvedValue([]),
+}));
+
 // AnalyticsContent (rendered on the Analytics tab) pulls sequence analytics.
 vi.mock('../api/sequences.js', () => ({
   getSequenceAnalytics: vi.fn().mockResolvedValue({
@@ -625,5 +634,41 @@ describe("What's working panel", () => {
     expect(panel).toHaveTextContent('lead with their tech stack');
     expect(panel).toHaveTextContent('jargon walls');
     expect(within(panel).getByTestId('winning-examples')).toHaveTextContent('quick one');
+  });
+});
+
+describe('SenderEditor', () => {
+  it('warns + blocks launch when sender is a placeholder, and lets you set a real one', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, status: 'draft',
+      sender_name: 'Operator', sender_email: 'you@example.com', sender_ready: false,
+    });
+    api.updateCampaign.mockResolvedValue({});
+    renderPage();
+
+    // Not-ready warning shown.
+    expect(await screen.findByTestId('sender-not-ready')).toBeInTheDocument();
+
+    // Edit → fix the email → save calls updateCampaign with the new sender.
+    fireEvent.click(screen.getByTestId('edit-sender-btn'));
+    const emailInput = screen.getByTestId('sender-email-input');
+    fireEvent.change(emailInput, { target: { value: 'real@org.com' } });
+    fireEvent.click(screen.getByTestId('save-sender-btn'));
+    await waitFor(() =>
+      expect(api.updateCampaign).toHaveBeenCalledWith('c1', expect.objectContaining({
+        sender_email: 'real@org.com', sender_name: 'Operator',
+      })));
+  });
+
+  it('disables save on an invalid email', async () => {
+    api.getCampaign.mockResolvedValue({
+      ...RUNNING_CAMPAIGN, status: 'draft',
+      sender_name: 'Operator', sender_email: 'you@example.com', sender_ready: false,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByTestId('edit-sender-btn'));
+    fireEvent.change(screen.getByTestId('sender-email-input'), { target: { value: 'nope' } });
+    expect(screen.getByTestId('sender-email-error')).toBeInTheDocument();
+    expect(screen.getByTestId('save-sender-btn')).toBeDisabled();
   });
 });

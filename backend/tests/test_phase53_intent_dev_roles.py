@@ -105,8 +105,11 @@ async def test_collect_dev_roles_no_orgs_skips_search(db_session, monkeypatch):
     assert empty["new"] == 0 and empty["postings"] == 0
 
 
-async def test_collect_dev_roles_no_key_noop(db_session):
-    # Org present but the real (unmocked) client → no Adzuna key → [].
+async def test_collect_dev_roles_no_key_noop(db_session, monkeypatch):
+    # With no Adzuna key the client returns [] regardless of environment.
+    from app.config import settings
+    monkeypatch.setattr(settings, "ADZUNA_APP_ID", "")
+    monkeypatch.setattr(settings, "ADZUNA_APP_KEY", "")
     await _org(db_session, name="X Foundation", ein="22-2222222")
     await db_session.commit()
     real = await collect_dev_roles.collect_dev_roles(db_session, titles=("grant writer",), now=NOW)

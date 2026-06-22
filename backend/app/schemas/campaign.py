@@ -277,6 +277,8 @@ class CampaignResponse(BaseModel):
     connected_account_id: uuid.UUID | None
     connected_account: ConnectedAccountInfo | None
     connected_account_configured: bool
+    # Whether sender_email is a real, non-placeholder address (gates launch).
+    sender_ready: bool = True
     linkedin_account_id: uuid.UUID | None
     linkedin_account_configured: bool
     schedule_days: list[int]

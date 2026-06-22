@@ -55,6 +55,7 @@ from app.schemas.lead import (
     ReplyPreviewNode,
     ReplyPreviewResponse,
 )
+from app.services.sender import campaign_sender_ready
 from app.services.sequence_service import ensure_default_sequence
 from app.services.signature import apply_signature, resolve_campaign_signature
 
@@ -189,6 +190,7 @@ async def _build_response(db: AsyncSession, campaign: Campaign) -> CampaignRespo
     # this when the campaign has no per-campaign override.
     payload["account_signature"] = account_signature
     payload["connected_account_configured"] = campaign.connected_account_id is not None
+    payload["sender_ready"] = campaign_sender_ready(campaign)
     payload["linkedin_account_configured"] = campaign.linkedin_account_id is not None
     payload["lead_counts"] = counts
     payload["stats"] = stats
@@ -435,6 +437,11 @@ async def resume_campaign(
         raise HTTPException(
             status_code=409,
             detail=f"Cannot resume campaign in status '{c.status.value}' (only paused)",
+        )
+    if not campaign_sender_ready(c):
+        raise HTTPException(
+            status_code=409,
+            detail="Set a valid sending email (Sender) on the campaign before resuming.",
         )
     c.status = CampaignStatus.RUNNING
     c.auto_paused_until = None
