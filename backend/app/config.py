@@ -197,6 +197,9 @@ class Settings(BaseSettings):
     ADZUNA_COUNTRY: str = "us"
     INTENT_DEV_ROLE_LOOKBACK_DAYS: int = 30
     INTENT_DEV_ROLE_MAX_PER_RUN: int = 200
+    # Careers-page check (Track 2): max warm orgs fetched per run (per-org LLM
+    # cost; only the high-interest subset is checked).
+    INTENT_CAREERS_MAX_ORGS_PER_RUN: int = 50
 
     # Encryption
     ENCRYPTION_KEY: str = ""

@@ -185,6 +185,12 @@ celery_app.conf.beat_schedule = {
         "task": "intent.collect_dev_roles",
         "schedule": crontab(minute=45, hour=6),  # daily, 06:45 UTC
     },
+    "intent-collect-careers": {
+        # Careers-page dev-role check over the warm-org subset → Tier-1
+        # dev_role_posted (Track 2).  Daily, bounded per run.
+        "task": "intent.collect_careers_dev_roles",
+        "schedule": crontab(minute=0, hour=7),  # daily, 07:00 UTC
+    },
     "intent-recompute": {
         # Time-decay + ICP-weight + org-fit roll-up over every org with signals.
         # Daily — decay advances daily even when no new signals land, and the
