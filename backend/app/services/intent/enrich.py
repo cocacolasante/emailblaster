@@ -54,14 +54,18 @@ async def resolve_org_contact(org: Org) -> ContactResult:
     return await resolve_contact(_org_to_discovered(org))
 
 
-async def enrich_draft_lead(session: AsyncSession, lead_id) -> dict:
+async def enrich_draft_lead(
+    session: AsyncSession, lead_id, *,
+    force: bool = False, force_website: str | None = None,
+) -> dict:
     """Resolve + attach a recipient to a promoted draft lead, then re-render
-    the draft.  No-op if the lead is gone / already has an email / has no org.
-    Caller-independent (commits)."""
+    the draft.  No-op if the lead is gone / already has an email (unless
+    ``force``) / has no org.  ``force_website`` overrides the org's website
+    first (manual "find contact" with a hint).  Caller-independent (commits)."""
     lead = await session.get(Lead, lead_id)
     if lead is None:
         return {"status": "not_found"}
-    if lead.email:
+    if lead.email and not force:
         return {"status": "already_has_email"}
 
     rd = lead.research_data or {}
@@ -71,6 +75,10 @@ async def enrich_draft_lead(session: AsyncSession, lead_id) -> dict:
     org = await session.get(Org, org_id)
     if org is None:
         return {"status": "no_org"}
+
+    if force_website and force_website.strip():
+        org.website = force_website.strip()
+        await session.commit()   # persist the hint even if resolution misses
 
     result = await resolve_org_contact(org)
     if result.status != "resolved" or not result.email:

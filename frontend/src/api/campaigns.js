@@ -118,6 +118,13 @@ export async function updateLeadEmail(campaignId, leadId, payload) {
   return data;
 }
 
+export async function findLeadContact(campaignId, leadId, payload = {}) {
+  const { data } = await client.post(
+    `/campaigns/${campaignId}/leads/${leadId}/find-contact`, payload,
+  );
+  return data;
+}
+
 export async function previewLeadReply(campaignId, leadId, nodeId) {
   const { data } = await client.post(
     `/campaigns/${campaignId}/leads/${leadId}/reply-preview`,

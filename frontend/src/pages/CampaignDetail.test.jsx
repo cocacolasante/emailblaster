@@ -27,6 +27,7 @@ vi.mock('../api/campaigns.js', () => ({
   updateCampaign: vi.fn().mockResolvedValue({}),
   applySignature: vi.fn().mockResolvedValue({ updated: 3 }),
   updateLeadEmail: vi.fn().mockResolvedValue({}),
+  findLeadContact: vi.fn().mockResolvedValue({ status: 'resolved', email: 'found@org.org' }),
   previewLeadReply: vi.fn(),
   getLeadDetail: vi.fn(),
   getDeliverability: vi.fn(),
@@ -670,5 +671,74 @@ describe('SenderEditor', () => {
     fireEvent.change(screen.getByTestId('sender-email-input'), { target: { value: 'nope' } });
     expect(screen.getByTestId('sender-email-error')).toBeInTheDocument();
     expect(screen.getByTestId('save-sender-btn')).toBeDisabled();
+  });
+});
+
+describe('Lead recipient editing + find contact', () => {
+  const LEADS_ONE = {
+    items: [{
+      id: 'L1', email: null, first_name: null, last_name: null,
+      company: 'Helpful NP', research_status: 'done', compose_status: 'done',
+      send_status: 'pending',
+    }],
+    total: 1, page: 1, page_size: 50, total_pages: 1,
+  };
+
+  it('sets a recipient by hand via updateLeadEmail', async () => {
+    api.listCampaignLeads.mockResolvedValue(LEADS_ONE);
+    api.getLeadDetail.mockResolvedValue({
+      email: null, composed_subject: 'Hi', composed_body: 'Hi there,',
+      send_status: 'pending', research_data: { quality: 'low' },
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    fireEvent.click(await screen.findByText('View email'));
+
+    expect(await screen.findByTestId('recipient-value')).toHaveTextContent(/no recipient yet/i);
+    fireEvent.click(screen.getByTestId('edit-recipient-btn'));
+    const input = screen.getByTestId('recipient-input');
+    // Invalid → save disabled.
+    fireEvent.change(input, { target: { value: 'nope' } });
+    expect(screen.getByTestId('recipient-error')).toBeInTheDocument();
+    expect(screen.getByTestId('save-recipient-btn')).toBeDisabled();
+    // Valid → saves.
+    fireEvent.change(input, { target: { value: 'dev@org.org' } });
+    fireEvent.click(screen.getByTestId('save-recipient-btn'));
+    await waitFor(() => expect(api.updateLeadEmail).toHaveBeenCalledWith(
+      'c1', 'L1', { email: 'dev@org.org' }));
+  });
+
+  it('offers Find contact for intent leads and calls the API', async () => {
+    api.listCampaignLeads.mockResolvedValue(LEADS_ONE);
+    api.getLeadDetail.mockResolvedValue({
+      email: null, composed_subject: 'Hi', composed_body: 'Hi there,',
+      send_status: 'pending',
+      research_data: { quality: 'low', from_intent_engine: true, intent_org_id: 'o1' },
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    fireEvent.click(await screen.findByText('View email'));
+
+    const siteInput = await screen.findByTestId('find-contact-website');
+    fireEvent.change(siteInput, { target: { value: 'https://helpful.org' } });
+    fireEvent.click(screen.getByTestId('find-contact-btn'));
+    await waitFor(() => expect(api.findLeadContact).toHaveBeenCalledWith(
+      'c1', 'L1', { website: 'https://helpful.org' }));
+  });
+
+  it('hides Find contact for non-intent leads', async () => {
+    api.listCampaignLeads.mockResolvedValue(LEADS_ONE);
+    api.getLeadDetail.mockResolvedValue({
+      email: null, composed_subject: 'Hi', composed_body: 'Hi there,',
+      send_status: 'pending', research_data: { quality: 'low' },
+    });
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('tab-leads'));
+    fireEvent.click(await screen.findByText('View email'));
+    await screen.findByTestId('recipient-section');
+    expect(screen.queryByTestId('find-contact-btn')).not.toBeInTheDocument();
   });
 });

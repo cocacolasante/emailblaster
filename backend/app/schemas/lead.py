@@ -44,7 +44,8 @@ class LeadSummary(BaseModel):
 
 
 class LeadEmailUpdate(BaseModel):
-    """Edit a lead's composed email and/or notes."""
+    """Edit a lead's recipient, composed email and/or notes."""
+    email: str | None = None
     composed_subject: str | None = None
     composed_body: str | None = None
     notes: str | None = None

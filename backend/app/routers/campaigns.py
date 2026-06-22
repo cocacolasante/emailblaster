@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,7 +56,8 @@ from app.schemas.lead import (
     ReplyPreviewNode,
     ReplyPreviewResponse,
 )
-from app.services.sender import campaign_sender_ready
+from app.services.sender import campaign_sender_ready, is_valid_sender_email
+from app.services.intent.enrich import enrich_draft_lead
 from app.services.sequence_service import ensure_default_sequence
 from app.services.signature import apply_signature, resolve_campaign_signature
 
@@ -572,6 +574,17 @@ async def update_campaign_lead(
         raise HTTPException(
             status_code=409, detail="Cannot edit an email that has already been sent"
         )
+    # Recipient editing (fill a missing recipient by hand / correct one).
+    if "email" in updates and updates["email"] is not None:
+        if lead.send_status == SendStatus.SENT:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change the recipient of an email that has already been sent",
+            )
+        canon = (updates["email"] or "").strip().lower()
+        if not is_valid_sender_email(canon):
+            raise HTTPException(status_code=422, detail="Enter a valid email address")
+        lead.email = canon
     if "composed_subject" in composed_edits and composed_edits["composed_subject"] is not None:
         lead.composed_subject = composed_edits["composed_subject"]
     if "composed_body" in composed_edits and composed_edits["composed_body"] is not None:
@@ -583,6 +596,35 @@ async def update_campaign_lead(
     await db.commit()
     await db.refresh(lead)
     return LeadResponse.model_validate(lead)
+
+
+class FindContactRequest(BaseModel):
+    website: str | None = None
+
+
+@router.post("/{campaign_id}/leads/{lead_id}/find-contact")
+async def find_lead_contact(
+    campaign_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    payload: FindContactRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Resolve a recipient for an intent-sourced lead (optionally with a website
+    hint), filling the email + re-rendering the draft.  400 if the lead wasn't
+    surfaced by the intent engine (no org to resolve against)."""
+    await _get_or_404(db, campaign_id)
+    lead = await db.get(Lead, lead_id)
+    if lead is None or lead.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if not (lead.research_data or {}).get("intent_org_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="This lead wasn't surfaced by the intent engine — set the recipient by hand.",
+        )
+    result = await enrich_draft_lead(
+        db, lead_id, force=True, force_website=payload.website,
+    )
+    return result
 
 
 @router.post(

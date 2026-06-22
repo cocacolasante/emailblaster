@@ -9,6 +9,7 @@ import {
   getCampaignActivity,
   getCopyInsights,
   getDeliverability,
+  findLeadContact,
   getLeadDetail,
   getPreviewProgress,
   pauseCampaign,
@@ -1704,6 +1705,32 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
   const [body, setBody] = useState('');
   const sent = detail?.send_status === 'sent';
 
+  // Recipient editing + (intent-lead) automatic contact resolution.
+  const [editingRecipient, setEditingRecipient] = useState(false);
+  const [recipient, setRecipient] = useState('');
+  const [website, setWebsite] = useState('');
+  const isIntentLead = !!detail?.research_data?.from_intent_engine;
+  const recipientValid = isValidSenderEmail(recipient);
+  const invalidateLead = () => {
+    queryClient.invalidateQueries({ queryKey: ['lead-detail', campaignId, lead.id] });
+    queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] });
+    queryClient.invalidateQueries({ queryKey: ['campaign', campaignId] });
+  };
+  const saveRecipientMut = useMutation({
+    mutationFn: () => updateLeadEmail(campaignId, lead.id, { email: recipient.trim() }),
+    onSuccess: () => { invalidateLead(); setEditingRecipient(false); toast.success('Recipient saved'); },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save recipient'),
+  });
+  const findContactMut = useMutation({
+    mutationFn: () => findLeadContact(campaignId, lead.id, website.trim() ? { website: website.trim() } : {}),
+    onSuccess: (data) => {
+      invalidateLead();
+      if (data.status === 'resolved') toast.success(`Found ${data.email}`);
+      else toast.error(`No contact found (${data.status.replace(/_/g, ' ')})`);
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Find contact failed'),
+  });
+
   function startEdit() {
     setSubject(detail?.composed_subject || '');
     setBody(detail?.composed_body || '');
@@ -1808,6 +1835,87 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
               )}
               {!detail.research_data && (
                 <p className="text-xs text-slate-500">No research data.</p>
+              )}
+            </div>
+
+            {/* Recipient — view / edit / auto-resolve */}
+            <div className="p-3 border border-slate-200 rounded-lg" data-testid="recipient-section">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Recipient</span>
+                {!editingRecipient && !sent && (
+                  <button
+                    type="button"
+                    onClick={() => { setRecipient(detail.email || ''); setEditingRecipient(true); }}
+                    data-testid="edit-recipient-btn"
+                    className="text-xs text-brand-600 hover:text-brand-800 hover:underline bg-transparent border-none cursor-pointer p-0"
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+              {!editingRecipient ? (
+                <div className="text-sm" data-testid="recipient-value">
+                  {detail.email
+                    ? <span className="text-slate-900">{detail.email}</span>
+                    : <span className="text-amber-700">No recipient yet — set one below{isIntentLead ? ' or use Find contact' : ''}.</span>}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <input
+                    value={recipient}
+                    onChange={(e) => setRecipient(e.target.value)}
+                    data-testid="recipient-input"
+                    placeholder="name@organization.org"
+                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 ${
+                      recipient && !recipientValid ? 'border-red-400' : 'border-slate-300'}`}
+                  />
+                  {recipient && !recipientValid && (
+                    <p className="text-xs text-red-600" data-testid="recipient-error">Enter a valid email address.</p>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingRecipient(false)}
+                      className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => saveRecipientMut.mutate()}
+                      disabled={!recipientValid || saveRecipientMut.isPending}
+                      data-testid="save-recipient-btn"
+                      className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                    >
+                      {saveRecipientMut.isPending ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {isIntentLead && !sent && (
+                <div className="mt-2 pt-2 border-t border-slate-100">
+                  <label className="block text-xs text-slate-500 mb-1">
+                    Find contact automatically (optional website hint)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      value={website}
+                      onChange={(e) => setWebsite(e.target.value)}
+                      data-testid="find-contact-website"
+                      placeholder="https://organization.org"
+                      className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => findContactMut.mutate()}
+                      disabled={findContactMut.isPending}
+                      data-testid="find-contact-btn"
+                      className="px-3 py-2 text-sm bg-white border border-brand-300 text-brand-700 rounded-lg hover:bg-brand-50 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      {findContactMut.isPending ? 'Finding…' : 'Find contact'}
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
 
