@@ -61,8 +61,14 @@ async def _get_or_create_draft_campaign(
     session: AsyncSession, profile: IcpIntentProfile | None,
 ) -> Campaign:
     name = _draft_campaign_name(profile)
+    # Reuse the current awaiting-approval batch; never add to one already
+    # RUNNING (that would send new drafts without review — a fresh PREVIEWING
+    # batch is created instead).
     camp = await session.scalar(
-        select(Campaign).where(Campaign.name == name, Campaign.status == CampaignStatus.DRAFT)
+        select(Campaign).where(
+            Campaign.name == name,
+            Campaign.status.in_([CampaignStatus.PREVIEWING, CampaignStatus.DRAFT]),
+        )
     )
     if camp is not None:
         return camp
@@ -77,7 +83,10 @@ async def _get_or_create_draft_campaign(
         template_body=_DRAFT_BODY,
         schedule_time_start=time(9, 0),
         schedule_time_end=time(17, 0),
-        status=CampaignStatus.DRAFT,            # the send pipeline never touches DRAFT
+        # PREVIEWING = composed + awaiting the human "Review & Launch" approval
+        # (the existing gate).  The pipeline only sends once a human approves
+        # it into RUNNING.
+        status=CampaignStatus.PREVIEWING,
     )
     session.add(camp)
     await session.flush()
@@ -133,6 +142,7 @@ async def promote_org(
             "intent_score": float(score_row.intent_score),
         },
         research_status=ResearchStatus.DONE,   # TEMPLATE mode → no research runs
+        is_sample=True,                         # show on the Review & Launch page
     )
     session.add(lead)
     await session.flush()

@@ -68,8 +68,8 @@ async def test_promote_creates_approval_pending_draft_and_marks_promoted(db_sess
     assert org.name in lead.composed_subject
     assert lead.compose_status is ComposeStatus.DONE
 
-    # HARD BOUNDARY: nothing sent / no RUNNING campaign.
-    assert camp.status is CampaignStatus.DRAFT
+    # HARD BOUNDARY: nothing sent / no RUNNING campaign (awaiting approval).
+    assert camp.status is CampaignStatus.PREVIEWING
     assert lead.send_status is SendStatus.PENDING
 
     await db_session.refresh(sig)
@@ -118,6 +118,6 @@ async def test_promote_eligible_reuses_one_draft_campaign(db_session):
     leads = (await db_session.execute(select(Lead))).scalars().all()
     assert len({l.campaign_id for l in leads}) == 1   # one shared DRAFT campaign
     camps = (await db_session.execute(select(Campaign))).scalars().all()
-    assert len(camps) == 1 and camps[0].status is CampaignStatus.DRAFT
+    assert len(camps) == 1 and camps[0].status is CampaignStatus.PREVIEWING
     # No sends anywhere.
     assert all(l.send_status is SendStatus.PENDING for l in leads)

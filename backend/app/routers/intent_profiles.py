@@ -174,10 +174,11 @@ _DRAFT_NAME_PREFIX = "Intent drafts — "
 
 
 async def _draft_campaign(db: AsyncSession) -> Campaign | None:
+    # Newest intent-draft campaign regardless of status, so the UI always links
+    # to it (PREVIEWING awaiting approval, or RUNNING after launch).
     return await db.scalar(
         select(Campaign)
-        .where(Campaign.name.like(f"{_DRAFT_NAME_PREFIX}%"),
-               Campaign.status == CampaignStatus.DRAFT)
+        .where(Campaign.name.like(f"{_DRAFT_NAME_PREFIX}%"))
         .order_by(Campaign.created_at.desc())
     )
 

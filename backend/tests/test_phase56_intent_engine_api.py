@@ -91,9 +91,9 @@ async def test_recompute_and_promote_flow(client, db_session):
     body = pr.json()
     assert body["promoted"] == 1 and body["draft_campaign_id"] is not None
 
-    # A DRAFT campaign + a PENDING lead now exist; nothing sent.
+    # A PREVIEWING campaign (awaiting approval) + a PENDING lead now exist; nothing sent.
     camp = await db_session.scalar(select(Campaign).where(Campaign.id == body["draft_campaign_id"]))
-    assert camp.status is CampaignStatus.DRAFT
+    assert camp.status is CampaignStatus.PREVIEWING
     lead = await db_session.scalar(select(Lead).where(Lead.campaign_id == camp.id))
     assert lead.send_status is SendStatus.PENDING
     assert sig.summary.split(" — ")[0] in lead.composed_body
