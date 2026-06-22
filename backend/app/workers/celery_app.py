@@ -26,6 +26,7 @@ celery_app = Celery(
         "app.workers.signals",
         "app.workers.icp",
         "app.workers.funding_signals",
+        "app.workers.intent_collectors",
     ],
 )
 
@@ -151,5 +152,18 @@ celery_app.conf.beat_schedule = {
         # enrichment queue; promote the ones that now resolve.
         "task": "funding.retry_enrichment",
         "schedule": crontab(minute=0, hour=6),  # daily, 06:00 UTC
+    },
+    # --- Signals & Intent Engine v2 collectors ---
+    "intent-backfill-orgs": {
+        # Seed/refresh the monitored-org set from EIN-bearing data.  Cheap +
+        # idempotent (no external calls); keeps orgs fresh from new discovery.
+        "task": "intent.backfill_orgs",
+        "schedule": crontab(minute=30, hour=3),  # daily, 03:30 UTC
+    },
+    "intent-collect-propublica": {
+        # ProPublica 990 grant-revenue-delta → Tier-2 rev_drop signals.
+        # Weekly — 990 financials change only when new filings post.
+        "task": "intent.collect_propublica_rev_delta",
+        "schedule": crontab(minute=0, hour=7, day_of_week=1),  # Mondays 07:00 UTC
     },
 }

@@ -166,6 +166,17 @@ class Settings(BaseSettings):
     # CRM task (no email, no campaign enrollment) instead of being dropped.
     FUNDING_DIRECT_MAIL_FALLBACK: bool = False
 
+    # --- Signals & Intent Engine v2 collectors --------------------------------
+    # Minimum year-over-year drop in 990 contributions/grants revenue to emit a
+    # Tier-2 rev_drop signal (0.20 = a 20% decline).
+    INTENT_REV_DROP_THRESHOLD: float = 0.20
+    # Max monitored orgs processed per ProPublica collector run (politeness +
+    # bounded cost; dedup means each run advances the backlog).
+    INTENT_PROPUBLICA_MAX_PER_RUN: int = 200
+    # Pause between per-org external calls in a collector run (be a good citizen
+    # to free public APIs).
+    INTENT_COLLECTOR_POLITENESS_SECONDS: float = 0.3
+
     # Encryption
     ENCRYPTION_KEY: str = ""
 
