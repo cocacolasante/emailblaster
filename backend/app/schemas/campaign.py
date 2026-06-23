@@ -124,6 +124,10 @@ class CampaignCreate(BaseModel):
     send_time_optimization: bool = Field(
         default_factory=lambda: settings.SEND_TIME_OPTIMIZATION_DEFAULT
     )
+    # When set, this is a RETARGET campaign — engaged leads (clicked a link /
+    # LinkedIn-connected) from the source are copied in on create, and
+    # research_mode is forced to NONE (reuse existing leads).
+    retarget_source_campaign_id: uuid.UUID | None = None
 
     _v_days = field_validator("schedule_days")(_validate_days)
     _v_tmpl = field_validator("template_subject", "template_body", "signature")(_blank_to_none)
@@ -279,6 +283,8 @@ class CampaignResponse(BaseModel):
     connected_account_configured: bool
     # Whether sender_email is a real, non-placeholder address (gates launch).
     sender_ready: bool = True
+    # True for retarget campaigns (identified by the "Retarget — " name prefix).
+    is_retarget: bool = False
     linkedin_account_id: uuid.UUID | None
     linkedin_account_configured: bool
     schedule_days: list[int]

@@ -168,6 +168,12 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             if lead is None:
                 logger.warning("research_lead: lead %s vanished mid-flight", lead_id)
                 return {"status": "not_found"}
+            # Preserve retarget context (the email/link a lead engaged with) so
+            # the research step never clobbers it — compose reads it to draft
+            # the follow-up.
+            existing_ctx = (lead.research_data or {}).get("retarget_context")
+            if existing_ctx and "retarget_context" not in research_data:
+                research_data = {**research_data, "retarget_context": existing_ctx}
             lead.research_data = research_data
             lead.research_status = ResearchStatus.DONE
             # Warm the cross-campaign cache so the next campaign with this

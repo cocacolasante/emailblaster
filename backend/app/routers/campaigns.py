@@ -24,6 +24,7 @@ from app.models import (
     LeadSequenceStatus,
     LeadStepExecution,
     LinkedInAccount,
+    ResearchMode,
     ResearchStatus,
     SendStatus,
     Sequence,
@@ -58,6 +59,7 @@ from app.schemas.lead import (
 )
 from app.services.sender import campaign_sender_ready, is_valid_sender_email
 from app.services.intent.enrich import enrich_draft_lead
+from app.services import retarget as retarget_svc
 from app.services.sequence_service import ensure_default_sequence
 from app.services.signature import apply_signature, resolve_campaign_signature
 
@@ -193,6 +195,7 @@ async def _build_response(db: AsyncSession, campaign: Campaign) -> CampaignRespo
     payload["account_signature"] = account_signature
     payload["connected_account_configured"] = campaign.connected_account_id is not None
     payload["sender_ready"] = campaign_sender_ready(campaign)
+    payload["is_retarget"] = retarget_svc.is_retarget_campaign(campaign)
     payload["linkedin_account_configured"] = campaign.linkedin_account_id is not None
     payload["lead_counts"] = counts
     payload["stats"] = stats
@@ -224,12 +227,22 @@ async def create_campaign(
 ) -> CampaignResponse:
     await _verify_account_exists(db, payload.connected_account_id)
     await _verify_linkedin_account_exists(db, payload.linkedin_account_id)
-    campaign = Campaign(**payload.model_dump())
+    data = payload.model_dump()
+    retarget_src = data.pop("retarget_source_campaign_id", None)
+    if retarget_src is not None:
+        # Retarget campaigns reuse existing engaged leads — no fresh research.
+        data["research_mode"] = ResearchMode.NONE
+    campaign = Campaign(**data)
     db.add(campaign)
     await db.flush()
     await ensure_default_sequence(db, campaign)
     await db.commit()
     await db.refresh(campaign)
+    if retarget_src is not None:
+        source = await db.get(Campaign, retarget_src)
+        if source is not None:
+            await retarget_svc.retarget_into_campaign(db, source, campaign)
+            await db.refresh(campaign)
     return await _build_response(db, campaign)
 
 
@@ -625,6 +638,74 @@ async def find_lead_contact(
         db, lead_id, force=True, force_website=payload.website,
     )
     return result
+
+
+# --------------------------------------------------------------------------
+# Retargeting — build a follow-up campaign from engaged leads
+# --------------------------------------------------------------------------
+
+
+class RetargetRequest(BaseModel):
+    # None → create a new retarget campaign; else add into the given one.
+    target_campaign_id: uuid.UUID | None = None
+    goal: str | None = None
+
+
+@router.get("/{campaign_id}/retarget/preview")
+async def retarget_preview(
+    campaign_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """How many engaged leads the source has + the existing retarget campaigns
+    you could add them to (for the in-campaign button)."""
+    source = await _get_or_404(db, campaign_id)
+    pairs = await retarget_svc.engaged_leads(db, source.id)
+    by_click = sum(1 for _, c in pairs if c.get("engaged_via") == "email_click")
+    targets = (await db.execute(
+        select(Campaign).where(
+            Campaign.name.like(f"{retarget_svc.RETARGET_PREFIX}%"),
+            Campaign.status != CampaignStatus.COMPLETE,
+            Campaign.id != source.id,
+        ).order_by(Campaign.created_at.desc())
+    )).scalars().all()
+    return {
+        "engaged": len(pairs),
+        "by_email_click": by_click,
+        "by_linkedin_connection": len(pairs) - by_click,
+        "existing_retarget_campaigns": [
+            {"id": str(c.id), "name": c.name} for c in targets
+        ],
+    }
+
+
+@router.post("/{campaign_id}/retarget")
+async def retarget(
+    campaign_id: uuid.UUID, payload: RetargetRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Copy the source's engaged leads (clicked a link / LinkedIn-connected)
+    into a retarget campaign — a new one, or an existing one.  Never adds a
+    duplicate (deduped by email within the target)."""
+    source = await _get_or_404(db, campaign_id)
+    created = False
+    if payload.target_campaign_id is not None:
+        target = await db.get(Campaign, payload.target_campaign_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="target campaign not found")
+        if target.status == CampaignStatus.COMPLETE:
+            raise HTTPException(status_code=409, detail="target campaign is complete")
+    else:
+        target = await retarget_svc.create_retarget_campaign(db, source, goal=payload.goal)
+        created = True
+    result, engaged = await retarget_svc.retarget_into_campaign(db, source, target)
+    return {
+        "target_campaign_id": str(target.id),
+        "target_campaign_name": target.name,
+        "created": created,
+        "engaged": engaged,
+        "added": result.added,
+        "skipped_duplicate": result.skipped_duplicate,
+        "skipped_suppressed": result.skipped_suppressed,
+    }
 
 
 @router.post(

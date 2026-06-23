@@ -72,6 +72,61 @@ _STYLE_RULES = (
 )
 
 
+def _build_retarget_prompt(
+    goal: str, tone: str, sender_name: str,
+    first_name: str, last_name: str, company: str,
+    retarget_context: dict[str, Any],
+    winning_block: str | None = None,
+) -> str:
+    """Re-engagement copy for a lead who engaged with a prior campaign email
+    (clicked a tracked link, or connected on LinkedIn).  References the real
+    engagement WITHOUT being creepy about tracking."""
+    engaged_via = retarget_context.get("engaged_via") or "email_click"
+    orig_subject = (retarget_context.get("original_subject") or "").strip()
+    orig_body = (retarget_context.get("original_body") or "").strip()
+    clicked_url = (retarget_context.get("clicked_url") or "").strip()
+    winning_section = f"{winning_block}\n\n" if winning_block else ""
+
+    if engaged_via == "linkedin_connection":
+        signal_line = (
+            "This person ACCEPTED your LinkedIn connection after a prior outreach "
+            "campaign — a warm signal of interest.\n"
+        )
+    else:
+        signal_line = (
+            "This person CLICKED a link in a prior outreach email — a strong signal "
+            "of interest. Re-engage on that interest naturally; do NOT explicitly say "
+            '"I saw you clicked" (it reads as creepy tracking).\n'
+        )
+    link_line = f"Link they clicked: {clicked_url}\n" if clicked_url else ""
+    orig_block = ""
+    if orig_subject or orig_body:
+        orig_block = (
+            "\nThe email they engaged with (for context — write a NEW message, do not "
+            "repeat it):\n"
+            f"Subject: {orig_subject or '(none)'}\n"
+            f"Body: {orig_body[:1200] or '(none)'}\n"
+        )
+    return (
+        "You are an expert cold email copywriter writing a RE-TARGETING follow-up.\n"
+        f"New campaign goal: {goal}\n"
+        f"Tone: {tone}\n"
+        f"Sender: {sender_name}\n\n"
+        "Recipient:\n"
+        f"Name: {first_name} {last_name}\n"
+        f"Company: {company}\n\n"
+        f"{signal_line}"
+        f"{link_line}"
+        f"{orig_block}\n"
+        "Write a short, warm follow-up (under 130 words) that builds on their interest "
+        "and moves toward the new campaign goal. Reference the topic/offer they engaged "
+        "with, not the tracking.\n\n"
+        f"{winning_section}"
+        f"{_STYLE_RULES}\n\n"
+        'Respond ONLY with a single JSON object: {"subject": "...", "body": "..."}'
+    )
+
+
 def _build_generic_prompt(
     goal: str, tone: str, sender_name: str,
     first_name: str, last_name: str, company: str,
@@ -479,7 +534,15 @@ async def compose_lead_async(lead_id: str) -> dict[str, Any]:
             body_clean = render_template(template_body, merge_ctx)
         else:
             # Build prompt + call Anthropic.
-            if quality == "low":
+            retarget_context = (ctx["research_data"] or {}).get("retarget_context")
+            if retarget_context:
+                # Re-engagement: reference the email/link they engaged with.
+                system_prompt = _build_retarget_prompt(
+                    ctx["goal"], ctx["tone"], ctx["sender_name"],
+                    ctx["first_name"], ctx["last_name"], ctx["company"],
+                    retarget_context, winning_block=winning_block,
+                )
+            elif quality == "low":
                 system_prompt = _build_generic_prompt(
                     ctx["goal"], ctx["tone"], ctx["sender_name"],
                     ctx["first_name"], ctx["last_name"], ctx["company"],

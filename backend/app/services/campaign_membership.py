@@ -38,8 +38,13 @@ class AddLeadsResult:
 
 async def add_leads_to_campaign(
     db: AsyncSession, campaign: Campaign, lead_ids: list[uuid.UUID],
+    *, research_data_by_source: dict[uuid.UUID, dict] | None = None,
 ) -> AddLeadsResult:
-    """Copy the given leads into ``campaign``.  Commits the session."""
+    """Copy the given leads into ``campaign``.  Commits the session.
+
+    ``research_data_by_source`` optionally seeds each NEW lead's
+    ``research_data`` from its SOURCE lead id (used by retargeting to carry the
+    engagement context the AI references)."""
     requested_ids = list(dict.fromkeys(lead_ids))  # de-dupe, keep order
     if not requested_ids:
         return AddLeadsResult()
@@ -90,6 +95,7 @@ async def add_leads_to_campaign(
             linkedin_url=src.linkedin_url,
             company_website=src.company_website,
             timezone=src.timezone,
+            research_data=(research_data_by_source or {}).get(src.id),
         ))
 
     if new_leads:
