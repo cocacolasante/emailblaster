@@ -79,6 +79,25 @@ async def test_poller_processes_new_events(db_session, monkeypatch):
     assert EmailEventType.OPENED in types
 
 
+async def test_event_matches_bracketed_message_id(db_session):
+    """Regression: production stores lead.brevo_message_id WITH <...> brackets,
+    but the events API messageId is stripped of them by extract_message_id.  A
+    bare `==` never matched, silently dropping every open/click.  process_event
+    must match both bracket forms."""
+    from app.services.brevo_events import process_event
+    lead = await _make_lead_with_message(
+        db_session, "<202606190003.49205322629@smtp-relay.mailin.fr>")
+    # Brevo returns the messageId WITH brackets; the lead stored it WITH brackets.
+    ev = {"event": "clicks",
+          "messageId": "<202606190003.49205322629@smtp-relay.mailin.fr>",
+          "link": "https://grantmind.pro/signup"}
+    recorded = await process_event(db_session, ev)
+    await db_session.commit()
+    assert recorded is True
+    rows = (await db_session.execute(select(EmailEvent).where(EmailEvent.lead_id == lead.id))).scalars().all()
+    assert len(rows) == 1 and rows[0].event_type == EmailEventType.CLICKED
+
+
 async def test_poller_skips_events_older_than_watermark(db_session, monkeypatch):
     """A second poll on the same window must not re-record events the
     first poll already processed.  The poller maintains a Redis watermark

@@ -105,8 +105,12 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
     if not msg_id:
         return False
 
+    # extract_message_id strips the <...> delimiters, but lead.brevo_message_id
+    # is stored WITH them (the send path keeps Brevo's raw `<...@...>`), so a
+    # bare `==` never matched and every open/click/delivered event was silently
+    # dropped.  Match both forms.
     lead = await db.scalar(
-        select(Lead).where(Lead.brevo_message_id == msg_id)
+        select(Lead).where(Lead.brevo_message_id.in_([msg_id, f"<{msg_id}>"]))
     )
     if lead is None:
         return False
