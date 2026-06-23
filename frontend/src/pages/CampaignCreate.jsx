@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { listAccounts } from '../api/connectedAccounts.js';
 import { listLinkedInAccounts } from '../api/linkedinAccounts.js';
-import { createCampaign, getCampaign, getPreview, getPreviewProgress } from '../api/campaigns.js';
+import { createCampaign, getCampaign, getPreview, getPreviewProgress, listCampaigns } from '../api/campaigns.js';
 import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import ScheduleConfig from '../components/ScheduleConfig.jsx';
@@ -39,6 +39,7 @@ const DEFAULT_FORM = {
   max_per_day: null,
   min_delay_seconds: 60,
   min_delay_unit: 'seconds',
+  retarget_source_campaign_id: '',
 };
 
 function StatusBadge({ status }) {
@@ -63,7 +64,7 @@ function StatusBadge({ status }) {
 // Step 1: campaign details
 // --------------------------------------------------------------------------
 
-function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinAccounts, onConnectInbox }) {
+function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinAccounts, allCampaigns = [], onConnectInbox }) {
   function update(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
   }
@@ -155,6 +156,30 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white"
               />
             </div>
+          </div>
+
+          <div>
+            <label htmlFor="retarget-source" className="block text-sm font-medium text-slate-700 mb-1">
+              Retarget a previous campaign <span className="text-slate-400 font-normal">(optional)</span>
+            </label>
+            <select
+              id="retarget-source"
+              data-testid="retarget-source-select"
+              value={form.retarget_source_campaign_id}
+              onChange={(e) => update('retarget_source_campaign_id', e.target.value)}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white"
+            >
+              <option value="">No — fresh campaign from new leads</option>
+              {allCampaigns.map((c) => (
+                <option key={c.id} value={c.id}>Retarget engaged leads from: {c.name}</option>
+              ))}
+            </select>
+            {form.retarget_source_campaign_id && (
+              <p className="text-xs text-slate-500 mt-1" data-testid="retarget-hint">
+                Leads who clicked a link (or connected on LinkedIn) will be copied in, and the AI
+                will reference what they engaged with. Research is skipped (existing leads).
+              </p>
+            )}
           </div>
 
           <div>
@@ -443,6 +468,10 @@ export default function CampaignCreate() {
     queryKey: ['linkedin-accounts'],
     queryFn: listLinkedInAccounts,
   });
+  const { data: allCampaigns = [] } = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: listCampaigns,
+  });
 
   const createMutation = useMutation({
     mutationFn: createCampaign,
@@ -466,6 +495,7 @@ export default function CampaignCreate() {
       template_body: isTemplate ? form.template_body || null : null,
       connected_account_id: form.connected_account_id || null,
       linkedin_account_id: form.linkedin_account_id || null,
+      retarget_source_campaign_id: form.retarget_source_campaign_id || null,
       max_per_hour: form.max_per_hour || null,
       max_per_day: form.max_per_day || null,
       schedule_time_start:
@@ -560,6 +590,7 @@ export default function CampaignCreate() {
           error={error}
           accounts={accounts}
           linkedinAccounts={linkedinAccounts}
+          allCampaigns={allCampaigns}
           onConnectInbox={() => setShowInboxModal(true)}
         />
       )}

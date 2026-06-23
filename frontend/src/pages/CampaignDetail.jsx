@@ -12,6 +12,8 @@ import {
   findLeadContact,
   getLeadDetail,
   getPreviewProgress,
+  getRetargetPreview,
+  retargetCampaign,
   pauseCampaign,
   previewLeadReply,
   reEnrollHalted,
@@ -2082,6 +2084,77 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
 }
 
 
+function RetargetModal({ campaignId, campaignName, onClose, onDone }) {
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [targetId, setTargetId] = useState('');  // '' = create new
+  const { data, isLoading } = useQuery({
+    queryKey: ['retarget-preview', campaignId],
+    queryFn: () => getRetargetPreview(campaignId),
+  });
+
+  const mut = useMutation({
+    mutationFn: () => retargetCampaign(campaignId, targetId ? { target_campaign_id: targetId } : {}),
+    onSuccess: (res) => {
+      toast.success(
+        `${res.added} added${res.skipped_duplicate ? `, ${res.skipped_duplicate} already there` : ''} → ${res.target_campaign_name}`,
+      );
+      onDone?.();
+      navigate(`/campaigns/${res.target_campaign_id}`);
+    },
+    onError: (err) => toast.error(err?.response?.data?.detail || 'Retarget failed'),
+  });
+
+  const existing = data?.existing_retarget_campaigns || [];
+  const engaged = data?.engaged ?? 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()} data-testid="retarget-modal">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="m-0 text-lg font-semibold text-slate-900">Retarget engaged leads</h2>
+          <button type="button" onClick={onClose} aria-label="Close"
+            className="text-slate-400 hover:text-slate-600 text-xl leading-none bg-transparent border-none cursor-pointer p-1">×</button>
+        </div>
+        {isLoading ? (
+          <p className="text-sm text-slate-500">Counting engaged leads…</p>
+        ) : (
+          <>
+            <p className="text-sm text-slate-700 mb-1" data-testid="retarget-engaged-count">
+              <strong>{engaged}</strong> lead{engaged === 1 ? '' : 's'} engaged with <strong>{campaignName}</strong>
+              {data?.by_email_click != null && (
+                <span className="text-slate-500"> ({data.by_email_click} clicked a link
+                  {data.by_linkedin_connection ? `, ${data.by_linkedin_connection} LinkedIn` : ''})</span>
+              )}.
+            </p>
+            <p className="text-xs text-slate-500 mb-4">
+              They're copied into a retarget campaign whose AI references the email/link they engaged with.
+              Duplicates are never added.
+            </p>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Destination</label>
+            <select value={targetId} onChange={(e) => setTargetId(e.target.value)}
+              data-testid="retarget-target"
+              className="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="">➕ Create a new retarget campaign</option>
+              {existing.map((c) => (<option key={c.id} value={c.id}>Add to: {c.name}</option>))}
+            </select>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose}
+                className="px-3 py-1.5 text-sm border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={() => mut.mutate()} disabled={engaged === 0 || mut.isPending}
+                data-testid="retarget-go"
+                className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50">
+                {mut.isPending ? 'Working…' : (targetId ? 'Add to campaign' : 'Create & add')}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 export default function CampaignDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -2089,6 +2162,7 @@ export default function CampaignDetail() {
   const toast = useToast();
   const [tab, setTab] = useState('overview');
   const [showAddLeads, setShowAddLeads] = useState(false);
+  const [showRetarget, setShowRetarget] = useState(false);
   const [viewLead, setViewLead] = useState(null);
 
   const { data: campaign, isLoading, error } = useQuery({
@@ -2239,6 +2313,14 @@ export default function CampaignDetail() {
           </button>
           <button
             type="button"
+            onClick={() => setShowRetarget(true)}
+            className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+            data-testid="retarget-button"
+          >
+            Retarget engaged
+          </button>
+          <button
+            type="button"
             onClick={() => navigate(`/campaigns/${id}/sequence`)}
             className="px-3 py-1.5 text-sm bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
             data-testid="open-sequence-builder"
@@ -2330,6 +2412,18 @@ export default function CampaignDetail() {
             />
           </div>
         </div>
+      )}
+
+      {showRetarget && (
+        <RetargetModal
+          campaignId={id}
+          campaignName={campaign.name}
+          onClose={() => setShowRetarget(false)}
+          onDone={() => {
+            setShowRetarget(false);
+            queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+          }}
+        />
       )}
 
       {viewLead && (

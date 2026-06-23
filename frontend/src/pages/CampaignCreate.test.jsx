@@ -27,6 +27,7 @@ vi.mock('../api/campaigns.js', () => ({
   getCampaign: vi.fn(),
   getPreview: vi.fn(),
   getPreviewProgress: vi.fn(),
+  listCampaigns: vi.fn().mockResolvedValue([]),
   uploadLeadsPreview: vi.fn(),
   confirmLeadsUpload: vi.fn(),
 }));

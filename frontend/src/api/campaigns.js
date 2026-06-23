@@ -125,6 +125,16 @@ export async function findLeadContact(campaignId, leadId, payload = {}) {
   return data;
 }
 
+export async function getRetargetPreview(campaignId) {
+  const { data } = await client.get(`/campaigns/${campaignId}/retarget/preview`);
+  return data;
+}
+
+export async function retargetCampaign(campaignId, payload = {}) {
+  const { data } = await client.post(`/campaigns/${campaignId}/retarget`, payload);
+  return data;
+}
+
 export async function previewLeadReply(campaignId, leadId, nodeId) {
   const { data } = await client.post(
     `/campaigns/${campaignId}/leads/${leadId}/reply-preview`,

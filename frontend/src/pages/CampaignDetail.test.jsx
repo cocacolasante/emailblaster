@@ -28,6 +28,14 @@ vi.mock('../api/campaigns.js', () => ({
   applySignature: vi.fn().mockResolvedValue({ updated: 3 }),
   updateLeadEmail: vi.fn().mockResolvedValue({}),
   findLeadContact: vi.fn().mockResolvedValue({ status: 'resolved', email: 'found@org.org' }),
+  getRetargetPreview: vi.fn().mockResolvedValue({
+    engaged: 12, by_email_click: 12, by_linkedin_connection: 0,
+    existing_retarget_campaigns: [],
+  }),
+  retargetCampaign: vi.fn().mockResolvedValue({
+    target_campaign_id: 'rc1', target_campaign_name: 'Retarget — Spring outreach',
+    created: true, engaged: 12, added: 12, skipped_duplicate: 0,
+  }),
   previewLeadReply: vi.fn(),
   getLeadDetail: vi.fn(),
   getDeliverability: vi.fn(),
@@ -740,5 +748,18 @@ describe('Lead recipient editing + find contact', () => {
     fireEvent.click(await screen.findByText('View email'));
     await screen.findByTestId('recipient-section');
     expect(screen.queryByTestId('find-contact-btn')).not.toBeInTheDocument();
+  });
+});
+
+describe('Retarget engaged leads', () => {
+  it('opens the retarget modal, shows engaged count, and creates a retarget campaign', async () => {
+    renderPage();
+    await screen.findByTestId('overview-tab');
+    fireEvent.click(screen.getByTestId('retarget-button'));
+
+    const count = await screen.findByTestId('retarget-engaged-count');
+    expect(count).toHaveTextContent('12');
+    fireEvent.click(screen.getByTestId('retarget-go'));
+    await waitFor(() => expect(api.retargetCampaign).toHaveBeenCalledWith('c1', {}));
   });
 });
