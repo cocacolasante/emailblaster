@@ -275,6 +275,50 @@ async def test_send_email_step_records_execution_and_advances(db_session, monkey
     assert state.current_node_id is None
 
 
+async def test_sent_email_reanchors_clock_to_prevent_cascade(db_session):
+    """A delayed/re-queued send (stale entered_current_at) must NOT immediately
+    fire the next email: recording the SENT re-anchors entered_current_at to the
+    send time, so the outgoing days_since_entered_node gate counts from now and
+    the lead parks instead of cascading into the next reply seconds later."""
+    campaign = await _make_campaign(db_session)
+    seq = await ensure_default_sequence(db_session, campaign)
+    m = await replace_graph(db_session, seq,
+        nodes=[
+            _n("e", "email", entry=True),
+            _n("r1", "email_reply", ai_compose=True),
+            _n("r2", "email_reply", ai_compose=True),
+        ],
+        edges=[
+            _e("e", "r1"),
+            _e("r1", "r2", condition={"op": "days_since_entered_node", "gte": 3}),
+        ],
+    )
+    await db_session.commit()
+    r1 = m["r1"]
+
+    lead = await _make_lead(db_session, campaign)
+    lead.send_status = SendStatus.SENT
+    lead.brevo_message_id = "<orig@x>"
+    # Parked on reply #1 with a STALE clock (arrived 5 days ago; reply #1 was
+    # delayed and only sends now).
+    state = LeadSequenceState(
+        lead_id=lead.id, sequence_id=seq.id, current_node_id=r1,
+        status=LeadSequenceStatus.ACTIVE, next_run_at=_now(),
+        entered_current_at=_now() - timedelta(days=5),
+    )
+    db_session.add(state)
+    await db_session.commit()
+
+    await sequencer._record_execution_and_advance(
+        lead.id, r1, {"status": "sent", "message_id": "<reply1@x>"})
+
+    await db_session.refresh(state)
+    # Did NOT cascade into reply #2 — parked on reply #1 with a fresh clock.
+    assert state.current_node_id == r1
+    assert state.status == LeadSequenceStatus.ACTIVE
+    assert (_now() - state.entered_current_at) < timedelta(minutes=2)
+
+
 async def test_followup_email_renders_inserted_html_links(db_session, monkeypatch):
     """The sequencer send path goes through the shared render_email_with_signature,
     so an HTML link in a follow-up body renders as a real anchor in the HTML

@@ -1600,6 +1600,23 @@ async def _record_execution_and_advance(
                             )
                             await _advance_cursor(session, state, node)
                     else:
+                        if status == "sent" and exec_row is not None:
+                            # Anchor the inter-step wait to THIS send, not the
+                            # (possibly stale) node-entry time.  A delayed or
+                            # re-queued send — whose entered_current_at can be
+                            # days old — would otherwise find the next
+                            # days_since_entered_node gate ALREADY satisfied and
+                            # fire the following email seconds later, collapsing
+                            # the spacing (two emails minutes apart instead of the
+                            # configured days).
+                            #
+                            # Use the execution row's OWN timestamp (not _now())
+                            # so it EQUALS entered_current_at — otherwise the
+                            # "already executed this visit" guard
+                            # (attempted_at >= entered_current_at) would exclude
+                            # the just-written SENT row and a parked lead would
+                            # re-fire the action.
+                            state.entered_current_at = exec_row.attempted_at or _now()
                         await _advance_cursor(session, state, node)
             await session.commit()
     finally:
