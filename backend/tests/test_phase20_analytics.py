@@ -234,6 +234,51 @@ async def test_analytics_counts_step_executions(client, db_session):
     assert node["failed"] == 0
 
 
+async def test_analytics_here_already_sent_split(client, db_session):
+    """Of the leads sitting on a node, here_already_sent counts those that
+    already have a SENT execution for it (will skip-and-advance, no resend)."""
+    r = await client.post("/campaigns/", json=_payload())
+    cid = uuid.UUID(r.json()["id"])
+    seq = (await db_session.execute(
+        select(Sequence).where(Sequence.campaign_id == cid)
+    )).scalar_one()
+    node = SequenceNode(
+        sequence_id=seq.id, kind=SequenceNodeKind.EMAIL_REPLY, is_entry=False,
+        config={"title": "Reply"},
+    )
+    db_session.add(node)
+    await db_session.commit()
+    await db_session.refresh(node)
+
+    leads = []
+    for i in range(3):
+        l = Lead(campaign_id=cid, email=f"r{i}@x.com", send_status=SendStatus.SENT)
+        db_session.add(l)
+        leads.append(l)
+    await db_session.commit()
+    for l in leads:
+        await db_session.refresh(l)
+
+    # All 3 are ACTIVE on the node; 2 already sent it (re-queued after a
+    # republish), 1 is awaiting its first send.
+    for l in leads:
+        db_session.add(LeadSequenceState(
+            lead_id=l.id, sequence_id=seq.id, current_node_id=node.id,
+            status=LeadSequenceStatus.ACTIVE,
+        ))
+    db_session.add_all([
+        LeadStepExecution(lead_id=leads[0].id, node_id=node.id, result=LeadStepResult.SENT),
+        LeadStepExecution(lead_id=leads[1].id, node_id=node.id, result=LeadStepResult.SENT),
+    ])
+    await db_session.commit()
+
+    a = await client.get(f"/campaigns/{cid}/sequence/analytics")
+    n = next(x for x in a.json()["per_node"] if x["node_id"] == str(node.id))
+    assert n["currently_here"] == 3
+    assert n["here_already_sent"] == 2   # will skip, no resend
+    # → 1 awaiting first send (currently_here - here_already_sent)
+
+
 async def test_analytics_entry_email_uses_send_status(client, db_session):
     """The entry EMAIL node reflects the legacy first-email outcome
     (lead.send_status), since the compose -> send_lead path never writes

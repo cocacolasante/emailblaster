@@ -166,6 +166,9 @@ class NodeAnalytics(BaseModel):
     skipped: int    # result = SKIPPED
     failed: int     # result = FAILED
     currently_here: int  # active lead_sequence_states pointing at this node
+    # Of currently_here, how many have ALREADY sent this node — they'll
+    # skip-and-advance (no resend); the rest are awaiting their first send.
+    here_already_sent: int = 0
 
 
 class SequenceAnalyticsResponse(BaseModel):

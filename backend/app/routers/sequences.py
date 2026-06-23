@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -326,6 +326,32 @@ async def get_sequence_analytics(
     )).all()
     currently: dict[uuid.UUID, int] = {nid: c for nid, c in currently_rows}
 
+    # Of the leads sitting on a node, how many ALREADY have a SENT execution
+    # for that very node — they'll skip-and-advance (the send-once guard), so
+    # they will NOT be re-sent.  Surfacing this makes "481 here now" legible:
+    # e.g. "248 already sent (will skip) · 233 awaiting first send".
+    here_sent_rows = (await db.execute(
+        select(
+            LeadSequenceState.current_node_id,
+            func.count(func.distinct(LeadSequenceState.lead_id)).label("c"),
+        )
+        .join(
+            LeadStepExecution,
+            and_(
+                LeadStepExecution.lead_id == LeadSequenceState.lead_id,
+                LeadStepExecution.node_id == LeadSequenceState.current_node_id,
+                LeadStepExecution.result == LeadStepResult.SENT,
+            ),
+        )
+        .where(
+            LeadSequenceState.sequence_id == seq.id,
+            LeadSequenceState.status == LeadSequenceStatus.ACTIVE,
+            LeadSequenceState.current_node_id.is_not(None),
+        )
+        .group_by(LeadSequenceState.current_node_id)
+    )).all()
+    here_already_sent: dict[uuid.UUID, int] = {nid: c for nid, c in here_sent_rows}
+
     node_by_id = {n.id: n for n in nodes}
     entry_node = next((n for n in nodes if n.is_entry), None)
 
@@ -369,6 +395,7 @@ async def get_sequence_analytics(
             skipped=by_node[nid]["skipped"],
             failed=by_node[nid]["failed"],
             currently_here=currently.get(nid, 0),
+            here_already_sent=here_already_sent.get(nid, 0),
         )
         for nid in ordered_ids
     ]

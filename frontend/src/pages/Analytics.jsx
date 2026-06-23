@@ -288,11 +288,24 @@ function SequencePerformance({ id }) {
               <td className="px-4 py-2.5 text-right tabular font-medium text-emerald-700">{n.sent}</td>
               <td className="px-4 py-2.5 text-right tabular text-slate-500">{n.skipped}</td>
               <td className="px-4 py-2.5 text-right tabular text-red-600">{n.failed}</td>
-              <td className="px-4 py-2.5 text-right tabular text-brand-700">{n.currently_here}</td>
+              <td className="px-4 py-2.5 text-right tabular text-brand-700 align-top">
+                {n.currently_here}
+                {n.here_already_sent > 0 && (
+                  <div className="text-[10px] text-slate-400 font-normal" data-testid="seq-here-breakdown">
+                    {n.here_already_sent} already sent · {n.currently_here - n.here_already_sent} to send
+                  </div>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      <p className="px-4 py-2.5 text-xs text-slate-400 border-t border-slate-100">
+        <strong className="text-slate-500 font-medium">Sent</strong> counts unique recipients per step.
+        Leads marked <em>"already sent"</em> under <em>Here now</em> have received this step before —
+        the send-once guard makes them <strong className="text-slate-500 font-medium">skip and advance</strong>,
+        so they are never re-sent; only <em>"to send"</em> leads will receive it.
+      </p>
     </div>
   );
 }
