@@ -80,6 +80,21 @@ def extract_message_id(event: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_occurred_at(event: dict[str, Any]):
+    """The event's real timestamp (Brevo sends ISO-8601 with tz in ``date``).
+    Returns None to fall back to the DB default (now) when absent/unparseable —
+    matters so a backfill places events on their REAL day, not today, and so the
+    24h deliverability window only counts genuinely-recent events."""
+    from datetime import datetime
+    raw = event.get("date") or event.get("ts") or event.get("time")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def normalise_event_name(raw: Any) -> str:
     """Brevo emits names with mixed case and a couple of suffix styles
     (``hardBounce`` from the API, ``hard_bounce`` from the webhook,
@@ -87,7 +102,9 @@ def normalise_event_name(raw: Any) -> str:
     return str(raw or "").strip().lower().replace("-", "_")
 
 
-async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
+async def process_event(
+    db: AsyncSession, event: dict[str, Any], *, apply_side_effects: bool = True,
+) -> bool:
     """Persist a single Brevo event onto the matching Lead.
 
     Returns True when a row was recorded (lead found, event mapped),
@@ -96,6 +113,11 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
     has an identical (event_type, brevo messageId) we skip the insert
     so the poller can safely re-fetch the same day window without
     duplicating event rows.
+
+    ``apply_side_effects=False`` records the event row ONLY — no suppression,
+    no circuit-breaker check.  Used by the historical backfill so re-recording
+    old bounces/spam doesn't re-suppress or (mis)trip the breaker; suppression
+    of those addresses is already handled by the blocklist sync.
     """
     event_type = EVENT_MAP.get(normalise_event_name(event.get("event")))
     if event_type is None:
@@ -139,12 +161,19 @@ async def process_event(db: AsyncSession, event: dict[str, Any]) -> bool:
         # recur (one per open/click), so we always record those.
         return False
 
-    db.add(EmailEvent(
+    occurred_at = extract_occurred_at(event)
+    ev_kwargs: dict[str, Any] = dict(
         lead_id=lead.id,
         campaign_id=lead.campaign_id,
         event_type=event_type,
         event_data=event,
-    ))
+    )
+    if occurred_at is not None:
+        ev_kwargs["occurred_at"] = occurred_at  # the event's REAL time, not now()
+    db.add(EmailEvent(**ev_kwargs))
+
+    if not apply_side_effects:
+        return True
 
     # A suppressing event (hard bounce / spam / unsubscribe / blocked) doesn't
     # just add the email to the list — it pulls the recipient out of every

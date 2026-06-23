@@ -98,6 +98,20 @@ async def test_event_matches_bracketed_message_id(db_session):
     assert len(rows) == 1 and rows[0].event_type == EmailEventType.CLICKED
 
 
+async def test_event_uses_real_date_not_now(db_session):
+    """occurred_at comes from the event's date so a backfill lands on the real
+    day (and the 24h deliverability window can't misclassify old events)."""
+    from app.services.brevo_events import process_event
+    lead = await _make_lead_with_message(db_session, "msg-dated")
+    await process_event(db_session, {
+        "event": "delivered", "messageId": "msg-dated",
+        "date": "2026-05-01T10:00:00-04:00",
+    }, apply_side_effects=False)
+    await db_session.commit()
+    row = (await db_session.execute(select(EmailEvent).where(EmailEvent.lead_id == lead.id))).scalar_one()
+    assert row.occurred_at.year == 2026 and row.occurred_at.month == 5 and row.occurred_at.day == 1
+
+
 async def test_poller_skips_events_older_than_watermark(db_session, monkeypatch):
     """A second poll on the same window must not re-record events the
     first poll already processed.  The poller maintains a Redis watermark
