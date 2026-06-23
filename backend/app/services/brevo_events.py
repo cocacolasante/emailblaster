@@ -22,6 +22,7 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
+    LeadStepExecution,
     SuppressionReason,
     canonical_email,
 )
@@ -131,9 +132,22 @@ async def process_event(
     # is stored WITH them (the send path keeps Brevo's raw `<...@...>`), so a
     # bare `==` never matched and every open/click/delivered event was silently
     # dropped.  Match both forms.
+    forms = [msg_id, f"<{msg_id}>"]
     lead = await db.scalar(
-        select(Lead).where(Lead.brevo_message_id.in_([msg_id, f"<{msg_id}>"]))
+        select(Lead).where(Lead.brevo_message_id.in_(forms))
     )
+    if lead is None:
+        # The lead stores only the FIRST email's id; follow-up / reply sends
+        # record THEIR Brevo id on lead_step_executions.external_id.  Without
+        # this, opens/clicks/bounces on every email after the first are dropped
+        # (the analytics under-count badly for multi-step campaigns).
+        ex_lead_id = await db.scalar(
+            select(LeadStepExecution.lead_id)
+            .where(LeadStepExecution.external_id.in_(forms))
+            .limit(1)
+        )
+        if ex_lead_id is not None:
+            lead = await db.get(Lead, ex_lead_id)
     if lead is None:
         return False
 

@@ -112,6 +112,35 @@ async def test_event_uses_real_date_not_now(db_session):
     assert row.occurred_at.year == 2026 and row.occurred_at.month == 5 and row.occurred_at.day == 1
 
 
+async def test_event_matches_reply_via_execution_external_id(db_session):
+    """Opens/clicks on a FOLLOW-UP email (whose Brevo id lives on
+    lead_step_executions.external_id, not lead.brevo_message_id) must still
+    match — otherwise multi-step campaign engagement is silently dropped."""
+    from app.models import Campaign, LeadStepExecution, LeadStepResult, SequenceNode
+    from app.services.brevo_events import process_event
+    from app.services.sequence_service import ensure_default_sequence
+
+    lead = await _make_lead_with_message(db_session, "<first@x>")
+    camp = await db_session.get(Campaign, lead.campaign_id)
+    seq = await ensure_default_sequence(db_session, camp)
+    node = (await db_session.execute(
+        select(SequenceNode).where(SequenceNode.sequence_id == seq.id)
+    )).scalars().first()
+    db_session.add(LeadStepExecution(
+        lead_id=lead.id, node_id=node.id, result=LeadStepResult.SENT,
+        external_id="<reply@x>",   # the reply email's Brevo id
+    ))
+    await db_session.commit()
+
+    # An open on the REPLY (id NOT on the lead) matches via the execution.
+    ok = await process_event(db_session, {"event": "opened", "messageId": "<reply@x>"},
+                             apply_side_effects=False)
+    await db_session.commit()
+    assert ok is True
+    rows = (await db_session.execute(select(EmailEvent).where(EmailEvent.lead_id == lead.id))).scalars().all()
+    assert len(rows) == 1 and rows[0].event_type == EmailEventType.OPENED
+
+
 async def test_poller_skips_events_older_than_watermark(db_session, monkeypatch):
     """A second poll on the same window must not re-record events the
     first poll already processed.  The poller maintains a Redis watermark
