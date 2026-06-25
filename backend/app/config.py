@@ -29,11 +29,12 @@ class Settings(BaseSettings):
     # Haiku instead of Sonnet is ~3.75x cheaper on that token spend.
     ANTHROPIC_RESEARCH_MODEL: str = "claude-haiku-4-5-20251001"
     # Web searches allowed per lead's research call.  Each search costs a tool
-    # fee AND ingests result pages as input tokens, so this is a direct cost
-    # lever.  Default 2: one search for the person, one for the company.
-    # Bumping to 3 surfaces marginal extra signal at +50% cost; we found
-    # that 2 covers the typical lead profile well enough.
-    RESEARCH_WEB_SEARCH_MAX_USES: int = 2
+    # fee AND ingests result pages as input tokens (the dominant per-lead cost),
+    # so this is the single biggest cost lever.  Default 1: the merged
+    # person+company prompt makes one focused search, which surfaces the top
+    # signal for the large majority of leads.  Bump to 2-3 to trade ~+50-100%
+    # research spend for marginal extra signal on hard-to-find leads.
+    RESEARCH_WEB_SEARCH_MAX_USES: int = 1
     # Freshness window for the cross-campaign research cache (keyed by email
     # or by ``linkedin:<slug>`` for the one-off research-a-client tool).
     # A second campaign adding the same email — or a second click on the

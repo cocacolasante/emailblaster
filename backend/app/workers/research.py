@@ -11,11 +11,22 @@ import asyncio
 import logging
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import settings
-from app.models import Campaign, Lead, ResearchMode, ResearchStatus
+from app.models import (
+    Campaign,
+    ComposeStatus,
+    Lead,
+    ResearchMode,
+    ResearchStatus,
+    SendStatus,
+    Suppression,
+    canonical_email,
+)
 from app.services import apollo, hunter, research_cache, web_research
 from app.services.campaign_stop import stop_requested
 from app.workers.celery_app import celery_app
@@ -27,6 +38,36 @@ except Exception:  # noqa: BLE001
     _redis_sync = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+# Free-mail providers must NEVER be treated as a shared "company" — two leads
+# at gmail.com are not the same org, so caching company research by these would
+# cross-contaminate.  Lists keyed on a corporate domain are fine.
+_FREE_MAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "outlook.com",
+    "hotmail.com", "live.com", "msn.com", "aol.com", "icloud.com", "me.com",
+    "proton.me", "protonmail.com", "gmx.com", "mail.com",
+}
+
+
+def _company_domain(company_website: str, email: str) -> str:
+    """Best-effort company domain for the company-level research cache.
+    Prefers the explicit company website; falls back to the email's domain
+    unless it's a free-mail provider.  Empty string => no company caching."""
+    site = (company_website or "").strip()
+    if site:
+        if "://" not in site:
+            site = "http://" + site
+        host = (urlparse(site).netloc or "").split("@")[-1].split(":")[0].lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host:
+            return host
+    e = (email or "").strip().lower()
+    if "@" in e:
+        dom = e.rsplit("@", 1)[-1]
+        if dom and dom not in _FREE_MAIL_DOMAINS:
+            return dom
+    return ""
 
 
 def _assess_quality(
@@ -76,6 +117,28 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
                 logger.warning("research_lead: campaign for lead %s missing", lead_id)
                 return {"status": "not_found"}
 
+            # Pre-scrub: never spend research (or compose) tokens on an address
+            # that can't be emailed.  A suppressed lead — hard bounce / spam /
+            # unsubscribe / manual ignore — is blocked at the send gate anyway,
+            # so the web-search + Sonnet compose spend is pure waste.  Mark it
+            # terminal (research + compose DONE, send SUPPRESSED) so the
+            # progress counters complete and the pacer skips it, with ZERO
+            # Anthropic calls.  This is the cheapest lead to "process".
+            canonical = canonical_email(lead.email or "")
+            if canonical:
+                suppressed = await session.scalar(
+                    select(Suppression.email).where(Suppression.email == canonical)
+                )
+                if suppressed is not None:
+                    lead.research_status = ResearchStatus.DONE
+                    lead.compose_status = ComposeStatus.DONE
+                    lead.send_status = SendStatus.SUPPRESSED
+                    lead.research_data = {
+                        "quality": "low", "skipped": True, "suppressed": True,
+                    }
+                    await session.commit()
+                    return {"status": "skipped_suppressed"}
+
             # Cooperative stop check — covers the window where the kill
             # races a redelivery: if the user hit Stop, the campaign's
             # ``campaign:stop:<id>`` Redis key is set and we bail BEFORE
@@ -104,6 +167,8 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             mode = campaign.research_mode
 
         cache_hit = False
+        domain = _company_domain(company_website, email)
+        cached_company: dict[str, Any] | None = None
         if mode in (ResearchMode.NONE, ResearchMode.TEMPLATE):
             # "No research" / "template" modes: make zero external research
             # calls (no Apollo / Hunter / web).  Hand an empty, low-quality
@@ -118,6 +183,11 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             cached = None
             async with AsyncSession(engine) as session:
                 cached = await research_cache.lookup(session, email)
+                # On an email-cache miss, see if a prior lead at the same
+                # company already researched it — lets the person search skip
+                # the (redundant) company half.
+                if not cached and domain:
+                    cached_company = await research_cache.company_lookup(session, domain)
             if cached:
                 quality = cached.get("quality", "low")
                 # Stamp a marker so the audit log makes the cache hit obvious.
@@ -131,7 +201,8 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
             tasks: list[asyncio.Future[Any]] = [
                 asyncio.ensure_future(
                     web_research.research_person_web(
-                        first_name, last_name, company, job_title, company_website
+                        first_name, last_name, company, job_title, company_website,
+                        cached_company=cached_company,
                     )
                 ),
                 asyncio.ensure_future(hunter.verify_email_hunter(email)),
@@ -185,6 +256,11 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
                 and research_data
             ):
                 await research_cache.upsert(session, email, research_data)
+                # Warm the company-level cache so the next lead at this domain
+                # can skip the company half of the search.
+                await research_cache.company_upsert(
+                    session, domain, research_cache.company_fields(research_data)
+                )
             await session.commit()
     finally:
         await engine.dispose()

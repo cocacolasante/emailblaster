@@ -180,3 +180,35 @@ async def test_research_prompt_contains_repost_rule(monkeypatch):
     assert "commentary" in prompt or "commented" in prompt or "their thoughts" in prompt
     # Explicitly excludes the naked case.
     assert "naked" in prompt or "exclude" in prompt or "not their content" in prompt
+
+
+async def test_cached_company_drives_person_focused_search_and_overlay(monkeypatch):
+    """When cached company context is supplied the prompt tells the model NOT
+    to research the company (person-only search = fewer ingested tokens), and
+    the cached company fields are overlaid onto the (empty) company result."""
+    monkeypatch.setattr(web_research.settings, "ANTHROPIC_API_KEY", "test-key")
+    # The person-only search returns just person_news; company fields empty.
+    text = ('{"person_news": ["spoke at a conf"], "company_news": [], '
+            '"company_description": "", "recent_updates": [], "industry": "", '
+            '"size_hint": "", "found": true}')
+    create = AsyncMock(return_value=_anthropic_text_response(text))
+    cached_company = {
+        "company_description": "AI for SMB", "industry": "SaaS",
+        "size_hint": "startup", "company_news": ["launched X"],
+    }
+    with patch.object(
+        web_research, "_get_client",
+        return_value=SimpleNamespace(messages=SimpleNamespace(create=create)),
+    ):
+        result = await web_research.research_person_web(
+            "Jane", "Doe", "Acme", "CEO", "acme.com", cached_company=cached_company,
+        )
+
+    sent_prompt = create.call_args.kwargs["messages"][0]["content"]
+    assert "do NOT search for company info" in sent_prompt
+    assert "AI for SMB" in sent_prompt          # cached context embedded
+    # Person signal kept; company fields overlaid from cache.
+    assert result["person_news"] == ["spoke at a conf"]
+    assert result["company_description"] == "AI for SMB"
+    assert result["industry"] == "SaaS"
+    assert result["company_news"] == ["launched X"]

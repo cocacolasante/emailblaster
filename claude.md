@@ -22,7 +22,53 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Auto-complete CRM tasks once the lead/deal has
+- **Last completed:** **Research token-cost reduction (3 levers).**  A
+  1000-lead research run was burning a lot of tokens; the dominant cost is the
+  per-lead `web_search` in `research_person_web` (ingested result pages as Haiku
+  input + per-search fee).  Three cuts:
+  - **#1 `RESEARCH_WEB_SEARCH_MAX_USES` 2 → 1** (config default + the two
+    docker-compose `:-1` defaults — it's pinned in the `environment:` allowlist,
+    so the code default alone wouldn't reach the containers).  ~halves the
+    dominant per-lead web-search spend; the merged person+company prompt makes
+    one focused search.
+  - **#2 Suppression pre-scrub** (`research_lead_async`, before any web/compose
+    call): if `lead.email` is on the `Suppression` list, skip ALL research +
+    compose — mark `research_status=DONE`, `compose_status=DONE`,
+    `send_status=SUPPRESSED`, `research_data={skipped, suppressed}` and return
+    `skipped_suppressed` (no compose enqueue).  A suppressed lead is blocked at
+    the send gate anyway, so this is pure-waste removal.  Covers every enqueue
+    path (it's in the worker, not the fan-out).  grantmind showed ~22% of leads
+    suppressed — that's ~22% of research+compose spend reclaimed.
+  - **#3 Company-level dedup cache** (mostly dormant for scattered lists, free
+    savings on account-clustered ones).  `research_cache` now also stores
+    company-level fields (`company_description`/`company_news`/`recent_updates`/
+    `industry`/`size_hint`) under a namespaced key `company::<domain>`
+    (`company_lookup`/`company_upsert`/`company_fields`).  On an email-cache
+    MISS, the worker looks up the company by domain (`_company_domain` — prefers
+    `company_website`, falls back to a corporate email domain, NEVER a free-mail
+    provider) and passes `cached_company` into `research_person_web`, which then
+    runs a **person-only** search (skips the company half → fewer ingested
+    tokens) and overlays the cached company fields onto the result.  Fresh
+    research warms the company cache for the next lead at that domain.
+  - Tests: 4 backend (`test_phase6_research_task.py`: suppression skips
+    research+compose, `_company_domain` website/corp/free-mail, company-research
+    cached+reused for same domain; `test_phase6_web_research.py`: cached-company
+    person-focused prompt + overlay).  Deployed live (worker recreated;
+    `max_uses=1` confirmed).
+
+- **Previously:** **Sequencer: anchor inter-step wait to the actual send
+  time (stop the follow-up cascade).**  Re-nudged leads carried a stale
+  `entered_current_at` on a reply node; sending reply #1 then found the
+  reply#1→reply#2 `days_since_entered_node >= 3` gate already satisfied (counted
+  from the stale entry) and fired reply #2 seconds later (~40 leads
+  double-emailed).  Fix: on a successful send, `_record_execution_and_advance`
+  re-stamps `state.entered_current_at = exec_row.attempted_at` (the execution
+  row's own time — NOT `_now()`, which would land after the row and defeat the
+  `_already_executed_this_visit` guard, re-firing parked LinkedIn-connect leads)
+  before `_advance_cursor`.  So the next day-gate counts from the real send.
+  Verified live (0 cascades post-fix) + regression test.
+
+- **Earlier:** **Auto-complete CRM tasks once the lead/deal has
   been acted on.**  When a *touch* activity (call / email / meeting / note) is
   logged on a lead or opportunity, that record's open **due/overdue** tasks
   auto-complete — so the reminder sweep + daily digest stop nagging about work

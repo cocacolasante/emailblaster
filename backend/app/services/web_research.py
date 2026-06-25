@@ -13,6 +13,7 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from app.config import settings
+from app.services.research_cache import company_fields
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ async def research_person_web(
     company: str,
     job_title: str,
     company_website: str = "",
+    cached_company: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not settings.ANTHROPIC_API_KEY:
         return dict(_DEFAULT)
@@ -75,6 +77,43 @@ async def research_person_web(
     website_line = (
         f"Company website: {company_website}\n" if company_website else ""
     )
+
+    # Company-dedup fast path: when a prior lead at the same domain already
+    # researched the company, we pass that context in and tell the model to
+    # spend its (single) search ONLY on the person.  Skipping the company half
+    # of the search ingests far fewer result pages — the dominant per-lead
+    # cost — while keeping per-person personalization.  Cached company fields
+    # are overlaid onto the result below.
+    company_ctx = company_fields(cached_company or {})
+    if company_ctx:
+        ctx_desc = company_ctx.get("company_description") or ""
+        ctx_industry = company_ctx.get("industry") or ""
+        prompt = (
+            "You are researching a PERSON for a personalized cold email.\n"
+            f"Subject: {first_name} {last_name}, {job_title} at {company}\n"
+            f"{website_line}"
+            f"The company is already known — do NOT search for company info:\n"
+            f"  What they do: {ctx_desc}\n"
+            f"  Industry: {ctx_industry}\n\n"
+            "Use web search (ONE focused search) to find ONLY:\n"
+            "1. Recent news, achievements, public quotes, or interviews from "
+            "this person.\n\n"
+            "REPOST RULE (important — applies to person_news only):\n"
+            "- A naked LinkedIn repost / reshare — where the person clicked "
+            "'repost' but added NO words of their own — is NOT their content.  "
+            "Do not include it in person_news.\n"
+            "- A repost WITH the person's own added commentary IS their "
+            "content; describe it as their COMMENT.\n"
+            "- Original posts they wrote themselves: include as normal.\n\n"
+            "Respond ONLY with one JSON object, no preamble, no markdown:\n"
+            '{"person_news": ["item 1"], "company_news": [], '
+            '"company_description": "", "recent_updates": [], "industry": "", '
+            '"size_hint": "", "found": true}\n\n'
+            'If nothing useful is found about the person, return found: false '
+            "and empty lists."
+        )
+        return await _run(prompt, overlay=company_ctx)
+
     # ONE web-search call covers both the person and the company.  Previously
     # this was two separate Sonnet+web-search calls per lead (here +
     # site_scraper), which roughly doubled the per-lead cost.  Merged into a
@@ -110,6 +149,14 @@ async def research_person_web(
         'If nothing useful is found, return found: false and empty lists.'
     )
 
+    return await _run(prompt)
+
+
+async def _run(prompt: str, overlay: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Make the research call, parse it, and return the stable shape.  When
+    ``overlay`` (cached company fields) is given, fill any company field the
+    model left empty from the cache — so a person-focused search still yields
+    full company context."""
     try:
         message = await _get_client().messages.create(
             model=settings.ANTHROPIC_RESEARCH_MODEL,
@@ -123,13 +170,19 @@ async def research_person_web(
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("research_person_web API call failed: %s", e)
-        return dict(_DEFAULT)
+        out = dict(_DEFAULT)
+        if overlay:
+            out.update(overlay)
+        return out
 
     data = _parse_json(_extract_text(message))
     if not data:
-        return dict(_DEFAULT)
+        out = dict(_DEFAULT)
+        if overlay:
+            out.update(overlay)
+        return out
 
-    return {
+    result = {
         "person_news": list(data.get("person_news") or []),
         "company_news": list(data.get("company_news") or []),
         "company_description": str(data.get("company_description") or ""),
@@ -138,3 +191,10 @@ async def research_person_web(
         "size_hint": str(data.get("size_hint") or ""),
         "found": bool(data.get("found", False)),
     }
+    overlay = overlay or {}
+    for key, val in overlay.items():
+        # The cached company fields are authoritative — the person-only search
+        # was told not to research the company — so fill empties from cache.
+        if not result.get(key):
+            result[key] = val
+    return result

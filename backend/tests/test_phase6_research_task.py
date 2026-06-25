@@ -333,3 +333,82 @@ async def test_email_deliverable_flag_from_hunter(db_session):
     refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
     await db_session.refresh(refreshed)
     assert refreshed.research_data["email_deliverable"] is False
+
+
+# ---------- cost-cut: suppression pre-scrub (#2) ----------
+
+
+async def test_suppressed_lead_skips_research_and_compose(db_session):
+    """A lead whose email is on the suppression list must spend ZERO Anthropic
+    tokens: no web research, no compose enqueue.  It's marked terminal
+    (research+compose DONE, send SUPPRESSED) so progress counters complete."""
+    from app.models import ComposeStatus, SendStatus, Suppression, SuppressionReason
+
+    campaign = await _make_campaign(db_session, mode=ResearchMode.FAST)
+    lead = await _make_lead(db_session, campaign, email="bounced@acme.com")
+    db_session.add(Suppression(email="bounced@acme.com", reason=SuppressionReason.HARD_BOUNCE))
+    await db_session.commit()
+
+    web_mock = AsyncMock(return_value={"person_news": [], "found": False})
+    with patch("app.workers.research.web_research.research_person_web", web_mock), \
+         patch("app.workers.research.hunter.verify_email_hunter", AsyncMock()) as hunter_mock, \
+         patch("app.workers.research.compose_lead.delay") as enqueue:
+        result = await research_lead_async(str(lead.id))
+
+    assert result["status"] == "skipped_suppressed"
+    web_mock.assert_not_called()      # no web-search tokens spent
+    hunter_mock.assert_not_called()
+    enqueue.assert_not_called()       # no compose (Sonnet) tokens spent
+
+    refreshed = await db_session.scalar(select(Lead).where(Lead.id == lead.id))
+    await db_session.refresh(refreshed)
+    assert refreshed.research_status == ResearchStatus.DONE
+    assert refreshed.compose_status == ComposeStatus.DONE
+    assert refreshed.send_status == SendStatus.SUPPRESSED
+    assert refreshed.research_data["suppressed"] is True
+
+
+# ---------- cost-cut: company-level dedup cache (#3) ----------
+
+
+def test_company_domain_prefers_website_and_skips_free_mail():
+    from app.workers.research import _company_domain
+    # Website wins, normalised (scheme/www/path stripped).
+    assert _company_domain("https://www.acme.com/about", "x@gmail.com") == "acme.com"
+    # No website → corporate email domain.
+    assert _company_domain("", "jane@acme.com") == "acme.com"
+    # No website → free-mail domain is NOT a company (would cross-contaminate).
+    assert _company_domain("", "jane@gmail.com") == ""
+    assert _company_domain("", "") == ""
+
+
+async def test_company_research_cached_and_reused_for_same_domain(db_session):
+    """The 2nd lead at the same company domain reuses the cached company
+    research — the worker passes it to the person search so the company half
+    of the search is skipped."""
+    full = {
+        "person_news": ["did a thing"], "company_news": ["launched X"],
+        "company_description": "AI for SMB", "recent_updates": ["v2 shipped"],
+        "industry": "SaaS", "size_hint": "startup", "found": True,
+    }
+    campaign = await _make_campaign(db_session, mode=ResearchMode.FAST)
+    lead1 = await _make_lead(db_session, campaign, email="ceo@acme.com")
+    lead2 = await _make_lead(db_session, campaign, email="vp@acme.com")
+
+    web_mock = AsyncMock(return_value=full)
+    with patch("app.workers.research.web_research.research_person_web", web_mock), \
+         patch("app.workers.research.hunter.verify_email_hunter", AsyncMock(return_value={"deliverable": True, "score": 90})), \
+         patch("app.workers.research.compose_lead.delay"):
+        await research_lead_async(str(lead1.id))
+        await research_lead_async(str(lead2.id))
+
+    # First lead: no company cache yet.
+    first_kwargs = web_mock.call_args_list[0].kwargs
+    assert first_kwargs.get("cached_company") in (None, {})
+    # Second lead (email miss, same domain): cached company fields passed in.
+    second_kwargs = web_mock.call_args_list[1].kwargs
+    cc = second_kwargs.get("cached_company")
+    assert cc is not None
+    assert cc.get("company_description") == "AI for SMB"
+    assert cc.get("industry") == "SaaS"
+    assert "person_news" not in cc          # only company-level fields cached

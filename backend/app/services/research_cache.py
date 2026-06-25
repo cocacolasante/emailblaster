@@ -21,6 +21,48 @@ def _canon(email: str) -> str:
     return (email or "").strip().lower()
 
 
+# --- Company-level dedup ----------------------------------------------------
+# Several leads in one list often share a company.  The company half of the
+# research (what the company does, its industry, recent company news) is
+# identical for all of them, so we cache it by domain under a namespaced key
+# in the SAME table (domains can't collide with real emails — they're prefixed
+# and contain no '@').  The 2nd+ lead at a domain then skips the company half
+# of the search; the person half still runs per-lead.
+_COMPANY_PREFIX = "company::"
+_COMPANY_FIELDS = (
+    "company_description",
+    "company_news",
+    "recent_updates",
+    "industry",
+    "size_hint",
+)
+
+
+def company_fields(research_data: dict[str, Any]) -> dict[str, Any]:
+    """The subset of a research payload shared by every lead at the same
+    company — i.e. worth caching by domain.  Drops empty values so a
+    no-signal lookup never overwrites a good cached one."""
+    return {k: research_data[k] for k in _COMPANY_FIELDS if research_data.get(k)}
+
+
+async def company_lookup(session: AsyncSession, domain: str) -> dict[str, Any] | None:
+    """Cached company-level research for ``domain`` if still fresh, else None."""
+    d = (domain or "").strip().lower()
+    if not d:
+        return None
+    return await lookup(session, _COMPANY_PREFIX + d)
+
+
+async def company_upsert(
+    session: AsyncSession, domain: str, company_data: dict[str, Any]
+) -> None:
+    """Write/refresh the company-level cache for ``domain`` (no-op if blank)."""
+    d = (domain or "").strip().lower()
+    if not d or not company_data:
+        return
+    await upsert(session, _COMPANY_PREFIX + d, company_data)
+
+
 async def lookup(session: AsyncSession, email: str) -> dict[str, Any] | None:
     """Return the cached ``research_data`` for ``email`` if it's still fresh
     (within ``RESEARCH_CACHE_TTL_DAYS``), else None."""
