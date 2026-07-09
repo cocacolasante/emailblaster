@@ -22,7 +22,40 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Research token-cost reduction (3 levers).**  A
+- **Last completed:** **LinkedIn "invite to follow company page" node
+  (unblocked).**  Unipile now documents a working raw-data shape for the
+  `voyagerRelationshipsDashInvitations` endpoint that the old
+  `invite_to_page` impl was blocked on (their passthrough used to reject every
+  variant with `errors/malformed_request`).  Wired it in:
+  - **`unipile_impl.invite_to_page`** rewritten from the `unipile_passthrough_blocked`
+    stub to the documented `POST /api/v1/linkedin` passthrough (mirrors
+    `follow_profile`): `request_url` = the full voyager URL, `method` = POST,
+    `body.elements[0]` = `{inviteeMember: urn:li:fsd_profile:<member>,
+    genericInvitationType: "ORGANIZATION"}`, `query_params.inviter` =
+    `(organizationUrn:<percent-encoded urn:li:fsd_company:<page_id>>)` (built
+    with `quote(..., safe="")`), `headers` = `{x-restli-method: batch_create}`,
+    `encoding: False`.  Invitee URN resolved via the existing
+    `_resolve_provider_id` (bare `ACoAA…` token → full `urn:li:fsd_profile:`).
+    Ref: developer.unipile.com/docs/get-raw-data-example.
+  - **`PUBLISHABLE_KINDS_M1`** now includes `LINKEDIN_INVITE_TO_PAGE` (was
+    explicitly excluded).  All the other plumbing already existed and was left
+    intact: sequencer dispatch (1st-degree-connection gate + `page_id`
+    required), the per-PAGE monthly cap (`li-rate:page:{id}:month`,
+    `LINKEDIN_MONTHLY_PAGE_INVITE_CAP=250`), publish validation (page_id
+    required + numeric), and the builder node editor (company-page-ID input).
+  - **Frontend:** added the `LI: Invite to page` palette item (defaults +
+    editor + labels already existed).
+  - **Semantics:** LinkedIn only lets you invite your *connections* to follow a
+    page, so the node skips non-1st-degree leads — model it downstream of a
+    `linkedin_connect` (→ `if accepted`) step.  `page_id` is the numeric company
+    id; the connected account must be a page admin.
+  - Tests: flipped the 3 old "blocked/gated" assertions to the new behavior
+    (`test_phase23`: asserts the exact documented payload + bare-token URN
+    normalisation; `test_phase18`: publish now *accepts* the kind + restored the
+    non-numeric-page_id rejection; frontend palette test).  Verified against the
+    prod fork's (`outboundos`) `f11c43e` impl — identical payload shape.
+
+- **Previously:** **Research token-cost reduction (3 levers).**  A
   1000-lead research run was burning a lot of tokens; the dominant cost is the
   per-lead `web_search` in `research_person_web` (ingested result pages as Haiku
   input + per-search fee).  Three cuts:

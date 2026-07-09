@@ -704,11 +704,10 @@ async def test_publish_rejects_overlong_connect_note(client):
     assert any("note_template" in e and "300" in e for e in body["errors"])
 
 
-async def test_publish_rejects_linkedin_invite_to_page(client):
-    """linkedin_invite_to_page is currently gated out of PUBLISHABLE_KINDS
-    because Unipile's /api/v1/linkedin passthrough doesn't allowlist
-    voyagerRelationshipsDashInvitations.  Publishing a sequence that uses
-    the kind should fail with a clear error pointing at the gated kind."""
+async def test_publish_accepts_linkedin_invite_to_page(client):
+    """linkedin_invite_to_page is now runnable via Unipile's documented
+    voyagerRelationshipsDashInvitations passthrough, so a sequence using it
+    (with a numeric page_id) publishes cleanly."""
     cid_resp = await client.post("/campaigns/", json={
         "name": "x", "goal": "g", "tone": "Direct",
         "sender_name": "A", "sender_email": "a@example.com",
@@ -735,8 +734,40 @@ async def test_publish_rejects_linkedin_invite_to_page(client):
     await client.put(f"/campaigns/{cid}/sequence", json=payload)
     pub = await client.post(f"/campaigns/{cid}/sequence/publish")
     body = pub.json()
+    assert body["ok"] is True, body
+
+
+async def test_publish_rejects_non_numeric_page_id(client):
+    """The page_id must be a numeric company id — publishing a sequence whose
+    invite-to-page node carries a non-numeric page_id fails with a clear error."""
+    cid_resp = await client.post("/campaigns/", json={
+        "name": "x", "goal": "g", "tone": "Direct",
+        "sender_name": "A", "sender_email": "a@example.com",
+        "research_mode": "fast",
+        "schedule_days": [0, 1, 2, 3, 4],
+        "schedule_time_start": "09:00:00",
+        "schedule_time_end": "17:00:00",
+        "schedule_timezone": "UTC",
+    })
+    cid = cid_resp.json()["id"]
+
+    payload = {
+        "nodes": [
+            {"client_id": "e", "kind": "email", "is_entry": True, "config": {}},
+            {
+                "client_id": "i", "kind": "linkedin_invite_to_page", "is_entry": False,
+                "config": {"page_id": "acme-corp"},
+            },
+        ],
+        "edges": [
+            {"from_client_id": "e", "to_client_id": "i", "condition": {"op": "always"}},
+        ],
+    }
+    await client.put(f"/campaigns/{cid}/sequence", json=payload)
+    pub = await client.post(f"/campaigns/{cid}/sequence/publish")
+    body = pub.json()
     assert body["ok"] is False
-    assert any("linkedin_invite_to_page" in e for e in body["errors"])
+    assert any("page_id" in e and "numeric" in e for e in body["errors"])
 
 
 async def test_publish_rejects_linkedin_inmail(client):
@@ -772,12 +803,6 @@ async def test_publish_rejects_linkedin_inmail(client):
     body = pub.json()
     assert body["ok"] is False
     assert any("linkedin_inmail" in e for e in body["errors"])
-
-
-# test_publish_rejects_non_numeric_page_id removed — linkedin_invite_to_page
-# is currently gated out of PUBLISHABLE_KINDS, so the numeric-page_id check
-# is unreachable from the publish path.  Restore alongside re-enabling the
-# kind if Unipile allowlists voyagerRelationshipsDashInvitations.
 
 
 # --------------------------------------------------------------------------

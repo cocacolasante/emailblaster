@@ -458,30 +458,65 @@ async def test_send_dm_starts_chat_with_text():
 
 
 @pytest.mark.asyncio
-async def test_invite_to_page_returns_unipile_passthrough_blocked():
-    """invite_to_page is a stub that returns a clean error.  We have the
-    HAR-verified Voyager shape but Unipile's /api/v1/linkedin passthrough
-    rejects ``voyagerRelationshipsDashInvitations`` with
-    ``errors/malformed_request`` regardless of payload shape (probed
-    extensively — the same passthrough call for ``feed/dash/followingStates``
-    works, so it's a Unipile whitelist issue).  The impl no-ops on the
-    network until that's resolved, so callers see a clear reason without
-    burning calls."""
+async def test_invite_to_page_posts_documented_voyager_payload():
+    """invite_to_page routes through Unipile's raw passthrough
+    (POST /api/v1/linkedin) using the documented raw-data shape for
+    ``voyagerRelationshipsDashInvitations``: the invitee's fsd_profile URN in
+    body.elements, the company page URN percent-encoded in the ``inviter``
+    query param, and the ``x-restli-method: batch_create`` header."""
     seen: list[httpx.Request] = []
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(req)
-        return httpx.Response(200, json={})
+        return httpx.Response(200, json={"value": {"success": True}})
     prov = _provider_with(handler)
     res = await prov.invite_to_page(
         _FakeAccount(),
         ProfileRef(public_id="j", urn="urn:li:fsd_profile:J"),
         page_id="9876",
     )
-    assert res.ok is False
-    assert (res.meta or {}).get("code") == "unipile_passthrough_blocked"
-    assert (res.meta or {}).get("page_id") == "9876"
-    # No network call fired — the stub short-circuits.
-    assert seen == []
+    assert res.ok is True
+    # Only the passthrough POST fired (urn pre-set → no resolve fetch).
+    assert len(seen) == 1
+    assert seen[0].url.path.endswith("/api/v1/linkedin")
+    body = json.loads(seen[0].content)
+    assert body["account_id"] == "up-acct-XYZ"
+    assert body["method"] == "POST"
+    assert body["request_url"] == (
+        "https://www.linkedin.com/voyager/api/voyagerRelationshipsDashInvitations"
+    )
+    assert body["encoding"] is False
+    assert body["headers"] == {"x-restli-method": "batch_create"}
+    assert body["query_params"] == {
+        "inviter": "(organizationUrn:urn%3Ali%3Afsd_company%3A9876)"
+    }
+    assert body["body"]["elements"] == [
+        {
+            "inviteeMember": "urn:li:fsd_profile:J",
+            "genericInvitationType": "ORGANIZATION",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invite_to_page_resolves_bare_member_token_to_urn():
+    """When the ProfileRef carries only a bare provider_id (no urn), it's
+    normalised to a full ``urn:li:fsd_profile:`` invitee URN."""
+    seen: list[httpx.Request] = []
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        # First call resolves the slug → provider_id; second is the invite.
+        if req.url.path.endswith("/api/v1/users/j"):
+            return httpx.Response(200, json={"provider_id": "ACoAABARE"})
+        return httpx.Response(200, json={})
+    prov = _provider_with(handler)
+    res = await prov.invite_to_page(
+        _FakeAccount(), ProfileRef(public_id="j"), page_id="42",
+    )
+    assert res.ok is True
+    invite = json.loads(seen[-1].content)
+    assert invite["body"]["elements"][0]["inviteeMember"] == (
+        "urn:li:fsd_profile:ACoAABARE"
+    )
 
 
 @pytest.mark.asyncio
