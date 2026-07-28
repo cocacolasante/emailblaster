@@ -111,6 +111,14 @@ class Campaign(Base):
         DateTime(timezone=True), nullable=True
     )
     auto_pause_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stamped by every manual Resume.  The circuit breaker only counts
+    # email events that occurred AFTER this instant, so a human resuming a
+    # breaker-paused campaign overrides the trip — the stale bounces still
+    # inside the rolling window can't immediately re-trip it; only fresh
+    # post-resume outcomes can.
+    breaker_reset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Stamped by ``update_campaign`` when the goal actually changes on a
     # non-draft campaign.  Powers the "X of Y emails rewritten" progress
     # indicator: leads with ``updated_at >= goal_updated_at`` have been

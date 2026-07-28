@@ -325,6 +325,48 @@ async def test_resume_clears_breaker_state(client, db_session):
     assert body["auto_pause_reason"] is None
 
 
+async def test_resume_overrides_breaker_window(client, db_session):
+    """Resuming a breaker-paused campaign stamps ``breaker_reset_at`` so the
+    stale bounces still inside the rolling window can't re-trip it."""
+    campaign = await _make_campaign(
+        db_session, status=CampaignStatus.PAUSED,
+        auto_paused_at=datetime.now(timezone.utc),
+        auto_pause_reason="Hard-bounce rate 10% ...",
+    )
+    # The bounces that tripped the breaker — still well inside the 24h window.
+    lead = await _make_lead(db_session, campaign)
+    stale = datetime.now(timezone.utc) - timedelta(hours=1)
+    for etype, n in [(EmailEventType.DELIVERED, 18), (EmailEventType.HARD_BOUNCE, 2)]:
+        for _ in range(n):
+            db_session.add(EmailEvent(
+                lead_id=lead.id, campaign_id=campaign.id, event_type=etype,
+                occurred_at=stale,
+            ))
+    await db_session.commit()
+
+    resp = await client.post(f"/campaigns/{campaign.id}/resume")
+    assert resp.status_code == 200, resp.text
+    await db_session.refresh(campaign)
+    assert campaign.breaker_reset_at is not None
+
+    # The same events that tripped it are now excluded — no re-trip.
+    verdict = await deliverability.evaluate_campaign_health(db_session, campaign.id)
+    assert verdict.trip is False
+    assert verdict.sample == 0
+
+
+async def test_breaker_retrips_on_fresh_post_resume_bounces(db_session):
+    """The override isn't permanent: outcomes AFTER the reset still count."""
+    campaign = await _make_campaign(
+        db_session,
+        breaker_reset_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+    )
+    # 20 fresh outcomes with 2 hard bounces, all after the reset.
+    await _seed_events(db_session, campaign, delivered=18, hard_bounce=2)
+    verdict = await deliverability.evaluate_campaign_health(db_session, campaign.id)
+    assert verdict.trip is True
+
+
 async def test_process_event_hook_trips_breaker(db_session, monkeypatch):
     """A fresh hard-bounce event re-checks the campaign inline."""
     from app.services import brevo_events

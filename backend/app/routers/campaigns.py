@@ -464,6 +464,10 @@ async def resume_campaign(
     # the marker + reason so the breaker can re-trip on fresh data.
     c.auto_paused_at = None
     c.auto_pause_reason = None
+    # Human override: the breaker only counts events AFTER this instant.
+    # Without it, the stale bounces still inside the rolling window would
+    # re-trip the breaker on the very next event / sweep.
+    c.breaker_reset_at = datetime.now(timezone.utc)
     # If the user previously hit Stop, clear the cooperative flag now so
     # newly-dispatched research/compose tasks aren't immediately no-op'd.
     from app.services.campaign_stop import clear_stop

@@ -7,6 +7,26 @@ distilled from these tasks live in `CLAUDE.md` → "Conventions and gotchas".
 
 ## Task log (from "Where we are")
 
+- **Previously:** **Funding enrichment retry now honors the feed
+  enable toggles (stopped daily surprise signal emails + token burn).**
+  User disabled both Discovery feeds (Settings → Discovery;
+  `funding_source_state.enabled=false`, polls correctly stopped) but kept
+  receiving daily "[Agent] … won a federal grant … New CRM lead staged"
+  emails at ~06:10 UTC.  Root cause: `funding.retry_enrichment` (daily
+  06:00 UTC beat) drained the `funding_enrichment_queue` backlog (276
+  pending rows) with NO enabled check — each of its 25 rows/day re-ran
+  `resolve_contact` (Haiku web-search + scrape + Hunter) and every resolve
+  promoted a signal + lead + notification email.  Fix
+  (`_retry_enrichment_async`): resolve each source's enabled flag via
+  `_get_or_create_state` up front; a disabled feed's queue rows are
+  **frozen** — excluded from the batch, untouched (still `pending`), zero
+  API spend — so re-enabling the feed resumes the backlog exactly where it
+  left off.  Both feeds disabled → early return `{skipped_disabled: true}`.
+  Verified live in the worker (returns skipped_disabled, 0 processed).
+  Tests: 2 new (frozen-when-disabled: no resolve_contact call + row
+  untouched; mixed: only the enabled source's rows run) + the 4 existing
+  retry tests now enable the feed explicitly.
+
 - **Previously:** **LinkedIn "invite to follow company page" node
   (unblocked).**  Unipile now documents a working raw-data shape for the
   `voyagerRelationshipsDashInvitations` endpoint that the old

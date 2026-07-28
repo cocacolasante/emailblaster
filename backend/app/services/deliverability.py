@@ -55,10 +55,17 @@ async def evaluate_campaign_health(
     session: AsyncSession, campaign_id,
 ) -> HealthVerdict:
     """Hard-bounce + spam rates over the breaker window.  ``trip`` is True
-    only when the sample is big enough AND a rate crosses its threshold."""
+    only when the sample is big enough AND a rate crosses its threshold.
+
+    A manual Resume stamps ``campaign.breaker_reset_at``; events at or
+    before that instant are excluded, so the human override sticks — only
+    fresh post-resume outcomes can re-trip the breaker."""
     cutoff = datetime.now(timezone.utc) - timedelta(
         hours=settings.CIRCUIT_BREAKER_WINDOW_HOURS
     )
+    campaign = await session.get(Campaign, campaign_id)
+    if campaign is not None and campaign.breaker_reset_at is not None:
+        cutoff = max(cutoff, campaign.breaker_reset_at)
     rows = (await session.execute(
         select(EmailEvent.event_type, func.count())
         .where(
@@ -163,10 +170,16 @@ async def check_and_trip(session: AsyncSession, campaign_id) -> bool:
 
 
 async def deliverability_stats(session: AsyncSession, campaign_id) -> dict:
-    """Window rates + counts for the campaign-detail deliverability strip."""
+    """Window rates + counts for the campaign-detail deliverability strip.
+    Applies the same ``breaker_reset_at`` cutoff as the breaker itself so
+    the UI numbers match what the breaker actually sees."""
     cutoff = datetime.now(timezone.utc) - timedelta(
         hours=settings.CIRCUIT_BREAKER_WINDOW_HOURS
     )
+    campaign = await session.get(Campaign, campaign_id)
+    reset_at = campaign.breaker_reset_at if campaign is not None else None
+    if reset_at is not None:
+        cutoff = max(cutoff, reset_at)
     rows = (await session.execute(
         select(EmailEvent.event_type, func.count())
         .where(
@@ -180,6 +193,7 @@ async def deliverability_stats(session: AsyncSession, campaign_id) -> dict:
     delivered = counts.get("delivered", 0)
     return {
         "window_hours": settings.CIRCUIT_BREAKER_WINDOW_HOURS,
+        "breaker_reset_at": reset_at.isoformat() if reset_at else None,
         "sample": sample,
         "delivered": delivered,
         "hard_bounces": counts.get("hard_bounce", 0),
