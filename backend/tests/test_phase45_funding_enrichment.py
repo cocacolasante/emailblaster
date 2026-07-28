@@ -283,6 +283,7 @@ async def _queue_row(db_session, *, attempts=1, dedup="new_501c3:99", mailing=No
 
 
 async def test_retry_promotes_resolved_with_original_dedup_key(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
     row = await _queue_row(db_session)
     monkeypatch.setattr(
         funding_signals.enrichment, "resolve_contact",
@@ -307,6 +308,7 @@ async def test_retry_promotes_resolved_with_original_dedup_key(db_session, monke
 
 
 async def test_retry_backoff_advances_when_still_unresolved(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
     monkeypatch.setattr(funding_signals.settings, "FUNDING_ENRICHMENT_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(funding_signals.settings, "FUNDING_ENRICHMENT_RETRY_DAYS", [7, 30, 60])
     row = await _queue_row(db_session, attempts=1)
@@ -326,6 +328,7 @@ async def test_retry_backoff_advances_when_still_unresolved(db_session, monkeypa
 
 
 async def test_retry_exhausts_after_max_no_directmail(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
     monkeypatch.setattr(funding_signals.settings, "FUNDING_ENRICHMENT_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(funding_signals.settings, "FUNDING_DIRECT_MAIL_FALLBACK", False)
     row = await _queue_row(db_session, attempts=2, mailing={"street": "1 Main", "city": "Erie"})
@@ -343,6 +346,7 @@ async def test_retry_exhausts_after_max_no_directmail(db_session, monkeypatch):
 
 
 async def test_retry_direct_mail_when_flag_on(db_session, monkeypatch):
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
     monkeypatch.setattr(funding_signals.settings, "FUNDING_ENRICHMENT_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(funding_signals.settings, "FUNDING_DIRECT_MAIL_FALLBACK", True)
     row = await _queue_row(
@@ -364,6 +368,54 @@ async def test_retry_direct_mail_when_flag_on(db_session, monkeypatch):
     assert task is not None
     assert task.subject.startswith("Direct mail —")
     assert "Erie" in task.body
+
+
+async def test_retry_skips_everything_when_feeds_disabled(db_session, monkeypatch):
+    """A disabled feed's queue is frozen: no resolve_contact spend, no
+    promotion, no notification — rows stay pending untouched."""
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", False)
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", False)
+    row = await _queue_row(db_session)
+    resolve = AsyncMock()
+    monkeypatch.setattr(funding_signals.enrichment, "resolve_contact", resolve)
+
+    counts = await funding_signals._retry_enrichment_async()
+
+    assert counts.get("skipped_disabled") is True
+    assert counts["processed"] == 0
+    resolve.assert_not_awaited()
+    await db_session.refresh(row)
+    assert row.status == FundingEnrichmentStatus.PENDING
+    assert row.attempts == 1  # untouched
+
+
+async def test_retry_only_processes_enabled_sources(db_session, monkeypatch):
+    """With one feed on and one off, only the enabled feed's rows run."""
+    monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", False)
+    monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
+    irs_row = await _queue_row(db_session, dedup="new_501c3:disabled")
+    usa_row = FundingEnrichmentQueue(
+        source="usaspending", ein=None, dedup_key="grant_awarded:xyz",
+        org_name="Grantee Org", state="PA", ntee_code=None, website=None,
+        payload={"signal_type": "grant_awarded", "summary": "won a grant", "detail": {}},
+        attempts=1, last_attempt_at=_now(),
+        next_attempt_at=_now() - timedelta(days=1),
+        status=FundingEnrichmentStatus.PENDING,
+    )
+    db_session.add(usa_row)
+    await db_session.commit()
+    monkeypatch.setattr(
+        funding_signals.enrichment, "resolve_contact",
+        AsyncMock(return_value=ContactResult(status="no_contact")),
+    )
+
+    counts = await funding_signals._retry_enrichment_async()
+
+    assert counts["processed"] == 1
+    await db_session.refresh(irs_row)
+    assert irs_row.attempts == 1  # frozen
+    await db_session.refresh(usa_row)
+    assert usa_row.attempts == 2  # processed (still unresolved → backoff)
 
 
 # ---------------------------------------------------------------------------

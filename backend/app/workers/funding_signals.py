@@ -709,10 +709,24 @@ async def _retry_enrichment_async() -> dict[str, Any]:
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             now = _now()
+            # A disabled feed's queue is FROZEN: no re-resolution (each row
+            # costs Haiku web-search + Hunter calls), no promotion, no
+            # notification email.  Rows stay pending untouched so re-enabling
+            # the feed in Settings → Discovery resumes the backlog.
+            enabled_sources = []
+            for source in (USASPENDING_SOURCE, IRS_BMF_SOURCE):
+                if (await _get_or_create_state(session, source)).enabled:
+                    enabled_sources.append(source)
+            await session.commit()
+            if not enabled_sources:
+                counts["skipped_disabled"] = True
+                return counts
+
             rows = (await session.execute(
                 select(FundingEnrichmentQueue)
                 .where(
                     FundingEnrichmentQueue.status == FundingEnrichmentStatus.PENDING,
+                    FundingEnrichmentQueue.source.in_(enabled_sources),
                     FundingEnrichmentQueue.next_attempt_at <= now,
                 )
                 .order_by(FundingEnrichmentQueue.next_attempt_at.asc())
