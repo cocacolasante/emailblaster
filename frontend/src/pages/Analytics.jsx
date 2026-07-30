@@ -106,6 +106,48 @@ function BestSubjects({ subjects }) {
   );
 }
 
+function SendCohorts({ cohorts }) {
+  if (!cohorts || cohorts.length === 0) return null;
+  return (
+    <div data-testid="send-cohorts" className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-4">
+      <h3 className="text-base font-semibold text-slate-900 mb-1">Open rate by send week</h3>
+      <p className="text-xs text-slate-500 mb-4">
+        Each row is the batch of leads first emailed that week and the share that has ever
+        opened — this separates &ldquo;we sent less&rdquo; from &ldquo;people stopped opening.&rdquo;
+      </p>
+      <div className="overflow-hidden rounded-lg border border-slate-200">
+        <table className="w-full text-sm">
+          <thead>
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Week of</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-20">Sent</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-20">Opened</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-40">Open rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cohorts.map((c) => (
+              <tr key={c.week_start} data-testid={`cohort-${c.week_start}`} className="hover:bg-slate-50">
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{c.week_start}</td>
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">{c.sent}</td>
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">{c.opened}</td>
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">
+                  {pct(c.open_rate)}
+                  {c.accumulating && (
+                    <span className="ml-2 inline-block px-2 py-0.5 rounded-pill text-xs bg-amber-50 text-amber-700 border border-amber-200 align-middle">
+                      still collecting
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function Timeline({ points, replyTrackingEnabled }) {
   if (!points || points.length === 0) {
     return (
@@ -361,6 +403,8 @@ export function AnalyticsContent({ id, includeLeadTable = true }) {
       )}
 
       <Timeline points={data.timeline} replyTrackingEnabled={replyTracking} />
+
+      <SendCohorts cohorts={data.send_cohorts} />
 
       <SequencePerformance id={id} />
 

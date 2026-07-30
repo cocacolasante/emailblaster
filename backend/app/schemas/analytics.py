@@ -47,6 +47,19 @@ class BestSubject(BaseModel):
     open_rate: float
 
 
+class SendCohort(BaseModel):
+    """Leads grouped by the week their FIRST email was sent, with the share
+    that has ever opened.  Separates "we sent less" from "people stopped
+    opening" — the daily timeline can't tell those apart."""
+    week_start: date
+    sent: int
+    opened: int
+    open_rate: float | None
+    # True while the cohort's newest send is < 7 days old — opens are
+    # still arriving, so the rate reads low and will climb.
+    accumulating: bool
+
+
 class AnalyticsResponse(BaseModel):
     campaign_id: uuid.UUID
     overview: AnalyticsOverview
@@ -57,3 +70,4 @@ class AnalyticsResponse(BaseModel):
     research_quality_breakdown: list[QualityBreakdownItem]
     sender_reputation_score: int | None
     best_subject_lines: list[BestSubject]
+    send_cohorts: list[SendCohort] = []

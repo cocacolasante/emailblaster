@@ -187,6 +187,29 @@ describe('Analytics page', () => {
     expect(best).toHaveTextContent('Quick question');
   });
 
+  it('renders send-week cohorts with accumulating badge', async () => {
+    api.getAnalytics.mockResolvedValue({
+      ...BASE,
+      send_cohorts: [
+        { week_start: '2026-06-22', sent: 346, opened: 218, open_rate: 0.6301, accumulating: false },
+        { week_start: '2026-07-27', sent: 76, opened: 22, open_rate: 0.2895, accumulating: true },
+      ],
+    });
+    renderAnalytics();
+    const card = await screen.findByTestId('send-cohorts');
+    expect(card).toHaveTextContent('Open rate by send week');
+    expect(screen.getByTestId('cohort-2026-06-22')).toHaveTextContent('63.0%');
+    expect(screen.getByTestId('cohort-2026-06-22')).not.toHaveTextContent('still collecting');
+    expect(screen.getByTestId('cohort-2026-07-27')).toHaveTextContent('still collecting');
+  });
+
+  it('hides send-week cohorts when empty', async () => {
+    api.getAnalytics.mockResolvedValue({ ...BASE, send_cohorts: [] });
+    renderAnalytics();
+    await screen.findByTestId('metric-sent');
+    expect(screen.queryByTestId('send-cohorts')).not.toBeInTheDocument();
+  });
+
   it('timeline shows replies line when tracking enabled', async () => {
     renderAnalytics();
     await screen.findByTestId('timeline-chart');

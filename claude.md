@@ -26,25 +26,45 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Manual Resume overrides the bounce/spam circuit
-  breaker (migration 0043).**  "grantmind email campaign 2" kept re-pausing
-  right after every manual Resume.  Root cause: the breaker evaluates a
-  rolling `CIRCUIT_BREAKER_WINDOW_HOURS` (24h) window on every
-  HARD_BOUNCE/SPAM event + a 15-min sweep; Resume cleared
-  `auto_paused_at`/`auto_pause_reason` but the SAME stale bounces were
-  still inside the window, so it re-tripped as soon as the sample crossed
-  `CIRCUIT_BREAKER_MIN_SAMPLE` again.  (At low volume this is brutal:
-  1 hard bounce in 20 outcomes = 5% = trip.)  Fix: new nullable
-  `campaigns.breaker_reset_at` (migration 0043), stamped by EVERY manual
-  Resume; `evaluate_campaign_health` and `deliverability_stats` clamp their
-  cutoff to `max(window_cutoff, breaker_reset_at)`, so only post-resume
-  outcomes count — the human override sticks until fresh sends misbehave
-  on their own (the stats strip also exposes `breaker_reset_at` so the UI
-  numbers match what the breaker sees).  Live remediation: stamped
-  `breaker_reset_at=now` on the affected campaign (its pre-fix resume
-  predated the column).  Tests: 2 new in `test_phase37_deliverability.py`
-  (resume excludes stale bounces → no re-trip; fresh post-reset bounces
-  still trip).
+- **Last completed:** **Fixed the Brevo events poller dropping nearly all
+  opens + added an open-rate-by-send-week cohort panel to campaign
+  Analytics.**  User saw "opens going down"; investigation showed open
+  RATES were stable — two ingestion problems made the charts lie:
+  - **Root cause (the big one):** the poller's newest-event-date watermark
+    (`ev_date <= watermark → skipped_old`).  Brevo exposes `opened` events
+    in its statistics feed LATE (hours), while delivered/clicks appear
+    near-instantly.  Once the sequencer's steady follow-up stream (a send
+    every ~2 min) kept the newest event date pinned to "now", every
+    late-exposed open arrived already "older" than the watermark and was
+    dropped forever (2026-07-29: 184 opens at Brevo, 2 ingested; clicks
+    81/81).  Sparse sending had masked this for months.
+  - **Fix:** watermark filter REMOVED.  Every poll re-scans the full 24h
+    `LOOKBACK_FLOOR_HOURS` window; idempotency now lives in
+    `process_event` dedup — terminal types (delivered/bounce/spam/unsub/
+    blocked) stay one-per-lead, and opens/clicks dedup on
+    `(lead_id, event_type, occurred_at)` (each real open has a distinct
+    Brevo timestamp).  Undated events are skipped (can't dedup).
+    `brevo:events:last_polled_at` is now a pure observability stamp.
+  - **Backfill:** new `scripts/backfill_brevo_events.py <start> [end]`
+    (fetch + `process_event(apply_side_effects=False)`; safe to re-run).
+    Ran for 2026-07-15→30: recovered 188 events (7/29 opens 2→182; the
+    2026-07-15→26 total-outage gap had little at Brevo to recover).
+  - **Cohort panel:** `AnalyticsResponse.send_cohorts` — sent leads
+    bucketed by the send week embedded in `brevo_message_id`
+    (`_send_time_from_message_id`, the only durable first-email send
+    time), with ever-opened share + an `accumulating` flag (newest send
+    < 7 days — opens still arriving).  Frontend `SendCohorts` card on the
+    Analytics tab ("Open rate by send week", amber "still collecting"
+    badge) between Timeline and Sequence performance.  Separates "we sent
+    less" from "people stopped opening" — the daily timeline can't.
+  - Tests: 3 poller (re-poll no-dupe incl. opens; late-exposed open
+    recorded; repeat opens record but re-fetch dedupes) + 2 analytics
+    (cohort grouping/rates/accumulating/undatable-excluded; empty) + 2
+    frontend (renders + badge; hidden when empty).  NOTE: 2 PRE-EXISTING
+    failures unrelated to this work (`test_phase34_social_discovery::
+    test_discover_posts_extracts_valid_linkedin_urls`,
+    `test_phase56_intent_engine_api::test_recompute_and_promote_flow`) —
+    they fail on a clean checkout too.
 
 - **Recent highlights** (full task-by-task history is archived in
   [`docs/claude-history.md`](docs/claude-history.md)):
@@ -581,12 +601,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-07-28 — manual Resume now overrides the deliverability
-circuit breaker (breaker_reset_at, migration 0043); earlier same day the
-funding enrichment retry was gated on the feed enable toggles.  (2026-07-27: compacted this file; task-by-task history
+_Last updated: 2026-07-30 — Brevo poller watermark removed (late-exposed
+opens were being dropped), events backfilled, send-week cohort panel added
+to campaign Analytics.  (2026-07-27: compacted this file; task-by-task history
 lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1128 passing**.  Frontend tests: **423 passing**._
+_Backend tests: **1237 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **436 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

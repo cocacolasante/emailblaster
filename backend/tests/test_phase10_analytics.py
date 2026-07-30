@@ -37,12 +37,14 @@ async def _make_lead(
     send_status=SendStatus.SENT,
     composed_subject="S",
     research_data=None,
+    brevo_message_id=None,
 ) -> Lead:
     l = Lead(
         campaign_id=campaign.id, email=email,
         send_status=send_status,
         composed_subject=composed_subject,
         research_data=research_data,
+        brevo_message_id=brevo_message_id,
     )
     db_session.add(l)
     await db_session.commit()
@@ -290,3 +292,59 @@ async def test_reputation_score_drops_with_bounces_and_spam(client, db_session):
     # delivery=0.7, spam=0.1, bounce=0.2
     # score = 0.7*50 + 0.9*30 + 0.8*20 = 35 + 27 + 16 = 78
     assert body["sender_reputation_score"] == 78
+
+
+# --------------------------------------------------------------------------
+# Send-week cohorts
+# --------------------------------------------------------------------------
+
+
+async def test_send_cohorts_group_by_send_week(client, db_session):
+    """Leads bucket by the week embedded in their brevo_message_id; opens
+    are the ever-opened share per bucket.  A fresh cohort is flagged
+    accumulating; a lead with no parsable message id is excluded."""
+    campaign = await _make_campaign(db_session)
+
+    # Old cohort: 3 leads sent Tue 2026-07-07 (week of Mon 2026-07-06), 2 opened.
+    old = [
+        await _make_lead(
+            db_session, campaign, email=f"old{i}@x.com",
+            brevo_message_id=f"<202607071000.1111{i}@smtp-relay.mailin.fr>",
+        )
+        for i in range(3)
+    ]
+    for lead in old[:2]:
+        db_session.add(_ev(lead, campaign, EmailEventType.OPENED))
+
+    # Fresh cohort: 1 lead sent "now" — still accumulating.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    await _make_lead(
+        db_session, campaign, email="fresh@x.com",
+        brevo_message_id=f"<{stamp}.22222@smtp-relay.mailin.fr>",
+    )
+
+    # Sent lead with no message id — undatable, excluded from cohorts.
+    await _make_lead(db_session, campaign, email="noid@x.com")
+    await db_session.commit()
+
+    body = (await client.get(f"/campaigns/{campaign.id}/analytics")).json()
+    cohorts = body["send_cohorts"]
+    assert len(cohorts) == 2
+
+    first, second = cohorts  # chronological
+    assert first["week_start"] == "2026-07-06"
+    assert first["sent"] == 3
+    assert first["opened"] == 2
+    assert first["open_rate"] == 0.6667
+    assert first["accumulating"] is False
+
+    assert second["sent"] == 1
+    assert second["opened"] == 0
+    assert second["accumulating"] is True
+
+
+async def test_send_cohorts_empty_without_message_ids(client, db_session):
+    campaign = await _make_campaign(db_session)
+    await _make_lead(db_session, campaign, email="x@x.com")
+    body = (await client.get(f"/campaigns/{campaign.id}/analytics")).json()
+    assert body["send_cohorts"] == []

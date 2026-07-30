@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -23,6 +24,7 @@ from app.schemas.analytics import (
     AnalyticsResponse,
     BestSubject,
     QualityBreakdownItem,
+    SendCohort,
     TimelinePoint,
 )
 
@@ -34,6 +36,20 @@ TIMELINE_DAYS = 30
 
 # Canonical ratio metric — shared across all reporting surfaces.
 from app.services.metrics import rate as _rate  # noqa: E402
+
+
+def _send_time_from_message_id(brevo_message_id: str | None) -> datetime | None:
+    """First-email send time, from the ``YYYYMMDDHHMM`` timestamp Brevo
+    embeds in its Message-ID (``<202607291325.…@smtp-relay.mailin.fr>``,
+    UTC).  The legacy first-email path writes no ``lead_step_executions``
+    row, so this is the only durable per-lead send timestamp."""
+    m = re.search(r"\d{12}", brevo_message_id or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(), "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _reputation(sent: int, delivered: int, bounced: int, spam: int) -> int | None:
@@ -161,7 +177,10 @@ async def get_campaign_analytics(
 
     # ----- Quality breakdown -----
     sent_rows = (await db.execute(
-        select(Lead.id, Lead.research_data, Lead.composed_subject).where(
+        select(
+            Lead.id, Lead.research_data, Lead.composed_subject,
+            Lead.brevo_message_id,
+        ).where(
             Lead.campaign_id == campaign_id,
             Lead.send_status == SendStatus.SENT,
         )
@@ -177,7 +196,8 @@ async def get_campaign_analytics(
 
     quality_buckets: dict[str, dict[str, int]] = {}
     subject_buckets: dict[str, dict[str, int]] = {}
-    for lead_id, research_data, subject in sent_rows:
+    cohort_buckets: dict[Any, dict[str, Any]] = {}
+    for lead_id, research_data, subject, brevo_message_id in sent_rows:
         quality = str((research_data or {}).get("quality", "low"))
         qb = quality_buckets.setdefault(quality, {"count": 0, "opened": 0})
         qb["count"] += 1
@@ -188,6 +208,17 @@ async def get_campaign_analytics(
             sb["sent"] += 1
             if lead_id in opened_ids:
                 sb["opened"] += 1
+        sent_at = _send_time_from_message_id(brevo_message_id)
+        if sent_at is not None:
+            week_start = (sent_at - timedelta(days=sent_at.weekday())).date()
+            cb = cohort_buckets.setdefault(
+                week_start, {"sent": 0, "opened": 0, "newest": sent_at},
+            )
+            cb["sent"] += 1
+            if lead_id in opened_ids:
+                cb["opened"] += 1
+            if sent_at > cb["newest"]:
+                cb["newest"] = sent_at
 
     quality_breakdown = [
         QualityBreakdownItem(
@@ -211,6 +242,18 @@ async def get_campaign_analytics(
     qualifying_subjects.sort(key=lambda x: (x.open_rate, x.sent), reverse=True)
     best_subjects = qualifying_subjects[:10]
 
+    # ----- Send-week cohorts -----
+    send_cohorts = [
+        SendCohort(
+            week_start=week_start,
+            sent=data["sent"],
+            opened=data["opened"],
+            open_rate=_rate(data["opened"], data["sent"]),
+            accumulating=(now - data["newest"]) < timedelta(days=7),
+        )
+        for week_start, data in sorted(cohort_buckets.items())
+    ]
+
     # ----- Reputation score -----
     reputation = _reputation(sent_count, delivered, bounced, spam)
 
@@ -224,4 +267,5 @@ async def get_campaign_analytics(
         research_quality_breakdown=quality_breakdown,
         sender_reputation_score=reputation,
         best_subject_lines=best_subjects,
+        send_cohorts=send_cohorts,
     )

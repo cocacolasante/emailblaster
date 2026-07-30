@@ -7,6 +7,26 @@ distilled from these tasks live in `CLAUDE.md` → "Conventions and gotchas".
 
 ## Task log (from "Where we are")
 
+- **Previously:** **Manual Resume overrides the bounce/spam circuit
+  breaker (migration 0043).**  "grantmind email campaign 2" kept re-pausing
+  right after every manual Resume.  Root cause: the breaker evaluates a
+  rolling `CIRCUIT_BREAKER_WINDOW_HOURS` (24h) window on every
+  HARD_BOUNCE/SPAM event + a 15-min sweep; Resume cleared
+  `auto_paused_at`/`auto_pause_reason` but the SAME stale bounces were
+  still inside the window, so it re-tripped as soon as the sample crossed
+  `CIRCUIT_BREAKER_MIN_SAMPLE` again.  (At low volume this is brutal:
+  1 hard bounce in 20 outcomes = 5% = trip.)  Fix: new nullable
+  `campaigns.breaker_reset_at` (migration 0043), stamped by EVERY manual
+  Resume; `evaluate_campaign_health` and `deliverability_stats` clamp their
+  cutoff to `max(window_cutoff, breaker_reset_at)`, so only post-resume
+  outcomes count — the human override sticks until fresh sends misbehave
+  on their own (the stats strip also exposes `breaker_reset_at` so the UI
+  numbers match what the breaker sees).  Live remediation: stamped
+  `breaker_reset_at=now` on the affected campaign (its pre-fix resume
+  predated the column).  Tests: 2 new in `test_phase37_deliverability.py`
+  (resume excludes stale bounces → no re-trip; fresh post-reset bounces
+  still trip).
+
 - **Previously:** **Funding enrichment retry now honors the feed
   enable toggles (stopped daily surprise signal emails + token burn).**
   User disabled both Discovery feeds (Settings → Discovery;
