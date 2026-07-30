@@ -10,12 +10,18 @@ therefore up to 10 min from a real-world event (delivered, bounced,
 opened, etc.) to the database row.  Acceptable for cold outreach where
 hourly decisions are the norm.
 
-Watermark: ``brevo:events:last_polled_at`` in Redis, ISO-8601 UTC.  We
-fetch from ``max(watermark - 5min, today - 1d)`` to ``now`` so a worker
-restart catches anything that landed during the gap.  Events older than
-24h won't be back-filled — that's a deliberate floor to keep the API
-query bounded; the per-event dedup in ``brevo_events.process_event``
-makes re-fetching the same window cheap regardless.
+Every poll re-scans the full ``LOOKBACK_FLOOR_HOURS`` (24h) window and
+relies on ``process_event``'s per-event dedup (terminal types per lead;
+opens/clicks per ``(lead, type, occurred_at)``) to make the re-scan
+idempotent.  There is deliberately NO event-date watermark filter:
+Brevo exposes ``opened`` events in its statistics feed LATE, so a
+"skip anything older than the newest event seen" watermark silently
+dropped nearly every open once a steady send stream kept the newest
+event date pinned to "now" (2026-07-29: 184 opens at Brevo, 2 ingested).
+Events older than 24h won't be back-filled — that's a deliberate floor
+to keep the API query bounded; ``scripts/backfill_brevo_events.py``
+covers historical recovery.  ``brevo:events:last_polled_at`` in Redis is
+now purely an observability stamp of the last successful poll.
 """
 from __future__ import annotations
 
@@ -36,7 +42,6 @@ logger = logging.getLogger(__name__)
 
 WATERMARK_KEY = "brevo:events:last_polled_at"
 LOOKBACK_FLOOR_HOURS = 24
-POLL_OVERLAP_MINUTES = 5
 
 
 def _now() -> datetime:
@@ -66,32 +71,16 @@ def _parse_event_date(raw: Any) -> datetime | None:
 
 
 async def _poll_async() -> dict[str, int]:
-    counts = {"fetched": 0, "processed": 0, "skipped_old": 0}
+    counts = {"fetched": 0, "processed": 0, "deduped_or_unmatched": 0}
     redis_client = _new_redis()
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         now = _now()
         floor = now - timedelta(hours=LOOKBACK_FLOOR_HOURS)
 
-        wm_raw = await redis_client.get(WATERMARK_KEY)
-        watermark: datetime
-        if wm_raw:
-            try:
-                watermark = datetime.fromisoformat(wm_raw)
-                if watermark.tzinfo is None:
-                    watermark = watermark.replace(tzinfo=timezone.utc)
-            except ValueError:
-                watermark = floor
-        else:
-            watermark = floor
-
-        # Pull back the watermark slightly so we don't miss events that
-        # landed at Brevo between our two polls.
-        query_start = max(watermark - timedelta(minutes=POLL_OVERLAP_MINUTES), floor)
-
         try:
             events = await brevo.fetch_events(
-                start_date=query_start.date().isoformat(),
+                start_date=floor.date().isoformat(),
                 end_date=now.date().isoformat(),
             )
         except Exception:  # noqa: BLE001
@@ -99,15 +88,12 @@ async def _poll_async() -> dict[str, int]:
             return counts
 
         counts["fetched"] = len(events)
-        max_event_date = watermark
 
         async with AsyncSession(engine, expire_on_commit=False) as session:
             for ev in events:
-                ev_date = _parse_event_date(ev.get("date"))
-                if ev_date is None:
-                    continue
-                if ev_date <= watermark:
-                    counts["skipped_old"] += 1
+                # Undated events can't be deduped on re-scan — skip them
+                # rather than duplicating one per poll tick.
+                if _parse_event_date(ev.get("date")) is None:
                     continue
                 try:
                     recorded = await process_event(session, ev)
@@ -116,14 +102,12 @@ async def _poll_async() -> dict[str, int]:
                     continue
                 if recorded:
                     counts["processed"] += 1
-                if ev_date > max_event_date:
-                    max_event_date = ev_date
+                else:
+                    counts["deduped_or_unmatched"] += 1
             await session.commit()
 
-        # Move the watermark to the newest event we actually saw, capped
-        # at "now" (clock-skew safety).
-        new_watermark = min(max_event_date, now)
-        await redis_client.set(WATERMARK_KEY, new_watermark.isoformat())
+        # Observability stamp only — nothing filters on this anymore.
+        await redis_client.set(WATERMARK_KEY, now.isoformat())
     finally:
         await engine.dispose()
         await redis_client.aclose()

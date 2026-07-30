@@ -141,30 +141,89 @@ async def test_event_matches_reply_via_execution_external_id(db_session):
     assert len(rows) == 1 and rows[0].event_type == EmailEventType.OPENED
 
 
-async def test_poller_skips_events_older_than_watermark(db_session, monkeypatch):
+async def test_poller_repoll_does_not_duplicate(db_session, monkeypatch):
     """A second poll on the same window must not re-record events the
-    first poll already processed.  The poller maintains a Redis watermark
-    and skips events with date <= watermark."""
+    first poll already processed — dedup, not a watermark, makes the
+    full-window re-scan idempotent (opens included)."""
     lead = await _make_lead_with_message(db_session, "msg-bbb")
     now = datetime.now(timezone.utc)
     fake_events = [
         {"event": "delivered", "messageId": "msg-bbb", "date": _iso(now - timedelta(minutes=2))},
+        {"event": "opened", "messageId": "msg-bbb", "date": _iso(now - timedelta(minutes=1))},
     ]
     async def fake_fetch(**kw):
         return fake_events
     monkeypatch.setattr(poller.brevo, "fetch_events", fake_fetch)
 
     counts1 = await poller._poll_async()
-    assert counts1["processed"] == 1
+    assert counts1["processed"] == 2
 
-    # Second tick — no new events.
+    # Second tick — same events re-fetched, nothing re-recorded.
     counts2 = await poller._poll_async()
     assert counts2["processed"] == 0
-    assert counts2["skipped_old"] >= 1
+    assert counts2["deduped_or_unmatched"] == 2
 
-    # Exactly one event row persists.
+    # Exactly one row per real event persists.
     events = (await db_session.execute(select(EmailEvent))).scalars().all()
-    assert len(events) == 1
+    assert len(events) == 2
+
+
+async def test_poller_processes_late_exposed_open(db_session, monkeypatch):
+    """Brevo exposes ``opened`` events in its feed LATE.  An open dated
+    EARLIER than an already-processed event must still be recorded when it
+    finally appears (the old newest-event watermark dropped these — with a
+    steady send stream that meant nearly every open was lost)."""
+    lead = await _make_lead_with_message(db_session, "msg-late")
+    now = datetime.now(timezone.utc)
+    batch = [
+        {"event": "delivered", "messageId": "msg-late", "date": _iso(now - timedelta(minutes=1))},
+    ]
+    async def fake_fetch(**kw):
+        return batch
+    monkeypatch.setattr(poller.brevo, "fetch_events", fake_fetch)
+
+    assert (await poller._poll_async())["processed"] == 1
+
+    # The open OCCURRED before the delivered event's date but only shows
+    # up in the feed on the next poll.
+    batch.append(
+        {"event": "opened", "messageId": "msg-late", "date": _iso(now - timedelta(minutes=30))},
+    )
+    counts = await poller._poll_async()
+    assert counts["processed"] == 1
+
+    opens = (await db_session.execute(
+        select(EmailEvent).where(
+            EmailEvent.lead_id == lead.id,
+            EmailEvent.event_type == EmailEventType.OPENED,
+        )
+    )).scalars().all()
+    assert len(opens) == 1
+
+
+async def test_repeat_opens_still_record_but_refetch_dedupes(db_session, monkeypatch):
+    """Two REAL opens (distinct timestamps) both record; re-fetching the
+    same two opens on a later poll records nothing new."""
+    lead = await _make_lead_with_message(db_session, "msg-reopen")
+    now = datetime.now(timezone.utc)
+    fake_events = [
+        {"event": "opened", "messageId": "msg-reopen", "date": _iso(now - timedelta(minutes=10))},
+        {"event": "opened", "messageId": "msg-reopen", "date": _iso(now - timedelta(minutes=3))},
+    ]
+    async def fake_fetch(**kw):
+        return fake_events
+    monkeypatch.setattr(poller.brevo, "fetch_events", fake_fetch)
+
+    assert (await poller._poll_async())["processed"] == 2
+    assert (await poller._poll_async())["processed"] == 0
+
+    opens = (await db_session.execute(
+        select(EmailEvent).where(
+            EmailEvent.lead_id == lead.id,
+            EmailEvent.event_type == EmailEventType.OPENED,
+        )
+    )).scalars().all()
+    assert len(opens) == 2
 
 
 async def test_poller_adds_suppression_on_hard_bounce(db_session, monkeypatch):
@@ -190,7 +249,7 @@ async def test_poller_handles_fetch_failure_gracefully(db_session, monkeypatch):
     monkeypatch.setattr(poller.brevo, "fetch_events", boom)
 
     counts = await poller._poll_async()
-    assert counts == {"fetched": 0, "processed": 0, "skipped_old": 0}
+    assert counts == {"fetched": 0, "processed": 0, "deduped_or_unmatched": 0}
 
 
 async def test_poller_normalises_brevo_api_event_names(db_session, monkeypatch):

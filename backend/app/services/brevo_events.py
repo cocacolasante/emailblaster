@@ -176,6 +176,28 @@ async def process_event(
         return False
 
     occurred_at = extract_occurred_at(event)
+
+    # Opens/clicks recur legitimately, so they can't be deduped per lead —
+    # but the SAME open re-fetched on a later poll must not insert twice.
+    # Each real open/click carries a distinct Brevo timestamp, so
+    # (lead, type, occurred_at) identifies it.  This is what makes the
+    # poller safe to re-scan the whole lookback window on every poll
+    # (Brevo exposes `opened` events in its statistics feed LATE — a
+    # newest-event watermark silently dropped almost all of them once the
+    # sequencer's steady send stream kept the watermark pinned to "now").
+    if occurred_at is not None and event_type in {
+        EmailEventType.OPENED,
+        EmailEventType.CLICKED,
+    }:
+        dup = await db.scalar(
+            select(EmailEvent.id).where(
+                EmailEvent.lead_id == lead.id,
+                EmailEvent.event_type == event_type,
+                EmailEvent.occurred_at == occurred_at,
+            ).limit(1)
+        )
+        if dup is not None:
+            return False
     ev_kwargs: dict[str, Any] = dict(
         lead_id=lead.id,
         campaign_id=lead.campaign_id,
