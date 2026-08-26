@@ -2097,7 +2097,8 @@ function RetargetModal({ campaignId, campaignName, onClose, onDone }) {
     mutationFn: () => retargetCampaign(campaignId, targetId ? { target_campaign_id: targetId } : {}),
     onSuccess: (res) => {
       toast.success(
-        `${res.added} added${res.skipped_duplicate ? `, ${res.skipped_duplicate} already there` : ''} → ${res.target_campaign_name}`,
+        `${res.added} added${res.skipped_duplicate ? `, ${res.skipped_duplicate} already there` : ''} → ${res.target_campaign_name}`
+        + (res.launched ? ' — preparing drafts for review' : ''),
       );
       onDone?.();
       navigate(`/campaigns/${res.target_campaign_id}`);

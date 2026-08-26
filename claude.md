@@ -26,45 +26,32 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Fixed the Brevo events poller dropping nearly all
-  opens + added an open-rate-by-send-week cohort panel to campaign
-  Analytics.**  User saw "opens going down"; investigation showed open
-  RATES were stable — two ingestion problems made the charts lie:
-  - **Root cause (the big one):** the poller's newest-event-date watermark
-    (`ev_date <= watermark → skipped_old`).  Brevo exposes `opened` events
-    in its statistics feed LATE (hours), while delivered/clicks appear
-    near-instantly.  Once the sequencer's steady follow-up stream (a send
-    every ~2 min) kept the newest event date pinned to "now", every
-    late-exposed open arrived already "older" than the watermark and was
-    dropped forever (2026-07-29: 184 opens at Brevo, 2 ingested; clicks
-    81/81).  Sparse sending had masked this for months.
-  - **Fix:** watermark filter REMOVED.  Every poll re-scans the full 24h
-    `LOOKBACK_FLOOR_HOURS` window; idempotency now lives in
-    `process_event` dedup — terminal types (delivered/bounce/spam/unsub/
-    blocked) stay one-per-lead, and opens/clicks dedup on
-    `(lead_id, event_type, occurred_at)` (each real open has a distinct
-    Brevo timestamp).  Undated events are skipped (can't dedup).
-    `brevo:events:last_polled_at` is now a pure observability stamp.
-  - **Backfill:** new `scripts/backfill_brevo_events.py <start> [end]`
-    (fetch + `process_event(apply_side_effects=False)`; safe to re-run).
-    Ran for 2026-07-15→30: recovered 188 events (7/29 opens 2→182; the
-    2026-07-15→26 total-outage gap had little at Brevo to recover).
-  - **Cohort panel:** `AnalyticsResponse.send_cohorts` — sent leads
-    bucketed by the send week embedded in `brevo_message_id`
-    (`_send_time_from_message_id`, the only durable first-email send
-    time), with ever-opened share + an `accumulating` flag (newest send
-    < 7 days — opens still arriving).  Frontend `SendCohorts` card on the
-    Analytics tab ("Open rate by send week", amber "still collecting"
-    badge) between Timeline and Sequence performance.  Separates "we sent
-    less" from "people stopped opening" — the daily timeline can't.
-  - Tests: 3 poller (re-poll no-dupe incl. opens; late-exposed open
-    recorded; repeat opens record but re-fetch dedupes) + 2 analytics
-    (cohort grouping/rates/accumulating/undatable-excluded; empty) + 2
-    frontend (renders + badge; hidden when empty).  NOTE: 2 PRE-EXISTING
-    failures unrelated to this work (`test_phase34_social_discovery::
-    test_discover_posts_extracts_valid_linkedin_urls`,
-    `test_phase56_intent_engine_api::test_recompute_and_promote_flow`) —
-    they fail on a clean checkout too.
+- **Last completed:** **Retarget campaigns no longer stranded in DRAFT.**
+  User created "Retarget — grantmind email campaign 2", published the
+  sequence, enrolled 583 leads — campaign stayed `draft` with everything
+  pending.  Root cause: the ONLY draft-exit in the status machine is CSV
+  `confirm-upload` (`routers/leads.py`); both retarget paths
+  (`POST /campaigns/` with `retarget_source_campaign_id`, and
+  `POST /campaigns/{id}/retarget`) copy leads in via
+  `add_leads_to_campaign` (which holds draft campaigns "until launch")
+  and left the target in DRAFT with no launch path — publishing a
+  sequence only flips `sequences.is_published`, never campaign status,
+  and the UI's "Review & Launch" button only renders on `previewing`.
+  Fix: new `retarget.launch_retarget_campaign(db, target)` — mirrors
+  confirm-upload: marks preview samples (`select_sample_indices`), flips
+  DRAFT → PREVIEWING (or RUNNING for a non-email entry), commits, kicks
+  `run_campaign_research`.  No-op unless DRAFT + has leads, so re-running
+  retarget into a stuck pre-fix draft target rescues it.  Called from
+  both retarget call sites; `/retarget` response now carries
+  `launched` + `target_status`; RetargetModal toast appends "preparing
+  drafts for review".  Live remediation: ran the launcher on the stuck
+  campaign — now PREVIEWING, samples composed, awaiting Review & Launch.
+  Tests: 3 new + 1 extended in `test_phase60_retarget.py` (+ autouse
+  fixture capturing the research kick).  NOTE: 2 PRE-EXISTING failures
+  unrelated (`test_phase34_social_discovery::
+  test_discover_posts_extracts_valid_linkedin_urls`,
+  `test_phase56_intent_engine_api::test_recompute_and_promote_flow`) —
+  they fail on a clean checkout too.
 
 - **Recent highlights** (full task-by-task history is archived in
   [`docs/claude-history.md`](docs/claude-history.md)):
@@ -205,6 +192,14 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Conventions and gotchas
 
+- **Publishing a sequence never launches a campaign.**  Save & Publish
+  only flips `sequences.is_published`; the status machine's sole
+  draft-exit is CSV `confirm-upload`.  Campaigns whose leads arrive by
+  COPY need an explicit launch — retarget paths call
+  `retarget.launch_retarget_campaign` (marks samples, DRAFT →
+  PREVIEWING/RUNNING, kicks research).  Leads-page / Signals-page
+  "Add to campaign" into a DRAFT target still holds the rows with no
+  launch path — same latent gap if anyone ever adds-to-draft there.
 - **Connected accounts:** `email_address` is for display; `username` is
   the IMAP login. Gmail aliases share their parent mailbox — set
   `email_address` to the alias and `username` to the primary mailbox.
@@ -601,12 +596,12 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-07-30 — Brevo poller watermark removed (late-exposed
-opens were being dropped), events backfilled, send-week cohort panel added
-to campaign Analytics.  (2026-07-27: compacted this file; task-by-task history
-lives in [`docs/claude-history.md`](docs/claude-history.md).)_
+_Last updated: 2026-08-26 — retarget campaigns now launch (were stranded
+in DRAFT with no path out); stuck "Retarget — grantmind email campaign 2"
+remediated to PREVIEWING.  (2026-07-27: compacted this file; task-by-task
+history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1237 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **436 passing**._
+_Backend tests: **1240 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **436 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

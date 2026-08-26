@@ -242,6 +242,7 @@ async def create_campaign(
         source = await db.get(Campaign, retarget_src)
         if source is not None:
             await retarget_svc.retarget_into_campaign(db, source, campaign)
+            await retarget_svc.launch_retarget_campaign(db, campaign)
             await db.refresh(campaign)
     return await _build_response(db, campaign)
 
@@ -701,6 +702,7 @@ async def retarget(
         target = await retarget_svc.create_retarget_campaign(db, source, goal=payload.goal)
         created = True
     result, engaged = await retarget_svc.retarget_into_campaign(db, source, target)
+    launched = await retarget_svc.launch_retarget_campaign(db, target)
     return {
         "target_campaign_id": str(target.id),
         "target_campaign_name": target.name,
@@ -709,6 +711,8 @@ async def retarget(
         "added": result.added,
         "skipped_duplicate": result.skipped_duplicate,
         "skipped_suppressed": result.skipped_suppressed,
+        "launched": launched,
+        "target_status": target.status.value,
     }
 
 

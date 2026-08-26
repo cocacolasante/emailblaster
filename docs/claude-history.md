@@ -7,6 +7,42 @@ distilled from these tasks live in `CLAUDE.md` → "Conventions and gotchas".
 
 ## Task log (from "Where we are")
 
+- **Previously:** **Fixed the Brevo events poller dropping nearly all
+  opens + added an open-rate-by-send-week cohort panel to campaign
+  Analytics.**  User saw "opens going down"; investigation showed open
+  RATES were stable — two ingestion problems made the charts lie:
+  - **Root cause (the big one):** the poller's newest-event-date watermark
+    (`ev_date <= watermark → skipped_old`).  Brevo exposes `opened` events
+    in its statistics feed LATE (hours), while delivered/clicks appear
+    near-instantly.  Once the sequencer's steady follow-up stream (a send
+    every ~2 min) kept the newest event date pinned to "now", every
+    late-exposed open arrived already "older" than the watermark and was
+    dropped forever (2026-07-29: 184 opens at Brevo, 2 ingested; clicks
+    81/81).  Sparse sending had masked this for months.
+  - **Fix:** watermark filter REMOVED.  Every poll re-scans the full 24h
+    `LOOKBACK_FLOOR_HOURS` window; idempotency now lives in
+    `process_event` dedup — terminal types (delivered/bounce/spam/unsub/
+    blocked) stay one-per-lead, and opens/clicks dedup on
+    `(lead_id, event_type, occurred_at)` (each real open has a distinct
+    Brevo timestamp).  Undated events are skipped (can't dedup).
+    `brevo:events:last_polled_at` is now a pure observability stamp.
+  - **Backfill:** new `scripts/backfill_brevo_events.py <start> [end]`
+    (fetch + `process_event(apply_side_effects=False)`; safe to re-run).
+    Ran for 2026-07-15→30: recovered 188 events (7/29 opens 2→182; the
+    2026-07-15→26 total-outage gap had little at Brevo to recover).
+  - **Cohort panel:** `AnalyticsResponse.send_cohorts` — sent leads
+    bucketed by the send week embedded in `brevo_message_id`
+    (`_send_time_from_message_id`, the only durable first-email send
+    time), with ever-opened share + an `accumulating` flag (newest send
+    < 7 days — opens still arriving).  Frontend `SendCohorts` card on the
+    Analytics tab ("Open rate by send week", amber "still collecting"
+    badge) between Timeline and Sequence performance.  Separates "we sent
+    less" from "people stopped opening" — the daily timeline can't.
+  - Tests: 3 poller (re-poll no-dupe incl. opens; late-exposed open
+    recorded; repeat opens record but re-fetch dedupes) + 2 analytics
+    (cohort grouping/rates/accumulating/undatable-excluded; empty) + 2
+    frontend (renders + badge; hidden when empty).
+
 - **Previously:** **Manual Resume overrides the bounce/spam circuit
   breaker (migration 0043).**  "grantmind email campaign 2" kept re-pausing
   right after every manual Resume.  Root cause: the breaker evaluates a

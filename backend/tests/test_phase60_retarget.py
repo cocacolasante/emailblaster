@@ -18,6 +18,17 @@ from app.workers.compose import _build_retarget_prompt
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def research_kicks(monkeypatch):
+    """Capture (instead of enqueue) the research kick the retarget launch fires."""
+    kicked: list[str] = []
+    monkeypatch.setattr(
+        "app.workers.ingest.run_campaign_research.delay",
+        lambda cid: kicked.append(cid),
+    )
+    return kicked
+
+
 def _payload(**ov):
     base = {
         "name": "Source", "goal": "book a call", "tone": "warm",
@@ -118,6 +129,66 @@ async def test_retarget_endpoint_creates_and_dedupes(client, db_session):
     assert total == 2   # still 2, no dupes
 
 
+async def test_retarget_endpoint_launches_draft_target(client, db_session, research_kicks):
+    """A fresh retarget target must not be stranded in DRAFT — no draft-exit
+    exists for copied-in leads (confirm-upload is CSV-only, and publishing a
+    sequence never touches campaign status)."""
+    kicked = research_kicks
+    c, leads = await _source_with_clickers(db_session)
+
+    r = await client.post(f"/campaigns/{c.id}/retarget", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["launched"] is True
+    assert body["target_status"] == "previewing"   # default sequence = email entry
+    assert kicked == [body["target_campaign_id"]]
+
+    target = await db_session.get(Campaign, body["target_campaign_id"])
+    assert target.status is CampaignStatus.PREVIEWING
+    # Preview samples marked so the review screen isn't empty.
+    samples = (await db_session.execute(
+        select(Lead).where(Lead.campaign_id == target.id, Lead.is_sample.is_(True))
+    )).scalars().all()
+    assert len(samples) == 2   # sample_count (5) >= added (2) → all are samples
+
+
+async def test_retarget_launch_rescues_stuck_draft_target(client, db_session, research_kicks):
+    """Re-running retarget into a pre-fix DRAFT target (leads already copied,
+    nothing new to add) still launches it."""
+    kicked = research_kicks
+    c, leads = await _source_with_clickers(db_session)
+    # Build the stuck state directly: draft target with leads, never launched.
+    target = await retarget.create_retarget_campaign(db_session, c)
+    await retarget.retarget_into_campaign(db_session, c, target)
+    assert target.status is CampaignStatus.DRAFT
+
+    r = await client.post(
+        f"/campaigns/{c.id}/retarget", json={"target_campaign_id": str(target.id)}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["added"] == 0 and body["skipped_duplicate"] == 2
+    assert body["launched"] is True and body["target_status"] == "previewing"
+    assert kicked == [str(target.id)]
+
+
+async def test_retarget_launch_noops_on_live_target(client, db_session):
+    """Adding into an already-launched target must not touch its status."""
+    c, leads = await _source_with_clickers(db_session)
+    r1 = await client.post(f"/campaigns/{c.id}/retarget", json={})
+    target_id = r1.json()["target_campaign_id"]
+    target = await db_session.get(Campaign, target_id)
+    target.status = CampaignStatus.RUNNING
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/campaigns/{c.id}/retarget", json={"target_campaign_id": target_id}
+    )
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["launched"] is False and body["target_status"] == "running"
+
+
 async def test_retarget_preview(client, db_session):
     c, leads = await _source_with_clickers(db_session)
     r = await client.get(f"/campaigns/{c.id}/retarget/preview")
@@ -126,7 +197,8 @@ async def test_retarget_preview(client, db_session):
     assert body["engaged"] == 2 and body["by_email_click"] == 2
 
 
-async def test_create_campaign_retarget_type_pulls_engaged(client, db_session):
+async def test_create_campaign_retarget_type_pulls_engaged(client, db_session, research_kicks):
+    kicked = research_kicks
     c, leads = await _source_with_clickers(db_session)
     r = await client.post("/campaigns/", json=_payload(
         name="Retarget — Spring", research_mode="fast",
@@ -136,6 +208,8 @@ async def test_create_campaign_retarget_type_pulls_engaged(client, db_session):
     body = r.json()
     assert body["is_retarget"] is True
     assert body["research_mode"] == "none"   # forced
+    assert body["status"] == "previewing"    # launched, not stranded in draft
     new_id = body["id"]
+    assert kicked == [new_id]
     n = await db_session.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == new_id))
     assert n == 2

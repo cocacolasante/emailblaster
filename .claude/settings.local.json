@@ -28,7 +28,10 @@
       "Bash(curl -s localhost:8000/openapi.json)",
       "Bash(grep -n \"^describe\\\\|^}\\);$\" /Users/anthonycolasante/Projects/emailblaster/frontend/src/pages/CampaignDetail.test.jsx)",
       "Bash(./scripts/push-both.sh)",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(grep -n -e '- \\\\*\\\\*In flight' -e '_Backend tests' -e '^---$' -e '🚀 Starting on a fresh dev box' /Users/anthonycolasante/Projects/emailblaster/CLAUDE.md)",
+      "Bash(git -C /Users/anthonycolasante/Projects/emailblaster status --short)",
+      "Bash(git -C /Users/anthonycolasante/Projects/emailblaster diff --stat)"
     ]
   }
 }

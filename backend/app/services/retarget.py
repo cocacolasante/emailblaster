@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -27,6 +27,8 @@ from app.models import (
     LinkedInConnectionStatus, ResearchMode,
 )
 from app.services.campaign_membership import AddLeadsResult, add_leads_to_campaign
+from app.services.csv_parser import select_sample_indices
+from app.services.sequence_service import campaign_sends_legacy_first_email
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +123,47 @@ async def create_retarget_campaign(
     db.add(camp)
     await db.flush()
     return camp
+
+
+async def launch_retarget_campaign(db: AsyncSession, target: Campaign) -> bool:
+    """Move a DRAFT retarget campaign into the live pipeline.  Commits.
+
+    Draft is otherwise a dead end for retarget campaigns: the only draft-exit
+    in the status machine is CSV confirm-upload, which copied-in leads never
+    go through — publishing the sequence doesn't touch campaign status.
+    Mirrors confirm-upload: mark preview samples, flip to PREVIEWING (or
+    straight to RUNNING when the entry node isn't an email), kick
+    research/compose.  No-op (returns False) unless the campaign is DRAFT
+    and has leads, so calling it repeatedly — or on an already-live target —
+    is safe.
+    """
+    if target.status != CampaignStatus.DRAFT:
+        return False
+    lead_ids = list((await db.execute(
+        select(Lead.id)
+        .where(Lead.campaign_id == target.id)
+        .order_by(Lead.created_at.asc())
+    )).scalars().all())
+    if not lead_ids:
+        return False
+
+    sample_idx = set(select_sample_indices(len(lead_ids), target.sample_count))
+    sample_ids = [lid for i, lid in enumerate(lead_ids) if i in sample_idx]
+    if sample_ids:
+        await db.execute(
+            update(Lead).where(Lead.id.in_(sample_ids)).values(is_sample=True)
+        )
+
+    auto_launched = not await campaign_sends_legacy_first_email(db, target.id)
+    target.status = (
+        CampaignStatus.RUNNING if auto_launched else CampaignStatus.PREVIEWING
+    )
+    await db.commit()
+
+    # Lazy import keeps the worker (celery) off the service import path.
+    from app.workers import ingest as ingest_tasks
+    ingest_tasks.run_campaign_research.delay(str(target.id))
+    return True
 
 
 async def retarget_into_campaign(
