@@ -20,6 +20,8 @@ from __future__ import annotations
 from datetime import time
 
 import pytest
+
+from tests.conftest import DEFAULT_TENANT_ID
 from sqlalchemy import select
 
 from app.models import (
@@ -34,9 +36,12 @@ from app.models import (
 SECRET = "test-unipile-secret"
 
 
+URL = f"/webhooks/unipile/{DEFAULT_TENANT_ID}"
+
+
 @pytest.fixture(autouse=True)
-def _wire_secret(monkeypatch):
-    monkeypatch.setattr("app.routers.webhooks.settings.UNIPILE_WEBHOOK_SECRET", SECRET)
+def _wire_secret(monkeypatch, set_creds):
+    set_creds("unipile", api_key="k", webhook_secret=SECRET)
     monkeypatch.setattr("app.routers.webhooks.settings.UNIPILE_WEBHOOK_AUTH_HEADER", "X-Unipile-Auth")
 
 
@@ -100,7 +105,7 @@ async def test_invitation_accepted_matches_top_level_public_identifier(
         "user_profile_url": "https://www.linkedin.com/in/jane-doe/",
     }
     resp = await client.post(
-        "/webhooks/unipile", json=payload,
+        URL, json=payload,
         headers={"X-Unipile-Auth": SECRET},
     )
     assert resp.status_code == 200, resp.text
@@ -128,7 +133,7 @@ async def test_invitation_accepted_matches_full_profile_url(
         "user_profile_url": "https://www.linkedin.com/in/bob-smith/",
     }
     resp = await client.post(
-        "/webhooks/unipile", json=payload,
+        URL, json=payload,
         headers={"X-Unipile-Auth": SECRET},
     )
     assert resp.status_code == 200
@@ -155,7 +160,7 @@ async def test_invitation_accepted_no_match_leaves_lead_alone(
         "user_public_identifier": "someone-else",
     }
     resp = await client.post(
-        "/webhooks/unipile", json=payload,
+        URL, json=payload,
         headers={"X-Unipile-Auth": SECRET},
     )
     assert resp.status_code == 200
@@ -190,7 +195,7 @@ async def test_invitation_accepted_with_string_data_field_does_not_crash(
         "data": "some-string-payload",
     }
     resp = await client.post(
-        "/webhooks/unipile", json=payload,
+        URL, json=payload,
         headers={"X-Unipile-Auth": SECRET},
     )
     assert resp.status_code == 200, resp.text
@@ -218,7 +223,7 @@ async def test_message_received_with_string_message_field_does_not_crash(
         "message": "string body here",  # bug 2 shape
     }
     resp = await client.post(
-        "/webhooks/unipile", json=payload,
+        URL, json=payload,
         headers={"X-Unipile-Auth": SECRET},
     )
     assert resp.status_code == 200, resp.text

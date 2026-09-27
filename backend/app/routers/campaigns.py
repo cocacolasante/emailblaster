@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.tenancy.keys import domain_rate_key
 from app.config import settings
 from app.database import get_db
 from app.services import ownership
@@ -1351,8 +1352,8 @@ async def get_deliverability(
     if domain:
         r = aioredis.from_url(app_settings.REDIS_URL, decode_responses=True)
         try:
-            hour_used = int(await r.get(f"rate:domain:{domain}:hour") or 0)
-            day_used = int(await r.get(f"rate:domain:{domain}:day") or 0)
+            hour_used = int(await r.get(domain_rate_key(domain, "hour")) or 0)
+            day_used = int(await r.get(domain_rate_key(domain, "day")) or 0)
         except Exception:  # noqa: BLE001 — Redis down ≠ 500 the strip
             hour_used = day_used = 0
         finally:

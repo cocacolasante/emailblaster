@@ -33,6 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant, run_per_tenant
+from app.tenancy.keys import li_page_month_key
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
@@ -408,7 +410,7 @@ async def _li_rate_acquire(
     if kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE:
         if not page_id:
             return {"ok": False, "reason": "misconfigured", "error": "page_id missing"}
-        page_key = f"li-rate:page:{page_id}:month"
+        page_key = li_page_month_key(page_id)
         page_cap = settings.LINKEDIN_MONTHLY_PAGE_INVITE_CAP
 
     last_ttl = max(settings.LINKEDIN_MIN_ACTION_DELAY_SECONDS + 10, 60)
@@ -539,7 +541,7 @@ async def _li_rate_check(
     elif kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE:
         if not page_id:
             return {"ok": False, "reason": "misconfigured", "error": "page_id missing"}
-        page_raw = await client.get(f"li-rate:page:{page_id}:month")
+        page_raw = await client.get(li_page_month_key(page_id))
         page = int(page_raw) if page_raw else 0
         if page >= settings.LINKEDIN_MONTHLY_PAGE_INVITE_CAP:
             return {
@@ -572,8 +574,8 @@ async def _li_rate_bump(
         pipe.expire(f"li-rate:{aid}:day:dm", 86400, nx=True)
     elif kind == SequenceNodeKind.LINKEDIN_INVITE_TO_PAGE and page_id:
         # 30-day rolling window approximated as fixed-30-day expiry.
-        pipe.incr(f"li-rate:page:{page_id}:month")
-        pipe.expire(f"li-rate:page:{page_id}:month", 60 * 60 * 24 * 30, nx=True)
+        pipe.incr(li_page_month_key(page_id))
+        pipe.expire(li_page_month_key(page_id), 60 * 60 * 24 * 30, nx=True)
     await pipe.execute()
 
 
@@ -798,6 +800,7 @@ async def _advance_cursor(
 # --------------------------------------------------------------------------
 
 
+@in_record_tenant("lead", "lead_id")
 async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
     """Send a templated email for a non-entry email node.
 
@@ -1005,6 +1008,7 @@ LI_KINDS = {
 }
 
 
+@in_record_tenant("lead", "lead_id")
 async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
     """Dispatch a LinkedIn warm-up action.
 
@@ -1391,6 +1395,7 @@ async def _has_downstream_email(session: AsyncSession, node: SequenceNode) -> bo
     return False
 
 
+@in_record_tenant("lead", "lead_id")
 async def _record_execution_and_advance(
     lead_id: uuid.UUID, node_id: uuid.UUID, result: dict[str, Any]
 ) -> None:
@@ -1801,7 +1806,7 @@ async def _advance_sequences_async() -> dict[str, int]:
 def advance_sequences() -> dict[str, int]:
     global _LI_REDIS_CLIENT
     _LI_REDIS_CLIENT = None  # fresh client bound to this asyncio.run loop
-    return asyncio.run(_advance_sequences_async())
+    return asyncio.run(run_per_tenant(_advance_sequences_async))
 
 
 @celery_app.task(bind=True, name="sequencer.send_email_step", max_retries=3)

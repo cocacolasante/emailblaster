@@ -28,7 +28,10 @@ from app.models import (
     SuppressionReason,
     WebhookEvent,
 )
+from app.services import credentials
 from app.services.brevo_events import process_event
+from app.tenancy.context import tenant_scope
+from app.tenancy.worker import tenant_context, tenant_of
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +135,11 @@ async def unsubscribe_confirm_page(
     token = request.query_params.get("t") or ""
     if not hmac.compare_digest(token, _unsubscribe_token(lead_id)):
         return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
-    lead = await db.get(Lead, lead_id)
+    tid = await tenant_of("lead", lead_id)
+    if tid is None:
+        return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
+    with tenant_scope(tid):
+        lead = await db.get(Lead, lead_id)
     if lead is None:
         return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
     html = (_CONFIRM_UNSUB_HTML
@@ -153,6 +160,15 @@ async def unsubscribe(
     token = request.query_params.get("t") or ""
     if not hmac.compare_digest(token, _unsubscribe_token(lead_id)):
         return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
+    tid = await tenant_of("lead", lead_id)
+    if tid is None:
+        return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
+    # The suppression + event rows belong to the lead's workspace.
+    with tenant_scope(tid):
+        return await _apply_unsubscribe(db, lead_id)
+
+
+async def _apply_unsubscribe(db: AsyncSession, lead_id: uuid.UUID) -> HTMLResponse:
     lead = await db.get(Lead, lead_id)
     if lead is None:
         return HTMLResponse(_INVALID_UNSUB_HTML, status_code=404)
@@ -211,13 +227,11 @@ def _verify_unipile_auth(header_value: str | None) -> bool:
     constant-time compare the value here.  See the Unipile docs section
     "Authentication" on the Webhooks page.
     """
-    expected = settings.UNIPILE_WEBHOOK_SECRET
-    if not expected:
-        # No secret configured → refuse everything to avoid running on
-        # forged payloads.  Set UNIPILE_WEBHOOK_SECRET in .env and add the
-        # same value to each Unipile webhook's headers list.
-        return False
-    if not header_value:
+    # The CURRENT workspace's secret (callers run inside tenant_context).
+    # None configured → refuse everything (never act on forged payloads).
+    creds = credentials.get("unipile")
+    expected = creds.webhook_secret if creds else ""  # type: ignore[union-attr]
+    if not expected or not header_value:
         return False
     return hmac.compare_digest(header_value.strip(), expected)
 
@@ -226,12 +240,11 @@ def _verify_brevo_auth(header_value: str | None) -> bool:
     """Same static-shared-secret-header pattern as Unipile, for Brevo's
     outbound event webhook.  Brevo lets you attach custom headers when you
     create a webhook; we set ``X-Brevo-Auth: <secret>`` there and constant-time
-    compare it against ``settings.BREVO_WEBHOOK_SECRET``.  No secret configured
-    → reject everything (don't act on forged payloads)."""
-    expected = settings.BREVO_WEBHOOK_SECRET
-    if not expected:
-        return False
-    if not header_value:
+    compare it against the CURRENT workspace's Brevo webhook secret.  No
+    secret configured → reject everything (don't act on forged payloads)."""
+    creds = credentials.get("brevo")
+    expected = creds.webhook_secret if creds else ""  # type: ignore[union-attr]
+    if not expected or not header_value:
         return False
     return hmac.compare_digest(header_value.strip(), expected)
 
@@ -487,110 +500,168 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
+def _parse_json(raw: bytes) -> Any:
+    try:
+        return json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+
+
+async def _resolve_unipile_tenant(payload: dict[str, Any]) -> uuid.UUID | None:
+    """Workspace for a legacy-URL Unipile event: account.connected carries
+    our local LinkedInAccount id as ``name``; everything else carries the
+    Unipile account id."""
+    body = payload.get("data") or payload.get("account") or payload
+    body = body if isinstance(body, dict) else {}
+    local_id = body.get("name") or (body.get("account") or {}).get("name") or payload.get("name")
+    if local_id:
+        tid = await tenant_of("linkedin_account", local_id)
+        if tid is not None:
+            return tid
+    unipile_id = _extract_unipile_account_id(payload) or body.get("id")
+    return await tenant_of("linkedin_account_unipile", unipile_id) if unipile_id else None
+
+
+async def _resolve_brevo_tenant(events: list[dict[str, Any]]) -> uuid.UUID | None:
+    from app.services.brevo_events import extract_message_id
+
+    for ev in events:
+        mid = extract_message_id(ev)
+        if not mid:
+            continue
+        # Stored with or without the <...> delimiters — try both.
+        for form in (f"<{mid}>", mid):
+            tid = await tenant_of("brevo_message", form)
+            if tid is not None:
+                return tid
+    return None
+
+
+@router.post("/webhooks/unipile/{tenant_id}")
+async def unipile_webhook_for_tenant(
+    tenant_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_public_db),
+) -> dict[str, Any]:
+    """Per-workspace Unipile webhook — the URL Settings → Integrations shows.
+    The path names the workspace; the auth header must match THAT
+    workspace's Unipile webhook secret."""
+    if await tenant_of("tenant", tenant_id) is None:
+        raise HTTPException(status_code=404, detail="unknown workspace")
+    return await _handle_unipile_delivery(request, db, tenant_id)
+
+
 @router.post("/webhooks/unipile")
 async def unipile_webhook(
     request: Request,
     db: AsyncSession = Depends(get_public_db),
 ) -> dict[str, Any]:
-    """Receive Unipile push events.
+    """Legacy single-URL Unipile webhook.  Resolves the workspace from the
+    payload's account and verifies against that workspace's secret; an
+    event for an account no workspace knows is rejected (401 — there's no
+    secret to check it against).  Prefer the per-workspace URL."""
+    return await _handle_unipile_delivery(request, db, None)
+
+
+async def _handle_unipile_delivery(
+    request: Request, db: AsyncSession, tenant_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    """Receive one Unipile push event.
 
     Auth: Unipile uses a static shared-secret-in-a-header pattern — when
     creating the webhook you add a custom header (default
     ``X-Unipile-Auth``) and Unipile echoes it on every delivery.  We
-    constant-time compare against ``settings.UNIPILE_WEBHOOK_SECRET``.
-    Missing or wrong value → 401, no DB writes.
+    constant-time compare against the workspace's stored Unipile webhook
+    secret.  Missing or wrong value → 401, no DB writes.
 
     Idempotency: Unipile delivers at-least-once.  Every payload has an
-    event id (in the ``id`` / ``event_id`` / ``webhook_id`` field
-    depending on the source); we insert that id + provider="unipile"
-    into the ``webhook_events`` table up front.  If the unique
-    constraint fires the event has already been processed and we
-    short-circuit with 200 + ``duplicate=true`` so Unipile stops
-    retrying.  When the id is missing we fall back to a SHA-256 of the
-    raw body — same-body duplicates dedup, but different payloads with
-    the same logical event will retry (acceptable; that pattern hasn't
-    been observed in practice).
+    event id (``id`` / ``event_id`` / ``webhook_id``); we claim
+    ``(provider, tenant, event_id)`` in ``webhook_events`` up front.  A
+    duplicate short-circuits with 200 + ``duplicate=true``.  Without an id
+    we fall back to a SHA-256 of the raw body.
     """
     raw = await request.body()
-    # Header name is configurable so it can match whatever the user
-    # configured in Unipile's webhook dashboard.  Starlette lowercases
-    # header keys; we look up case-insensitively via .get().
+    # Header name is configurable (platform setting) so it can match what
+    # was configured in Unipile's webhook dashboard.
     auth_value = request.headers.get(settings.UNIPILE_WEBHOOK_AUTH_HEADER.lower())
-    if not _verify_unipile_auth(auth_value):
-        raise HTTPException(status_code=401, detail="invalid auth header")
-    try:
-        payload = json.loads(raw)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+    payload = _parse_json(raw)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
+    if tenant_id is None:
+        tenant_id = await _resolve_unipile_tenant(payload)
+        if tenant_id is None:
+            raise HTTPException(status_code=401, detail="invalid auth header")
 
-    event_type = (
-        payload.get("type")
-        or payload.get("event")
-        or payload.get("event_name")
-        or ""
-    ).lower()
+    async with tenant_context(tenant_id):
+        if not _verify_unipile_auth(auth_value):
+            raise HTTPException(status_code=401, detail="invalid auth header")
 
-    # Idempotency guard.  Try to claim the (provider, event_id) slot
-    # before running any handler — if another delivery already wrote it,
-    # the unique constraint trips and we return 200 without re-applying
-    # state-altering handlers.
-    event_id = (
-        str(payload.get("id"))
-        if payload.get("id") is not None
-        else str(payload.get("event_id"))
-        if payload.get("event_id") is not None
-        else str(payload.get("webhook_id"))
-        if payload.get("webhook_id") is not None
-        else None
-    )
-    if not event_id:
-        # Fallback: hash the body so byte-identical retries dedup.
-        event_id = "sha256:" + hashlib.sha256(raw).hexdigest()
-    # Commit the dedup INSERT eagerly so it's persistent regardless of
-    # whether we then route to a handler, ignore the event, or one of
-    # the handlers fails mid-flight.  The contract: "we've acknowledged
-    # this event id; don't deliver it again."  If a handler raises after
-    # this commit, the next retry from Unipile is silently dropped — at-
-    # most-once on our side.  Acceptable trade-off: at-least-once with
-    # double-apply (the prior behaviour) was the actual problem.
-    try:
-        db.add(WebhookEvent(provider="unipile", event_id=event_id))
+        event_type = (
+            payload.get("type")
+            or payload.get("event")
+            or payload.get("event_name")
+            or ""
+        ).lower()
+        event_id = (
+            str(payload.get("id"))
+            if payload.get("id") is not None
+            else str(payload.get("event_id"))
+            if payload.get("event_id") is not None
+            else str(payload.get("webhook_id"))
+            if payload.get("webhook_id") is not None
+            else None
+        )
+        if not event_id:
+            event_id = "sha256:" + hashlib.sha256(raw).hexdigest()
+        # Commit the dedup claim eagerly: "we've acknowledged this event id;
+        # don't deliver it again" — at-most-once on our side if a handler
+        # then fails (the old at-least-once double-apply was the bug).
+        try:
+            db.add(WebhookEvent(provider="unipile", tenant_id=tenant_id, event_id=event_id))
+            await db.commit()
+        except Exception:  # noqa: BLE001 — UniqueViolation = duplicate delivery
+            await db.rollback()
+            logger.info(
+                "Unipile webhook: duplicate event_id=%r type=%r — skipping handler",
+                event_id, event_type,
+            )
+            return {"ok": True, "duplicate": True}
+        logger.info("Unipile webhook event=%r id=%r tenant=%s", event_type, event_id, tenant_id)
+
+        # Unipile varies casing / punctuation between versions
+        # (account.connected vs ACCOUNT_CONNECTED) — normalise.
+        normalised = event_type.replace("_", ".").replace(":", ".")
+
+        if normalised in {"account.connected", "account.created", "creation.success"}:
+            await _handle_account_connected(db, payload)
+        elif normalised in {"account.disconnected", "account.deleted", "creation.fail"}:
+            await _handle_account_status_change(db, payload, LinkedInAccountStatus.FAILED)
+        elif normalised in {"account.checkpoint", "account.error.checkpoint"}:
+            await _handle_account_status_change(
+                db, payload, LinkedInAccountStatus.CHALLENGED, challenge=True,
+            )
+        elif normalised in {"message.received", "messaging.message.received", "new.message"}:
+            await _handle_message_received(db, payload)
+        elif normalised in {"invitation.accepted", "user.relation.created", "new.relation"}:
+            await _handle_invitation_accepted(db, payload)
+        else:
+            logger.info("Unipile webhook: ignoring event_type=%r", event_type)
+            return {"ok": True, "ignored": True}
+
         await db.commit()
-    except Exception:  # noqa: BLE001
-        # UniqueViolation from a duplicate event_id.
-        await db.rollback()
-        logger.info(
-            "Unipile webhook: duplicate event_id=%r type=%r — skipping handler",
-            event_id, event_type,
-        )
-        return {"ok": True, "duplicate": True}
-    logger.info("Unipile webhook event=%r id=%r", event_type, event_id)
+        return {"ok": True}
 
-    # Route by event name.  Unipile occasionally varies the casing /
-    # punctuation between versions (account.connected vs ACCOUNT_CONNECTED),
-    # so we normalise to lowercase + dot.
-    normalised = event_type.replace("_", ".").replace(":", ".")
 
-    if normalised in {"account.connected", "account.created", "creation.success"}:
-        await _handle_account_connected(db, payload)
-    elif normalised in {"account.disconnected", "account.deleted", "creation.fail"}:
-        await _handle_account_status_change(db, payload, LinkedInAccountStatus.FAILED)
-    elif normalised in {"account.checkpoint", "account.error.checkpoint"}:
-        await _handle_account_status_change(
-            db, payload, LinkedInAccountStatus.CHALLENGED, challenge=True,
-        )
-    elif normalised in {"message.received", "messaging.message.received", "new.message"}:
-        await _handle_message_received(db, payload)
-    elif normalised in {"invitation.accepted", "user.relation.created", "new.relation"}:
-        await _handle_invitation_accepted(db, payload)
-    else:
-        logger.info("Unipile webhook: ignoring event_type=%r", event_type)
-        return {"ok": True, "ignored": True}
-
-    await db.commit()
-    return {"ok": True}
+@router.post("/webhooks/brevo/{tenant_id}")
+async def brevo_webhook_for_tenant(
+    tenant_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_public_db),
+) -> dict[str, Any]:
+    """Per-workspace Brevo event webhook (auth = that workspace's secret)."""
+    if await tenant_of("tenant", tenant_id) is None:
+        raise HTTPException(status_code=404, detail="unknown workspace")
+    return await _handle_brevo_delivery(request, db, tenant_id)
 
 
 @router.post("/webhooks/brevo")
@@ -598,56 +669,64 @@ async def brevo_webhook(
     request: Request,
     db: AsyncSession = Depends(get_public_db),
 ) -> dict[str, Any]:
+    """Legacy single-URL Brevo webhook: resolves the workspace from the
+    event's message id.  Prefer the per-workspace URL."""
+    return await _handle_brevo_delivery(request, db, None)
+
+
+async def _handle_brevo_delivery(
+    request: Request, db: AsyncSession, tenant_id: uuid.UUID | None,
+) -> dict[str, Any]:
     """Receive Brevo transactional event pushes in real time.
 
-    Auth: static shared-secret header (``X-Brevo-Auth`` by default) configured
-    on the webhook in Brevo and constant-time compared against
-    ``settings.BREVO_WEBHOOK_SECRET``.  Missing/wrong → 401, no DB writes.
+    Auth: static shared-secret header (``X-Brevo-Auth`` by default)
+    constant-time compared against the workspace's Brevo webhook secret.
+    Missing/wrong → 401, no DB writes.
 
-    Idempotency: Brevo retries on non-2xx (at-least-once).  We claim the event
-    id (payload ``id``, else a SHA-256 of the body) in ``webhook_events`` up
-    front; a duplicate delivery short-circuits with 200.
+    Idempotency: Brevo retries on non-2xx.  We claim the event id (payload
+    ``id``, else a SHA-256 of the body) in ``webhook_events`` up front; a
+    duplicate delivery short-circuits with 200.
 
     Events funnel through the SAME ``process_event`` the poller uses, so a
-    hard bounce / spam / unsubscribe / blocked is suppressed (added to the
-    ignore list, halted in current campaigns, blocked from future ones) within
-    seconds.  The poller stays on as the reconciliation backstop for anything
-    missed while the tunnel/app was down (webhooks aren't replayed).
+    hard bounce / spam / unsubscribe / blocked is suppressed within
+    seconds.  The poller stays on as the reconciliation backstop.
     """
     raw = await request.body()
     auth_value = request.headers.get(settings.BREVO_WEBHOOK_AUTH_HEADER.lower())
-    if not _verify_brevo_auth(auth_value):
-        raise HTTPException(status_code=401, detail="invalid auth header")
-    try:
-        payload = json.loads(raw)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
-    # Brevo's transactional event webhook posts one event per request; accept a
-    # list too defensively.
+    payload = _parse_json(raw)
+    # One event per request normally; accept a list defensively.
     events = payload if isinstance(payload, list) else [payload]
-    if not events or not all(isinstance(e, dict) for e in events):
+    well_formed = bool(events) and all(isinstance(e, dict) for e in events)
+    if tenant_id is None:
+        # Legacy URL: no workspace → nothing to authenticate against.
+        tenant_id = await _resolve_brevo_tenant(events) if well_formed else None
+        if tenant_id is None:
+            raise HTTPException(status_code=401, detail="invalid auth header")
+    if not well_formed:
         raise HTTPException(status_code=400, detail="payload must be an event object or list")
 
-    first = events[0]
-    event_id = str(first.get("id")) if first.get("id") is not None else None
-    if not event_id:
-        # No id (or a batch) → hash the body so byte-identical retries dedup.
-        event_id = "sha256:" + hashlib.sha256(raw).hexdigest()
-    try:
-        db.add(WebhookEvent(provider="brevo", event_id=event_id))
-        await db.commit()
-    except Exception:  # noqa: BLE001 — UniqueViolation = already processed
-        await db.rollback()
-        logger.info("Brevo webhook: duplicate event_id=%r — skipping", event_id)
-        return {"ok": True, "duplicate": True}
-
-    recorded = 0
-    for ev in events:
+    async with tenant_context(tenant_id):
+        if not _verify_brevo_auth(auth_value):
+            raise HTTPException(status_code=401, detail="invalid auth header")
+        first = events[0]
+        event_id = str(first.get("id")) if first.get("id") is not None else None
+        if not event_id:
+            event_id = "sha256:" + hashlib.sha256(raw).hexdigest()
         try:
-            if await process_event(db, ev):
-                recorded += 1
-        except Exception:  # noqa: BLE001 — one bad event mustn't drop the rest
-            logger.exception("Brevo webhook: process_event failed for %r", ev)
-    await db.commit()
-    logger.info("Brevo webhook: processed %d/%d event(s) id=%r", recorded, len(events), event_id)
-    return {"ok": True, "recorded": recorded}
+            db.add(WebhookEvent(provider="brevo", tenant_id=tenant_id, event_id=event_id))
+            await db.commit()
+        except Exception:  # noqa: BLE001 — UniqueViolation = already processed
+            await db.rollback()
+            logger.info("Brevo webhook: duplicate event_id=%r — skipping", event_id)
+            return {"ok": True, "duplicate": True}
+
+        recorded = 0
+        for ev in events:
+            try:
+                if await process_event(db, ev):
+                    recorded += 1
+            except Exception:  # noqa: BLE001 — one bad event mustn't drop the rest
+                logger.exception("Brevo webhook: process_event failed for %r", ev)
+        await db.commit()
+        logger.info("Brevo webhook: processed %d/%d event(s) id=%r", recorded, len(events), event_id)
+        return {"ok": True, "recorded": recorded}

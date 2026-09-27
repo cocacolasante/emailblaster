@@ -23,6 +23,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant, run_per_tenant
+from app.tenancy.keys import domain_rate_key
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
@@ -263,10 +265,10 @@ async def check_rate_limits(
     # Same read-only check pattern as the per-campaign caps; the min-gate
     # below serializes, so they aren't raced any worse than those.
     if domain:
-        dom_hour_raw = await redis_client.get(f"rate:domain:{domain}:hour")
+        dom_hour_raw = await redis_client.get(domain_rate_key(domain, "hour"))
         if int(dom_hour_raw or 0) >= settings.DOMAIN_MAX_PER_HOUR:
             return {"ok": False, "reason": "domain_hourly_cap", "retry_in": 300}
-        dom_day_raw = await redis_client.get(f"rate:domain:{domain}:day")
+        dom_day_raw = await redis_client.get(domain_rate_key(domain, "day"))
         if int(dom_day_raw or 0) >= settings.DOMAIN_MAX_PER_DAY:
             tz = pytz.timezone(campaign.schedule_timezone or "UTC")
             tomorrow = (
@@ -338,10 +340,10 @@ async def increment_rate_counters(
     pipe.incr(f"rate:{cid}:day")
     pipe.expire(f"rate:{cid}:day", day_ttl, nx=True)
     if domain:
-        pipe.incr(f"rate:domain:{domain}:hour")
-        pipe.expire(f"rate:domain:{domain}:hour", 3600, nx=True)
-        pipe.incr(f"rate:domain:{domain}:day")
-        pipe.expire(f"rate:domain:{domain}:day", day_ttl, nx=True)
+        pipe.incr(domain_rate_key(domain, "hour"))
+        pipe.expire(domain_rate_key(domain, "hour"), 3600, nx=True)
+        pipe.incr(domain_rate_key(domain, "day"))
+        pipe.expire(domain_rate_key(domain, "day"), day_ttl, nx=True)
     await pipe.execute()
 
 
@@ -350,6 +352,7 @@ async def increment_rate_counters(
 # --------------------------------------------------------------------------
 
 
+@in_record_tenant("lead", "lead_id")
 async def _mark_send_failed(lead_id: str) -> None:
     engine = worker_engine()
     try:
@@ -419,6 +422,7 @@ async def check_send_gates(
     return {"ok": True, "domain": domain}
 
 
+@in_record_tenant("lead", "lead_id")
 async def send_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
     engine = worker_engine()
@@ -659,4 +663,4 @@ async def _pace_first_emails_async() -> dict[str, int]:
 @celery_app.task(name="send.pace_first_emails", acks_late=False)
 def pace_first_emails() -> dict[str, int]:  # noqa: D401
     """Beat entry point for the first-email pacer (every 60s)."""
-    return asyncio.run(_pace_first_emails_async())
+    return asyncio.run(run_per_tenant(_pace_first_emails_async))

@@ -21,6 +21,15 @@ from app.models import (
     SuppressionReason,
 )
 from app.workers import brevo_events_poller as poller
+from tests.conftest import DEFAULT_TENANT_ID
+
+
+WATERMARK_KEY = f"brevo:events:{DEFAULT_TENANT_ID}:last_polled_at"
+
+
+@pytest.fixture(autouse=True)
+def _brevo_configured(set_creds):
+    set_creds("brevo", api_key="test-key")
 
 
 @pytest.fixture(autouse=True)
@@ -29,10 +38,10 @@ async def _clear_watermark():
     is shared across tests so we explicitly delete the key before each."""
     client = poller._new_redis()
     try:
-        await client.delete(poller.WATERMARK_KEY)
+        await client.delete(WATERMARK_KEY)
         yield
     finally:
-        await client.delete(poller.WATERMARK_KEY)
+        await client.delete(WATERMARK_KEY)
         await client.aclose()
 
 

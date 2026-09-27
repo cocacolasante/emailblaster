@@ -28,11 +28,11 @@ def _ambient_tenant() -> uuid.UUID | None:
 
 class TenantMixin:
     @declared_attr
-    def tenant_id(cls) -> Mapped[uuid.UUID | None]:  # noqa: N805
+    def tenant_id(cls) -> Mapped[uuid.UUID]:  # noqa: N805
         return mapped_column(
             UUID(as_uuid=True),
             ForeignKey("tenants.id", ondelete="CASCADE"),
-            nullable=True,
+            nullable=False,
             index=True,
             default=_ambient_tenant,
         )

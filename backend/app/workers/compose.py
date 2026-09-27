@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
@@ -438,6 +439,7 @@ async def generate_linkedin_dm_text(
 # --------------------------------------------------------------------------
 
 
+@in_record_tenant("lead", "lead_id")
 async def _mark_compose_failed(lead_id: str) -> None:
     engine = worker_engine()
     try:
@@ -450,6 +452,7 @@ async def _mark_compose_failed(lead_id: str) -> None:
         await engine.dispose()
 
 
+@in_record_tenant("lead", "lead_id")
 async def compose_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
     engine = worker_engine()

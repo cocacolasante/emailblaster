@@ -23,6 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
+from app.tenancy.keys import funding_stop_key
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     CrmActivity,
@@ -69,7 +71,7 @@ def _funding_redis():
 
 
 def _stop_key(source: str) -> str:
-    return f"funding:stop:{source}"
+    return funding_stop_key(source)
 
 
 def _request_stop(source: str) -> bool:
@@ -541,7 +543,7 @@ async def _poll_usaspending_async() -> dict[str, Any]:
 # dies mid-run the periodic beat simply re-runs it next tick.
 @celery_app.task(name="funding.poll_usaspending", acks_late=False)
 def poll_usaspending() -> dict[str, Any]:
-    return asyncio.run(_poll_usaspending_async())
+    return asyncio.run(run_per_tenant(_poll_usaspending_async))
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +610,7 @@ async def _poll_irs_bmf_async() -> dict[str, Any]:
 
 @celery_app.task(name="funding.poll_irs_bmf", acks_late=False)
 def poll_irs_bmf() -> dict[str, Any]:
-    return asyncio.run(_poll_irs_bmf_async())
+    return asyncio.run(run_per_tenant(_poll_irs_bmf_async))
 
 
 # ---------------------------------------------------------------------------
@@ -753,4 +755,4 @@ async def _retry_enrichment_async() -> dict[str, Any]:
 
 @celery_app.task(name="funding.retry_enrichment", acks_late=False)
 def retry_enrichment() -> dict[str, Any]:
-    return asyncio.run(_retry_enrichment_async())
+    return asyncio.run(run_per_tenant(_retry_enrichment_async))

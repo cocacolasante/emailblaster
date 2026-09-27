@@ -4,6 +4,7 @@ from datetime import time
 
 from sqlalchemy import select
 
+from tests.conftest import DEFAULT_TENANT_ID
 from app.models import (
     Campaign,
     EmailEvent,
@@ -187,24 +188,23 @@ async def test_brevo_webhook_route_requires_auth(client):
     assert resp.status_code == 401
 
 
-async def test_brevo_webhook_rejects_wrong_and_missing_secret(client, monkeypatch):
-    monkeypatch.setattr("app.routers.webhooks.settings.BREVO_WEBHOOK_SECRET", "shh")
-    bad = await client.post(
-        "/webhooks/brevo", json={"event": "delivered"}, headers={"X-Brevo-Auth": "nope"},
-    )
+async def test_brevo_webhook_rejects_wrong_and_missing_secret(set_creds, client, monkeypatch):
+    set_creds("brevo", api_key="k", webhook_secret="shh")
+    url = f"/webhooks/brevo/{DEFAULT_TENANT_ID}"
+    bad = await client.post(url, json={"event": "delivered"}, headers={"X-Brevo-Auth": "nope"})
     assert bad.status_code == 401
-    none = await client.post("/webhooks/brevo", json={"event": "delivered"})
+    none = await client.post(url, json={"event": "delivered"})
     assert none.status_code == 401
 
 
-async def test_brevo_webhook_suppresses_on_bounce(client, db_session, monkeypatch):
+async def test_brevo_webhook_suppresses_on_bounce(set_creds, client, db_session, monkeypatch):
     """A real-time hard-bounce event funnels through process_event → suppression
     (added to the ignore list + the lead pulled from the send queue)."""
-    monkeypatch.setattr("app.routers.webhooks.settings.BREVO_WEBHOOK_SECRET", "shh")
+    set_creds("brevo", api_key="k", webhook_secret="shh")
     _, lead = await _make_campaign_and_lead(db_session, brevo_id="wh-msg-1")
 
     resp = await client.post(
-        "/webhooks/brevo",
+        f"/webhooks/brevo/{DEFAULT_TENANT_ID}",
         json={"event": "hard_bounce", "email": lead.email, "message-id": "wh-msg-1", "id": 999},
         headers={"X-Brevo-Auth": "shh"},
     )
@@ -217,13 +217,14 @@ async def test_brevo_webhook_suppresses_on_bounce(client, db_session, monkeypatc
     assert lead.send_status is SendStatus.SUPPRESSED
 
 
-async def test_brevo_webhook_dedups_retries(client, db_session, monkeypatch):
+async def test_brevo_webhook_dedups_retries(set_creds, client, db_session, monkeypatch):
     """Brevo retries at-least-once; the second identical delivery short-circuits
     via the webhook_events event-id guard."""
-    monkeypatch.setattr("app.routers.webhooks.settings.BREVO_WEBHOOK_SECRET", "shh")
+    set_creds("brevo", api_key="k", webhook_secret="shh")
     _, lead = await _make_campaign_and_lead(db_session, brevo_id="dd-1")
 
     ev = {"event": "unsubscribed", "email": lead.email, "message-id": "dd-1", "id": 555}
+    # Legacy single URL: the workspace is resolved from the message id.
     r1 = await client.post("/webhooks/brevo", json=ev, headers={"X-Brevo-Auth": "shh"})
     r2 = await client.post("/webhooks/brevo", json=ev, headers={"X-Brevo-Auth": "shh"})
 

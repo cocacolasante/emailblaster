@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     AgentActionStatus,
@@ -226,4 +227,4 @@ async def poll_all_replies_async() -> dict[str, Any]:
 
 @celery_app.task(name="reply_poller.poll_all_replies")
 def poll_all_replies() -> dict[str, Any]:
-    return asyncio.run(poll_all_replies_async())
+    return asyncio.run(run_per_tenant(poll_all_replies_async))

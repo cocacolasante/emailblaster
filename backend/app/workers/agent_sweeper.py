@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     AgentActionStatus,
@@ -137,7 +138,7 @@ async def _sweep_reminders_async() -> dict[str, Any]:
 
 @celery_app.task(name="agent_sweeper.sweep_reminders")
 def sweep_reminders() -> dict[str, Any]:
-    return asyncio.run(_sweep_reminders_async())
+    return asyncio.run(run_per_tenant(_sweep_reminders_async))
 
 
 async def _sweep_stale_opps_async() -> dict[str, Any]:
@@ -157,4 +158,4 @@ async def _sweep_stale_opps_async() -> dict[str, Any]:
 
 @celery_app.task(name="agent_sweeper.sweep_stale_opps")
 def sweep_stale_opps() -> dict[str, Any]:
-    return asyncio.run(_sweep_stale_opps_async())
+    return asyncio.run(run_per_tenant(_sweep_stale_opps_async))

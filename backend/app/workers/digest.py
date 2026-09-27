@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     AgentActionStatus,
@@ -246,4 +247,4 @@ async def _send_daily_async() -> dict[str, Any]:
 
 @celery_app.task(name="digest.send_daily")
 def send_daily() -> dict[str, Any]:
-    return asyncio.run(_send_daily_async())
+    return asyncio.run(run_per_tenant(_send_daily_async))

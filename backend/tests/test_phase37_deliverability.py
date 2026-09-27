@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
+
+from tests.conftest import DEFAULT_TENANT_ID
 import pytz
 from sqlalchemy import select
 
@@ -84,7 +86,7 @@ async def test_domain_hourly_cap_defers_when_campaign_has_headroom(
     monkeypatch.setattr(settings, "DOMAIN_MAX_PER_HOUR", 5)
     campaign = await _make_campaign(db_session, max_per_hour=100)
     # Another campaign already burned the domain's hourly budget.
-    await fake_redis.set("rate:domain:acme-mail.com:hour", "5")
+    await fake_redis.set(f"rate:domain:{DEFAULT_TENANT_ID}:acme-mail.com:hour", "5")
 
     result = await send_mod.check_rate_limits(
         campaign, fake_redis, domain="acme-mail.com",
@@ -96,7 +98,7 @@ async def test_domain_hourly_cap_defers_when_campaign_has_headroom(
 async def test_domain_daily_cap_defers_to_tomorrow(db_session, fake_redis, monkeypatch):
     monkeypatch.setattr(settings, "DOMAIN_MAX_PER_DAY", 10)
     campaign = await _make_campaign(db_session)
-    await fake_redis.set("rate:domain:acme-mail.com:day", "10")
+    await fake_redis.set(f"rate:domain:{DEFAULT_TENANT_ID}:acme-mail.com:day", "10")
 
     result = await send_mod.check_rate_limits(
         campaign, fake_redis, domain="acme-mail.com",
@@ -118,8 +120,8 @@ async def test_increment_bumps_domain_counters_alongside_campaign(
     campaign = await _make_campaign(db_session)
     await send_mod.increment_rate_counters(campaign, fake_redis, domain="acme-mail.com")
     assert await fake_redis.get(f"rate:{campaign.id}:hour") == "1"
-    assert await fake_redis.get("rate:domain:acme-mail.com:hour") == "1"
-    assert await fake_redis.get("rate:domain:acme-mail.com:day") == "1"
+    assert await fake_redis.get(f"rate:domain:{DEFAULT_TENANT_ID}:acme-mail.com:hour") == "1"
+    assert await fake_redis.get(f"rate:domain:{DEFAULT_TENANT_ID}:acme-mail.com:day") == "1"
 
 
 async def test_resolve_sending_domain_prefers_connected_account(db_session):

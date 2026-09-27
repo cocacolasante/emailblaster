@@ -24,6 +24,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import ComposeStatus, Lead, ResearchStatus
 from app.workers.celery_app import celery_app
@@ -114,4 +115,4 @@ async def _sweep_async() -> dict[str, int]:
 
 @celery_app.task(name="lead_sweeper.sweep_stale")
 def sweep_stale() -> dict[str, int]:
-    return asyncio.run(_sweep_async())
+    return asyncio.run(run_per_tenant(_sweep_async))

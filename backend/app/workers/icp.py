@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     IcpProfileStatus,
@@ -46,7 +47,7 @@ async def _refresh_profile_async() -> dict[str, Any]:
 
 @celery_app.task(name="icp.refresh_profile")
 def refresh_profile() -> dict[str, Any]:
-    return asyncio.run(_refresh_profile_async())
+    return asyncio.run(run_per_tenant(_refresh_profile_async))
 
 
 async def discover_session(session: AsyncSession) -> dict[str, Any]:
@@ -106,4 +107,4 @@ async def _discover_async() -> dict[str, Any]:
 
 @celery_app.task(name="icp.discover")
 def discover() -> dict[str, Any]:
-    return asyncio.run(_discover_async())
+    return asyncio.run(run_per_tenant(_discover_async))

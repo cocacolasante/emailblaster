@@ -10,6 +10,8 @@ network.
 from datetime import datetime, time, timedelta, timezone
 
 import pytest
+
+from tests.conftest import DEFAULT_TENANT_ID
 from sqlalchemy import select
 
 from app.models import (
@@ -557,8 +559,8 @@ async def test_page_invite_cap_is_per_page(db_session, monkeypatch):
 
     rc = seq_mod._li_redis()
     await rc.delete(
-        f"li-rate:page:PAGE_A:month",
-        f"li-rate:page:PAGE_B:month",
+        f"li-rate:page:{DEFAULT_TENANT_ID}:PAGE_A:month",
+        f"li-rate:page:{DEFAULT_TENANT_ID}:PAGE_B:month",
         f"li-rate:{acc.id}:day",
         f"li-rate:{acc.id}:last",
     )

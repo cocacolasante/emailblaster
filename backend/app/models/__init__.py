@@ -203,3 +203,8 @@ from app.database import Base as _Base  # noqa: E402
 from app.tenancy.mixin import install_owner_fk_ddl as _install_owner_fk_ddl  # noqa: E402
 
 _install_owner_fk_ddl(_Base.metadata)
+
+# Tenant-blind record → tenant resolver (SECURITY DEFINER), for create_all.
+from app.tenancy.worker import install_tenant_of_ddl as _install_tenant_of_ddl  # noqa: E402
+
+_install_tenant_of_ddl(_Base.metadata)

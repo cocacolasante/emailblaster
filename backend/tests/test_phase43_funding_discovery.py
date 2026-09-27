@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from tests.conftest import DEFAULT_TENANT_ID
 from sqlalchemy import func, select
 
 from app.models import (
@@ -1504,7 +1506,7 @@ class _FakeFlagRedis:
 
 async def test_stage_all_aborts_when_stop_flag_set(db_session, monkeypatch):
     fake = _FakeFlagRedis()
-    fake.set("funding:stop:usaspending", "1")
+    fake.set(f"funding:stop:{DEFAULT_TENANT_ID}:usaspending", "1")
     monkeypatch.setattr(funding_signals, "_funding_redis", lambda: fake)
     staged = MagicMock()
     monkeypatch.setattr(funding_signals, "_stage_discovery_signal", staged)
@@ -1528,16 +1530,16 @@ async def test_stop_funding_run_raises_stop_flag(monkeypatch):
 
     result = funding_signals.stop_funding_run("usaspending")
     assert result["stop_flagged"] is True
-    assert fake.exists("funding:stop:usaspending")
+    assert fake.exists(f"funding:stop:{DEFAULT_TENANT_ID}:usaspending")
 
 
 async def test_poll_clears_stale_stop_flag_on_start(db_session, monkeypatch):
     fake = _FakeFlagRedis()
-    fake.set("funding:stop:usaspending", "1")
+    fake.set(f"funding:stop:{DEFAULT_TENANT_ID}:usaspending", "1")
     monkeypatch.setattr(funding_signals, "_funding_redis", lambda: fake)
     monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", False)
 
     # Even a disabled (early-return) poll clears the stale flag first, so a
     # prior Stop can't wedge the next run.
     await _poll_usaspending_async()
-    assert not fake.exists("funding:stop:usaspending")
+    assert not fake.exists(f"funding:stop:{DEFAULT_TENANT_ID}:usaspending")

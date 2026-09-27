@@ -19,6 +19,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant, run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.services.intent import (
     collect_ats, collect_careers, collect_dev_roles, collect_grants_gov,
@@ -40,7 +41,7 @@ async def _backfill_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.backfill_orgs", acks_late=False)
 def backfill_orgs() -> dict[str, int]:
-    return asyncio.run(_backfill_async())
+    return asyncio.run(run_per_tenant(_backfill_async))
 
 
 async def _propublica_async() -> dict[str, int]:
@@ -54,7 +55,7 @@ async def _propublica_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.collect_propublica_rev_delta", acks_late=False)
 def collect_propublica_rev_delta() -> dict[str, int]:
-    return asyncio.run(_propublica_async())
+    return asyncio.run(run_per_tenant(_propublica_async))
 
 
 async def _recompute_async() -> dict[str, int]:
@@ -68,7 +69,7 @@ async def _recompute_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.recompute_intent", acks_late=False)
 def recompute_intent() -> dict[str, int]:
-    return asyncio.run(_recompute_async())
+    return asyncio.run(run_per_tenant(_recompute_async))
 
 
 def _profile_lists(profile) -> tuple[list[str], list[str]]:
@@ -108,7 +109,7 @@ async def _collect_grants_gov_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.collect_grants_gov", acks_late=False)
 def collect_grants_gov_task() -> dict[str, int]:
-    return asyncio.run(_collect_grants_gov_async())
+    return asyncio.run(run_per_tenant(_collect_grants_gov_async))
 
 
 async def _collect_dev_roles_async() -> dict[str, int]:
@@ -127,7 +128,7 @@ async def _collect_dev_roles_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.collect_dev_roles", acks_late=False)
 def collect_dev_roles_task() -> dict[str, int]:
-    return asyncio.run(_collect_dev_roles_async())
+    return asyncio.run(run_per_tenant(_collect_dev_roles_async))
 
 
 async def _collect_careers_async() -> dict[str, int]:
@@ -141,7 +142,7 @@ async def _collect_careers_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.collect_careers_dev_roles", acks_late=False)
 def collect_careers_dev_roles_task() -> dict[str, int]:
-    return asyncio.run(_collect_careers_async())
+    return asyncio.run(run_per_tenant(_collect_careers_async))
 
 
 async def _collect_ats_async() -> dict[str, int]:
@@ -155,7 +156,7 @@ async def _collect_ats_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.collect_ats_dev_roles", acks_late=False)
 def collect_ats_dev_roles_task() -> dict[str, int]:
-    return asyncio.run(_collect_ats_async())
+    return asyncio.run(run_per_tenant(_collect_ats_async))
 
 
 async def _collect_usaspending_peer_async() -> dict[str, int]:
@@ -175,7 +176,7 @@ async def _collect_usaspending_peer_async() -> dict[str, int]:
 
 @celery_app.task(name="intent.collect_usaspending_peer", acks_late=False)
 def collect_usaspending_peer_task() -> dict[str, int]:
-    return asyncio.run(_collect_usaspending_peer_async())
+    return asyncio.run(run_per_tenant(_collect_usaspending_peer_async))
 
 
 async def _promote_async() -> dict[str, int]:
@@ -190,9 +191,10 @@ async def _promote_async() -> dict[str, int]:
 @celery_app.task(name="intent.promote_eligible", acks_late=False)
 def promote_eligible() -> dict[str, int]:
     """Stage approval-pending DRAFTS for promotable orgs.  NEVER sends."""
-    return asyncio.run(_promote_async())
+    return asyncio.run(run_per_tenant(_promote_async))
 
 
+@in_record_tenant("lead", "lead_id")
 async def _enrich_draft_async(lead_id: str) -> dict:
     engine = worker_engine()
     try:

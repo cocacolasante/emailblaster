@@ -78,6 +78,13 @@ def upgrade() -> None:
         for t in ALL:
             bind.execute(sa.text(f"UPDATE {t} SET tenant_id = :t WHERE tenant_id IS NULL"),
                          {"t": BOOTSTRAP_TENANT_ID})
+    else:
+        # Fresh install: the only pre-existing rows are app-wide seeds (0038's
+        # default pipeline, a lazily-created agent_settings row).  No workspace
+        # can own them; each new workspace gets its own at signup
+        # (services/tenant_seed.py).
+        for t in ("opportunity_stages", "pipelines", "agent_settings"):
+            bind.execute(sa.text(f"DELETE FROM {t} WHERE tenant_id IS NULL"))
 
     # --- Per-tenant uniqueness ----------------------------------------------
     op.drop_constraint("uq_suppression_list_email", "suppression_list", type_="unique")

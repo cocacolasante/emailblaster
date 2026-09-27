@@ -51,3 +51,24 @@ def test_no_engine_built_outside_factories():
         {"database.py", "tenancy/worker_db.py", "scripts/"},
     )
     assert not offenders, "\n".join(offenders)
+
+
+def test_skip_tenant_filter_only_in_audited_modules():
+    """Opting out of the ORM tenant filter is rare and audited."""
+    offenders = _scan(
+        r"skip_tenant_filter",
+        {"tenancy/scoping.py", "services/tenant_seed.py"},
+    )
+    assert not offenders, "\n".join(offenders)
+
+
+def test_shared_namespace_redis_keys_are_tenant_scoped():
+    """Keys namespaced by something two workspaces can share (a sending
+    domain, a LinkedIn page, a feed source) must go through
+    app.tenancy.keys, which prefixes the tenant id."""
+    offenders = _scan(
+        r'f"(rate:domain:\{domain\}|li-rate:page:\{page_id\}|funding:stop:\{source\})|'
+        r'"brevo:events:last_polled_at"',
+        {"tenancy/keys.py"},
+    )
+    assert not offenders, "\n".join(offenders)

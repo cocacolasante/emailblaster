@@ -23,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant, run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     LinkedInAccount,
@@ -82,6 +83,7 @@ def _next_run_at(frequency: SocialSearchFrequency) -> datetime | None:
 # Topic expansion
 # ---------------------------------------------------------------------------
 
+@in_record_tenant("social_search", "search_id")
 async def _expand_social_topic_async(search_id: str) -> dict[str, Any]:
     sid = uuid.UUID(str(search_id))
     engine = worker_engine()
@@ -430,6 +432,7 @@ async def _upsert_post(
     return existing_id, False
 
 
+@in_record_tenant("social_search", "search_id")
 async def _run_social_search_async(search_id: str) -> dict[str, Any]:
     sid = uuid.UUID(str(search_id))
     engine = worker_engine()
@@ -738,6 +741,7 @@ async def _run_social_search_async(search_id: str) -> dict[str, Any]:
         await engine.dispose()
 
 
+@in_record_tenant("social_search", "search_id")
 async def _mark_search_failed(search_id: str, error: str) -> None:
     sid = uuid.UUID(str(search_id))
     engine = worker_engine()
@@ -769,6 +773,7 @@ def run_social_search(self, search_id: str) -> dict[str, Any]:  # noqa: D401
 # Per-post qualifier
 # ---------------------------------------------------------------------------
 
+@in_record_tenant("social_search", "search_id")
 async def _qualify_social_post_async(post_id: str, search_id: str) -> dict[str, Any]:
     pid = uuid.UUID(str(post_id))
     sid = uuid.UUID(str(search_id))
@@ -880,6 +885,7 @@ async def _upsert_opportunity(
     await session.execute(stmt)
 
 
+@in_record_tenant("social_search", "search_id")
 async def _qualify_social_posts_batch_async(
     post_ids: list[str], search_id: str,
 ) -> dict[str, Any]:
@@ -1007,4 +1013,4 @@ async def _scheduled_runner_async() -> dict[str, Any]:
 
 @celery_app.task(name="social_listening.scheduled_runner")
 def scheduled_runner() -> dict[str, Any]:
-    return asyncio.run(_scheduled_runner_async())
+    return asyncio.run(run_per_tenant(_scheduled_runner_async))

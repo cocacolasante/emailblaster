@@ -20,7 +20,7 @@ dropped nearly every open once a steady send stream kept the newest
 event date pinned to "now" (2026-07-29: 184 opens at Brevo, 2 ingested).
 Events older than 24h won't be back-filled — that's a deliberate floor
 to keep the API query bounded; ``scripts/backfill_brevo_events.py``
-covers historical recovery.  ``brevo:events:last_polled_at`` in Redis is
+covers historical recovery.  ``brevo:events:{tenant}:last_polled_at`` in Redis is
 now purely an observability stamp of the last successful poll.
 """
 from __future__ import annotations
@@ -34,14 +34,16 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
+from app.tenancy.keys import brevo_watermark_key
 from app.tenancy.worker_db import worker_engine
 from app.services import brevo
+from app.services import credentials
 from app.services.brevo_events import process_event
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-WATERMARK_KEY = "brevo:events:last_polled_at"
 LOOKBACK_FLOOR_HOURS = 24
 
 
@@ -72,7 +74,13 @@ def _parse_event_date(raw: Any) -> datetime | None:
 
 
 async def _poll_async() -> dict[str, int]:
+    """Poll the CURRENT workspace's Brevo account (beat runs this once per
+    workspace).  Events are matched to leads by message id within the
+    workspace, so two workspaces sharing one Brevo account still each
+    record only their own."""
     counts = {"fetched": 0, "processed": 0, "deduped_or_unmatched": 0}
+    if not credentials.is_configured("brevo"):
+        return counts
     redis_client = _new_redis()
     engine = worker_engine()
     try:
@@ -108,7 +116,7 @@ async def _poll_async() -> dict[str, int]:
             await session.commit()
 
         # Observability stamp only — nothing filters on this anymore.
-        await redis_client.set(WATERMARK_KEY, now.isoformat())
+        await redis_client.set(brevo_watermark_key(), now.isoformat())
     finally:
         await engine.dispose()
         await redis_client.aclose()
@@ -117,4 +125,4 @@ async def _poll_async() -> dict[str, int]:
 
 @celery_app.task(name="brevo_events_poller.poll")
 def poll_brevo_events() -> dict[str, int]:
-    return asyncio.run(_poll_async())
+    return asyncio.run(run_per_tenant(_poll_async))

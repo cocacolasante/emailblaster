@@ -20,6 +20,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.services import brevo_blocklist, credentials
 from app.workers.celery_app import celery_app
@@ -51,4 +52,4 @@ async def _sync_async() -> dict[str, int]:
 
 @celery_app.task(name="brevo_blocklist_sync.sync", acks_late=False)
 def sync_brevo_blocklist() -> dict[str, int]:
-    return asyncio.run(_sync_async())
+    return asyncio.run(run_per_tenant(_sync_async))

@@ -13,6 +13,8 @@ from datetime import time
 from typing import Any
 
 import pytest
+
+from tests.conftest import DEFAULT_TENANT_ID
 from sqlalchemy import select
 
 from app.models import (
@@ -34,9 +36,12 @@ from app.models import (
 SECRET = "test-unipile-secret"
 
 
+URL = f"/webhooks/unipile/{DEFAULT_TENANT_ID}"
+
+
 @pytest.fixture(autouse=True)
-def _wire_secret(monkeypatch):
-    monkeypatch.setattr("app.routers.webhooks.settings.UNIPILE_WEBHOOK_SECRET", SECRET)
+def _wire_secret(monkeypatch, set_creds):
+    set_creds("unipile", api_key="k", webhook_secret=SECRET)
     monkeypatch.setattr("app.routers.webhooks.settings.UNIPILE_WEBHOOK_AUTH_HEADER", "X-Unipile-Auth")
 
 
@@ -57,7 +62,7 @@ async def _make_unipile_account(db_session, unipile_id: str = "up-acct-1") -> Li
 
 async def test_rejects_missing_auth_header(client):
     resp = await client.post(
-        "/webhooks/unipile",
+        URL,
         json={"type": "account.connected"},
     )
     assert resp.status_code == 401
@@ -65,7 +70,7 @@ async def test_rejects_missing_auth_header(client):
 
 async def test_rejects_wrong_auth_header(client):
     resp = await client.post(
-        "/webhooks/unipile",
+        URL,
         json={"type": "account.connected"},
         headers={"X-Unipile-Auth": "nope"},
     )
@@ -74,7 +79,7 @@ async def test_rejects_wrong_auth_header(client):
 
 async def test_rejects_non_object_payload(client):
     resp = await client.post(
-        "/webhooks/unipile",
+        URL,
         json=["not", "an", "object"],
         headers={"X-Unipile-Auth": SECRET},
     )
@@ -95,11 +100,11 @@ async def test_duplicate_event_id_is_a_noop(client, db_session):
     }
     headers = {"X-Unipile-Auth": SECRET}
 
-    r1 = await client.post("/webhooks/unipile", json=payload, headers=headers)
+    r1 = await client.post(URL, json=payload, headers=headers)
     assert r1.status_code == 200
     assert r1.json().get("duplicate") is not True
 
-    r2 = await client.post("/webhooks/unipile", json=payload, headers=headers)
+    r2 = await client.post(URL, json=payload, headers=headers)
     assert r2.status_code == 200
     assert r2.json().get("duplicate") is True
 
@@ -121,8 +126,8 @@ async def test_body_hash_dedup_when_event_id_missing(client, db_session):
     }
     headers = {"X-Unipile-Auth": SECRET}
 
-    r1 = await client.post("/webhooks/unipile", json=payload, headers=headers)
-    r2 = await client.post("/webhooks/unipile", json=payload, headers=headers)
+    r1 = await client.post(URL, json=payload, headers=headers)
+    r2 = await client.post(URL, json=payload, headers=headers)
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r2.json().get("duplicate") is True
@@ -165,8 +170,8 @@ async def test_invitation_accepted_advances_parked_dm_once(client, db_session):
     }
     headers = {"X-Unipile-Auth": SECRET}
 
-    r1 = await client.post("/webhooks/unipile", json=payload, headers=headers)
-    r2 = await client.post("/webhooks/unipile", json=payload, headers=headers)
+    r1 = await client.post(URL, json=payload, headers=headers)
+    r2 = await client.post(URL, json=payload, headers=headers)
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r2.json().get("duplicate") is True
@@ -186,8 +191,8 @@ async def test_unknown_event_type_still_dedups(client, db_session):
     headers = {"X-Unipile-Auth": SECRET}
     payload = {"id": "evt-unknown-1", "type": "something.we.dont.handle"}
 
-    r1 = await client.post("/webhooks/unipile", json=payload, headers=headers)
-    r2 = await client.post("/webhooks/unipile", json=payload, headers=headers)
+    r1 = await client.post(URL, json=payload, headers=headers)
+    r2 = await client.post(URL, json=payload, headers=headers)
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r2.json().get("duplicate") is True

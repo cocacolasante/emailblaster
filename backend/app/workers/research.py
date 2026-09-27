@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant
 from app.tenancy.worker_db import worker_engine
 from app.services import credentials
 from app.models import (
@@ -102,6 +103,7 @@ def _safe(result: Any, default: Any) -> Any:
     return default if isinstance(result, BaseException) else result
 
 
+@in_record_tenant("lead", "lead_id")
 async def research_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
     engine = worker_engine()
@@ -274,6 +276,7 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
     return {"status": "done", "quality": quality, "compose_enqueued": enqueued}
 
 
+@in_record_tenant("lead", "lead_id")
 async def _mark_lead_failed(lead_id: str) -> None:
     engine = worker_engine()
     try:

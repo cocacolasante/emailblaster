@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import Lead, ResearchStatus
 from app.workers.celery_app import celery_app
@@ -22,6 +23,7 @@ from app.workers.research import research_lead
 logger = logging.getLogger(__name__)
 
 
+@in_record_tenant("campaign", "campaign_id")
 async def run_campaign_research_async(campaign_id: str | uuid.UUID) -> dict[str, int]:
     """Read pending leads for a campaign and queue research jobs.
 

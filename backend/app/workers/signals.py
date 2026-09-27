@@ -25,6 +25,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import in_record_tenant, run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import (
     CrmActivity,
@@ -178,6 +179,7 @@ async def run_watch_session(session: AsyncSession, watch_id: uuid.UUID) -> dict[
     }
 
 
+@in_record_tenant("signal_watch", "watch_id")
 async def _run_watch_async(watch_id: str) -> dict[str, Any]:
     engine = worker_engine()
     try:
@@ -240,4 +242,4 @@ async def _scheduled_runner_async() -> dict[str, Any]:
 
 @celery_app.task(name="signals.scheduled_runner")
 def scheduled_runner() -> dict[str, Any]:
-    return asyncio.run(_scheduled_runner_async())
+    return asyncio.run(run_per_tenant(_scheduled_runner_async))

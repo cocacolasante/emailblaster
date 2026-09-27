@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker import run_per_tenant
 from app.tenancy.worker_db import worker_engine
 from app.models import CampaignCopyInsights, ReplyOutcome
 from app.services import copy_insights
@@ -62,4 +63,4 @@ async def _refresh_all_async() -> dict[str, Any]:
 
 @celery_app.task(name="copy_insights.refresh_all")
 def refresh_all() -> dict[str, Any]:
-    return asyncio.run(_refresh_all_async())
+    return asyncio.run(run_per_tenant(_refresh_all_async))
