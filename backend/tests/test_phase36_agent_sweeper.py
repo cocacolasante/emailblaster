@@ -212,10 +212,10 @@ async def test_in_quiet_hours_plain_window():
     assert notifications.in_quiet_hours(base.replace(hour=12), 12, 12) is False
 
 
-async def test_quiet_hours_defer_email_but_persist_row(db_session, monkeypatch):
+async def test_quiet_hours_defer_email_but_persist_row(set_creds, db_session, monkeypatch):
     """Inside quiet hours the notification row persists with
     ``emailed_at`` NULL and Brevo is never called."""
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
+    set_creds("brevo", api_key="k")
     agent_settings = await agent_core.get_agent_settings(db_session)
     # Quiet hours = all 24 hours (start==end+wrap trick: use a window
     # covering "now" exactly).
@@ -240,8 +240,10 @@ async def test_quiet_hours_defer_email_but_persist_row(db_session, monkeypatch):
     assert notif.emailed_at is None
 
 
-async def test_email_sent_outside_quiet_hours(db_session, monkeypatch):
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
+async def test_email_sent_outside_quiet_hours(set_creds, db_session, monkeypatch):
+    """A workspace-wide alert (no linked record) emails the workspace's
+    owners/admins who have email alerts on."""
+    set_creds("brevo", api_key="k")
     agent_settings = await agent_core.get_agent_settings(db_session)
 
     send_mock = AsyncMock(return_value="msg-2")
@@ -256,21 +258,20 @@ async def test_email_sent_outside_quiet_hours(db_session, monkeypatch):
     assert outcome["emailed"] is True
     send_mock.assert_awaited_once()
     kwargs = send_mock.call_args.kwargs
-    assert kwargs["to_email"] == "owner@x.com"
-    assert "[Agent]" in kwargs["subject"]
+    assert kwargs["to_email"] == "owner@test.local"
+    assert "[Email Blaster]" in kwargs["subject"]
     notif = await db_session.scalar(select(Notification))
     assert notif.emailed_at is not None
 
 
 async def test_notification_uses_dedicated_from_sender(set_creds, db_session, monkeypatch):
-    """Agent alerts send from OWNER_NOTIFY_FROM_* when set, independent of
-    the campaign Brevo sender."""
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_EMAIL", "anthony@csuitecode.com")
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_NAME", "Anthony Colasante")
+    """Alerts send from the workspace's notify_from_* override when set,
+    independent of the campaign Brevo sender."""
     set_creds("brevo", api_key="k", sender_email="support@grantmind.pro")
     set_creds("brevo", sender_name="GrantMind Admin")
     agent_settings = await agent_core.get_agent_settings(db_session)
+    agent_settings.notify_from_email = "anthony@csuitecode.com"
+    agent_settings.notify_from_name = "Anthony Colasante"
 
     send_mock = AsyncMock(return_value="msg-from")
     with patch("app.services.notifications.brevo.send_email", new=send_mock):
@@ -285,10 +286,7 @@ async def test_notification_uses_dedicated_from_sender(set_creds, db_session, mo
 
 
 async def test_notification_from_sender_falls_back_to_brevo(set_creds, db_session, monkeypatch):
-    """Unset OWNER_NOTIFY_FROM_* → campaign Brevo sender (back-compat)."""
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_EMAIL", "")
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_FROM_NAME", "")
+    """No notify_from_* override → the workspace's Brevo sender."""
     set_creds("brevo", api_key="k", sender_email="support@grantmind.pro")
     set_creds("brevo", sender_name="GrantMind Admin")
     agent_settings = await agent_core.get_agent_settings(db_session)
@@ -305,8 +303,8 @@ async def test_notification_from_sender_falls_back_to_brevo(set_creds, db_sessio
     assert kwargs["sender_name"] == "GrantMind Admin"
 
 
-async def test_no_owner_email_persists_row_without_email(db_session, monkeypatch):
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "")
+async def test_no_brevo_persists_row_without_email(db_session, monkeypatch):
+    """A workspace without Brevo keeps the feed row but sends nothing."""
     agent_settings = await agent_core.get_agent_settings(db_session)
     send_mock = AsyncMock()
     with patch("app.services.notifications.brevo.send_email", new=send_mock):

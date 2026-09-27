@@ -38,6 +38,7 @@ from app.models import (
     Opportunity,
 )
 from app.services import notifications
+from app.services.ownership import inherit_owner
 from app.tenancy.context import require_tenant_id
 
 logger = logging.getLogger(__name__)
@@ -319,6 +320,7 @@ async def process_inbound_reply(
     activity: CrmActivity | None = None
     if agent_settings.auto_log_replies:
         activity = CrmActivity(
+            **inherit_owner(lead),
             lead_id=lead.id,
             # Converted lead → mirror onto the deal timeline too.
             opportunity_id=converted_opp_id,
@@ -386,6 +388,7 @@ async def process_inbound_reply(
             )
         else:
             reminder = CrmActivity(
+                **inherit_owner(lead),
                 lead_id=lead.id,
                 activity_type=CrmActivityType.TASK,
                 subject=CONVERT_REMINDER_SUBJECT,
@@ -421,7 +424,11 @@ async def process_inbound_reply(
                 opportunity_id=converted_opp_id,
             )
         else:
+            deal_owner = await session.scalar(
+                select(Opportunity.owner_id).where(Opportunity.id == converted_opp_id)
+            )
             followup = CrmActivity(
+                owner_id=deal_owner or lead.owner_id,
                 lead_id=lead.id,
                 opportunity_id=converted_opp_id,
                 activity_type=CrmActivityType.TASK,
@@ -609,6 +616,7 @@ async def flag_stale_opportunities(session: AsyncSession) -> dict[str, Any]:
 
         idle_days = (now - last_touch).days
         nudge = CrmActivity(
+            **inherit_owner(opp),
             opportunity_id=opp.id,
             lead_id=opp.source_lead_id,
             activity_type=CrmActivityType.TASK,

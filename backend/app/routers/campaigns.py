@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+from app.services import ownership
 from app.models import (
     Campaign,
     CampaignStatus,
@@ -248,8 +249,14 @@ async def create_campaign(
 
 
 @router.get("/", response_model=list[CampaignResponse])
-async def list_campaigns(db: AsyncSession = Depends(get_db)) -> list[CampaignResponse]:
-    rows = (await db.execute(select(Campaign).order_by(Campaign.created_at.desc()))).scalars().all()
+async def list_campaigns(
+    owner: str | None = Query(default=None, description="me | unassigned | <user id>"),
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignResponse]:
+    q = select(Campaign).order_by(Campaign.created_at.desc())
+    if (clause := ownership.owner_filter(Campaign, owner)) is not None:
+        q = q.where(clause)
+    rows = (await db.execute(q)).scalars().all()
     return [await _build_response(db, c) for c in rows]
 
 
@@ -296,6 +303,9 @@ async def update_campaign(
         # applies it).
         "send_time_optimization",
     }
+    if "owner_id" in updates:
+        await ownership.set_owner(db, c, updates.pop("owner_id"))
+
     _status_exempt_fields = (
         {"linkedin_account_id", "connected_account_id", "signature", "goal"}
         | _SCHEDULE_FIELDS

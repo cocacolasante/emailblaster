@@ -97,8 +97,8 @@ async def test_build_and_render_digest_content(db_session):
     assert "not\nemailed" in body or "not emailed" in body
 
 
-async def test_send_daily_persists_and_dedups_per_day(db_session, monkeypatch):
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
+async def test_send_daily_persists_and_dedups_per_day(set_creds, db_session, monkeypatch):
+    set_creds("brevo", api_key="k")
     await _seed(db_session)
 
     send_mock = AsyncMock(return_value="msg-digest")
@@ -106,7 +106,7 @@ async def test_send_daily_persists_and_dedups_per_day(db_session, monkeypatch):
         result = await send_daily_session(db_session)
         await db_session.commit()
 
-    assert result["sent"] is True and result["emailed"] is True
+    assert result["sent"] == 1 and result["emailed"] is True  # one member
     send_mock.assert_awaited_once()
 
     digest_row = await db_session.scalar(select(Notification).where(
@@ -123,10 +123,10 @@ async def test_send_daily_persists_and_dedups_per_day(db_session, monkeypatch):
     send_mock.assert_awaited_once()  # still just the one call
 
 
-async def test_digest_bypasses_quiet_hours(db_session, monkeypatch):
+async def test_digest_bypasses_quiet_hours(set_creds, db_session, monkeypatch):
     """The digest email goes out even when quiet hours would defer a
     normal alert — its hour is operator-configured."""
-    monkeypatch.setattr(notifications.settings, "OWNER_NOTIFY_EMAIL", "owner@x.com")
+    set_creds("brevo", api_key="k")
     s = await agent_core.get_agent_settings(db_session)
     now_hour = _now().hour
     s.quiet_hours_start_utc = now_hour

@@ -168,4 +168,3 @@ async def test_agent_config_defaults():
     assert settings.AGENT_DIGEST_HOUR_UTC == 12
     assert settings.AGENT_STALE_OPP_DAYS == 7
     assert settings.AGENT_TASK_DUE_SOON_HOURS == 24
-    assert settings.OWNER_NOTIFY_NAME == "Operator"

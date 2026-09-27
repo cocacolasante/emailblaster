@@ -8,9 +8,11 @@ from fastapi.responses import JSONResponse
 from app.config import settings, validate_required_settings
 from app.database import get_tenant_context
 from app.services.credentials import MissingCredential
+from app.services.ownership import NotAMember
 from app.routers import (
     agent,
     auth,
+    owners,
     team,
     icp,
     intent_profiles,
@@ -118,6 +120,11 @@ async def missing_credential_handler(request: Request, exc: MissingCredential):
     )
 
 
+@app.exception_handler(NotAMember)
+async def not_a_member_handler(request: Request, exc: NotAMember):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Catch-all for truly unexpected failures.
@@ -154,6 +161,7 @@ async def health() -> dict:
 _AUTHED = [Depends(get_tenant_context)]
 app.include_router(auth.router)
 app.include_router(team.router, dependencies=_AUTHED)
+app.include_router(owners.router, dependencies=_AUTHED)
 app.include_router(campaigns.router, dependencies=_AUTHED)
 app.include_router(leads.router, dependencies=_AUTHED)
 app.include_router(preview.router, dependencies=_AUTHED)

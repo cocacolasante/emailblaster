@@ -166,6 +166,7 @@ class CampaignUpdate(BaseModel):
     max_per_day: int | None = Field(default=None, ge=1)
     min_delay_seconds: int | None = Field(default=None, ge=0)
     send_time_optimization: bool | None = None
+    owner_id: uuid.UUID | None = None
 
     _v_days = field_validator("schedule_days")(_validate_days)
     _v_tmpl = field_validator("template_subject", "template_body", "signature")(_blank_to_none)
@@ -265,6 +266,7 @@ class CampaignResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    owner_id: uuid.UUID | None = None
     name: str
     goal: str
     tone: str

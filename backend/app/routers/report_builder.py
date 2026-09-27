@@ -113,7 +113,7 @@ async def duplicate_report(
         description=src.description,
         data_source=src.data_source,
         definition=src.definition,
-        owner_id=src.owner_id,
+        # owner defaults to whoever duplicated it
     )
     db.add(dup)
     await db.commit()

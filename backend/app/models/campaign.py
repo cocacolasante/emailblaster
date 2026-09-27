@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.tenancy.mixin import TenantMixin
+from app.tenancy.mixin import OwnedMixin, TenantMixin
 
 if TYPE_CHECKING:
     from app.models.connected_account import ConnectedAccount
@@ -43,7 +43,7 @@ class CampaignStatus(str, enum.Enum):
     COMPLETE = "complete"
 
 
-class Campaign(TenantMixin, Base):
+class Campaign(TenantMixin, OwnedMixin, Base):
     __tablename__ = "campaigns"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

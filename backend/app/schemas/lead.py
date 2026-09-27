@@ -41,6 +41,8 @@ class LeadSummary(BaseModel):
     #                    or a status word (Completed / Halted / Not started).
     sequence_status: str | None = None
     sequence_stage: str | None = None
+    # Accountable workspace member (NULL = unassigned).
+    owner_id: uuid.UUID | None = None
 
 
 class LeadEmailUpdate(BaseModel):

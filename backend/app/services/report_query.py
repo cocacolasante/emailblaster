@@ -113,6 +113,20 @@ def _serialize(v: Any) -> Any:
 # Filter -> SQLAlchemy expression (values bind as parameters)
 # --------------------------------------------------------------------------
 
+def _owner_value(v: Any):
+    """A member id, or "me" → the user running the report."""
+    import uuid as _uuid
+
+    from app.tenancy.context import current_user_id
+
+    if v == "me":
+        return current_user_id.get()
+    try:
+        return _uuid.UUID(str(v))
+    except ValueError:
+        raise ReportError(f"invalid owner '{v}' (use a member id or 'me')")
+
+
 def _filter_expr(f: FieldDef, op: str, value: Any):
     allowed = OPERATORS_BY_TYPE.get(f.type, [])
     if op not in allowed:
@@ -164,6 +178,14 @@ def _filter_expr(f: FieldDef, op: str, value: Any):
     if t == "boolean":
         truthy = value in (True, "true", "True", 1, "1")
         return c.is_(truthy)
+
+    if t == "owner":
+        if op == "in":
+            if not isinstance(value, list):
+                raise ReportError("'in' needs a list of values")
+            return c.in_([_owner_value(v) for v in value])
+        v = _owner_value(value)
+        return c == v if op == "equals" else or_(c != v, c.is_(None))
 
     raise ReportError(f"unsupported operator '{op}' for type '{t}'")
 

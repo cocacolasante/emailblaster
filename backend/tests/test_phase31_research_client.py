@@ -21,6 +21,14 @@ from app.services.compose_client import _truncate_at_sentence
 from app.services.research_client import parse_linkedin_url
 
 
+@pytest.fixture(autouse=True)
+def _anthropic_configured(set_creds):
+    """These tests mock the Anthropic client; the workspace just needs to
+    read as having an Anthropic key."""
+    set_creds("anthropic", api_key="test-key")
+
+
+
 # ---- Parser ---------------------------------------------------------------
 
 

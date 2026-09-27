@@ -37,6 +37,8 @@ class LeadCreate(BaseModel):
     company_website: str | None = Field(default=None, max_length=500)
     notes: str | None = None
     crm_status: CrmLeadStatus = CrmLeadStatus.NEW
+    # Omitted ⇒ the creator owns it.
+    owner_id: uuid.UUID | None = None
 
     _v_blank = field_validator(
         "first_name", "last_name", "company", "job_title", "phone",
@@ -68,6 +70,8 @@ class LeadCrmUpdate(BaseModel):
     linkedin_url: str | None = Field(default=None, max_length=500)
     company_website: str | None = Field(default=None, max_length=500)
     notes: str | None = None
+    # null ⇒ unassign.
+    owner_id: uuid.UUID | None = None
 
     _v_blank = field_validator(
         "first_name", "last_name", "company", "job_title", "phone",
@@ -121,6 +125,8 @@ class OpportunityCreate(BaseModel):
     company: str | None = None
     job_title: str | None = None
     linkedin_url: str | None = None
+    # Omitted ⇒ the creator owns it.
+    owner_id: uuid.UUID | None = None
 
     _v_blank = field_validator(
         "description", "first_name", "last_name", "email", "phone",
@@ -143,6 +149,7 @@ class OpportunityUpdate(BaseModel):
     company: str | None = None
     job_title: str | None = None
     linkedin_url: str | None = None
+    owner_id: uuid.UUID | None = None
 
 
 class OpportunityResponse(BaseModel):
@@ -256,6 +263,8 @@ class ActivityCreate(BaseModel):
     direction: CrmActivityDirection | None = None
     due_at: datetime | None = None
     occurred_at: datetime | None = None
+    # Assignee; omitted ⇒ the parent deal/lead's owner, else the creator.
+    owner_id: uuid.UUID | None = None
 
     _v_blank = field_validator("body")(_blank_to_none)
 
@@ -268,6 +277,7 @@ class ActivityUpdate(BaseModel):
     occurred_at: datetime | None = None
     # True → stamp completed_at now; False → clear it (reopen the task).
     completed: bool | None = None
+    owner_id: uuid.UUID | None = None
 
 
 class ActivityResponse(BaseModel):
@@ -287,6 +297,7 @@ class ActivityResponse(BaseModel):
     # Agent fields (migration 0027) — lets the UI badge automated rows.
     sentiment: str | None = None
     is_agent_generated: bool = False
+    owner_id: uuid.UUID | None = None
 
 
 class PaginatedActivities(BaseModel):

@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import ownership
+from app.services.ownership import inherit_owner
 from app.database import get_db
 from app.models import (
     Campaign,
@@ -60,6 +62,7 @@ async def list_all_leads(
     send_status: SendStatus | None = None,
     search: str | None = None,
     has_notes: bool | None = None,
+    owner: str | None = Query(default=None, description="me | unassigned | <user id>"),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedLeads:
     """Global cross-campaign leads listing — the lite-CRM Leads tab.
@@ -82,6 +85,9 @@ async def list_all_leads(
         filters.append(Lead.notes.is_not(None))
     elif has_notes is False:
         filters.append(Lead.notes.is_(None))
+    owner_clause = ownership.owner_filter(Lead, owner)
+    if owner_clause is not None:
+        filters.append(owner_clause)
 
     total = (await db.execute(
         select(func.count()).select_from(Lead).where(*filters)
@@ -533,6 +539,8 @@ async def confirm_upload(
             "campaign_id": campaign_id,
             "email": email,
             "raw_csv_row": row,
+            # Leads belong to the campaign owner, not whoever uploaded.
+            **inherit_owner(campaign),
         }
         for csv_col, field in field_map.items():
             value = (row.get(csv_col, "") or "").strip()

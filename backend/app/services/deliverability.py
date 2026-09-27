@@ -148,6 +148,8 @@ async def trip_breaker(
                 "Resume the campaign manually."
             ),
             dedup_key=f"campaign_auto_paused:{campaign.id}:{now:%Y-%m-%d}",
+            # The campaign's owner; workspace-wide when it has none.
+            recipient_user_id=campaign.owner_id,
         )
     except Exception:  # noqa: BLE001 — the pause itself is the critical action
         logger.exception("breaker notification failed for %s", campaign.id)

@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.tenancy.mixin import TenantMixin
+from app.tenancy.mixin import OwnedMixin, TenantMixin
 
 
 class CrmLeadStatus(str, enum.Enum):
@@ -77,7 +77,7 @@ class CrmActivityDirection(str, enum.Enum):
     OUTBOUND = "outbound"
 
 
-class Opportunity(TenantMixin, Base):
+class Opportunity(TenantMixin, OwnedMixin, Base):
     __tablename__ = "crm_opportunities"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -136,7 +136,6 @@ class Opportunity(TenantMixin, Base):
         nullable=True, index=True,
     )
     # No FK yet — no users/auth table exists; design-ready for a later refactor.
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
@@ -155,7 +154,7 @@ class Opportunity(TenantMixin, Base):
     )
 
 
-class CrmActivity(TenantMixin, Base):
+class CrmActivity(TenantMixin, OwnedMixin, Base):
     __tablename__ = "crm_activities"
     __table_args__ = (
         CheckConstraint(
@@ -199,7 +198,6 @@ class CrmActivity(TenantMixin, Base):
         ForeignKey("contacts.id", ondelete="CASCADE"),
         nullable=True, index=True,
     )
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     activity_type: Mapped[CrmActivityType] = mapped_column(
         Enum(CrmActivityType, name="crm_activity_type",
@@ -377,7 +375,7 @@ class PipelineStage(TenantMixin, Base):
     pipeline: Mapped["Pipeline"] = relationship(back_populates="stages")
 
 
-class Account(TenantMixin, Base):
+class Account(TenantMixin, OwnedMixin, Base):
     """A company.  Normalizes the ``company`` text denormalized on leads /
     opportunities.  Existing lead handling is unchanged — accounts are linked
     to NEW opportunities/contacts going forward, no historical backfill."""
@@ -390,7 +388,6 @@ class Account(TenantMixin, Base):
     website: Mapped[str | None] = mapped_column(Text, nullable=True)
     industry: Mapped[str | None] = mapped_column(Text, nullable=True)
     size_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
@@ -403,7 +400,7 @@ class Account(TenantMixin, Base):
     )
 
 
-class Contact(TenantMixin, Base):
+class Contact(TenantMixin, OwnedMixin, Base):
     """A person, optionally a member of an Account.  Distinct from ``leads``
     (the outreach recipient): a contact is the CRM person record.  Can be
     seeded from a lead via ``source_lead_id`` without disrupting the lead."""
@@ -427,7 +424,6 @@ class Contact(TenantMixin, Base):
         ForeignKey("leads.id", ondelete="SET NULL"),
         nullable=True, index=True,
     )
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
@@ -443,7 +439,7 @@ class OpportunityStageChange(TenantMixin, Base):
     writes one per drag).  Stores both the stage FK and the stage ``key`` so
     history survives a stage being renamed/deactivated.  ``source`` is
     'user' for human moves, 'agent' for (suggest-and-approve) automated ones;
-    ``changed_by`` is a design-ready owner/user id (no FK — no users table)."""
+    ``changed_by`` is the user who moved it (NULL for automated moves)."""
 
     __tablename__ = "opportunity_stage_changes"
     __table_args__ = (
@@ -460,7 +456,9 @@ class OpportunityStageChange(TenantMixin, Base):
     to_stage_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     from_stage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     to_stage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
-    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
     source: Mapped[str] = mapped_column(Text, nullable=False, default="user", server_default="user")
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

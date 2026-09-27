@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.tenancy.mixin import TenantMixin
+from app.tenancy.mixin import OwnedMixin, TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
@@ -51,7 +51,7 @@ class LinkedInConnectionStatus(str, enum.Enum):
     WITHDRAWN = "withdrawn"
 
 
-class Lead(TenantMixin, Base):
+class Lead(TenantMixin, OwnedMixin, Base):
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

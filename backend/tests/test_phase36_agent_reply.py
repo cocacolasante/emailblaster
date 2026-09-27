@@ -298,7 +298,7 @@ async def test_notification_dedup_across_reruns(db_session):
     notifs = (await db_session.execute(select(Notification))).scalars().all()
     assert len(notifs) == 1
     assert notifs[0].dedup_key == "positive_reply:mid-agent-1"
-    # OWNER_NOTIFY_EMAIL is empty in tests → email skipped, row persists.
+    # No Brevo configured in tests → email skipped, row persists.
     assert notifs[0].emailed_at is None
 
     result2 = await process_inbound_reply(db_session, lead, dict(_MSG), _positive())

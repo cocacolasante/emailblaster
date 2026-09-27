@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.ownership import inherit_owner
 from app.models import Campaign, CampaignStatus, Lead, Suppression, canonical_email
 from app.services.sequence_service import ensure_default_sequence, enroll_leads
 
@@ -85,6 +86,7 @@ async def add_leads_to_campaign(
             continue
         existing_set.add(email)  # de-dupe within the batch too
         new_leads.append(Lead(
+            **inherit_owner(campaign),
             campaign_id=campaign.id,
             email=email,
             first_name=src.first_name,

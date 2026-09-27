@@ -30,6 +30,14 @@ from app.services import _anthropic, social_listening_discovery
 from app.services.social_listening_discovery import DiscoveredPost, DiscoveryResult
 
 
+@pytest.fixture(autouse=True)
+def _anthropic_configured(set_creds):
+    """These tests mock the Anthropic client; the workspace just needs to
+    read as having an Anthropic key."""
+    set_creds("anthropic", api_key="test-key")
+
+
+
 def _result(posts: list[DiscoveredPost]) -> DiscoveryResult:
     """Helper: wrap a posts list in a DiscoveryResult with the stats
     that the new ``discover_posts`` contract returns."""

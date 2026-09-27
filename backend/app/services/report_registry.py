@@ -52,6 +52,9 @@ OPERATORS_BY_TYPE: dict[str, list[str]] = {
         "is_empty", "is_not_empty",
     ],
     "boolean": ["equals"],
+    # Record owner (a workspace member id).  Filter values are a user id or
+    # the token "me" (the user running the report).
+    "owner": ["equals", "not_equals", "in", "is_empty", "is_not_empty"],
 }
 
 # Aggregate functions legal per field type ('count' is always available at the
@@ -63,6 +66,7 @@ AGGREGATES_BY_TYPE: dict[str, list[str]] = {
     "date": ["min", "max", "count"],
     "datetime": ["min", "max", "count"],
     "boolean": ["count"],
+    "owner": ["count"],
 }
 
 # Relative date-range keywords the date/datetime ``relative_range`` op accepts.
@@ -110,6 +114,7 @@ def _enum_values(enum_cls) -> tuple[str, ...]:
 _LEADS = ReportableObject(
     key="leads", label="Leads", model=Lead,
     fields={
+        "owner": FieldDef("owner", "Owner", "owner", Lead.owner_id),
         "email": FieldDef("email", "Email", "string", Lead.email),
         "first_name": FieldDef("first_name", "First name", "string", Lead.first_name),
         "last_name": FieldDef("last_name", "Last name", "string", Lead.last_name),
@@ -131,6 +136,7 @@ _LEADS = ReportableObject(
 _OPPORTUNITIES = ReportableObject(
     key="opportunities", label="Opportunities", model=Opportunity,
     fields={
+        "owner": FieldDef("owner", "Owner", "owner", Opportunity.owner_id),
         "name": FieldDef("name", "Name", "string", Opportunity.name),
         "stage": FieldDef(
             "stage", "Stage", "enum", Opportunity.stage,
@@ -157,6 +163,7 @@ _OPPORTUNITIES = ReportableObject(
 _ACTIVITIES = ReportableObject(
     key="activities", label="Activities", model=CrmActivity,
     fields={
+        "owner": FieldDef("owner", "Owner", "owner", CrmActivity.owner_id),
         "activity_type": FieldDef(
             "activity_type", "Type", "enum", CrmActivity.activity_type,
             enum_values=_enum_values(CrmActivityType),
@@ -181,6 +188,7 @@ _ACTIVITIES = ReportableObject(
 _CONTACTS = ReportableObject(
     key="contacts", label="Contacts", model=Contact,
     fields={
+        "owner": FieldDef("owner", "Owner", "owner", Contact.owner_id),
         "first_name": FieldDef("first_name", "First name", "string", Contact.first_name),
         "last_name": FieldDef("last_name", "Last name", "string", Contact.last_name),
         "email": FieldDef("email", "Email", "string", Contact.email),
@@ -199,6 +207,7 @@ _CONTACTS = ReportableObject(
 _ACCOUNTS = ReportableObject(
     key="accounts", label="Accounts", model=Account,
     fields={
+        "owner": FieldDef("owner", "Owner", "owner", Account.owner_id),
         "name": FieldDef("name", "Name", "string", Account.name),
         "domain": FieldDef("domain", "Domain", "string", Account.domain),
         "industry": FieldDef("industry", "Industry", "string", Account.industry),

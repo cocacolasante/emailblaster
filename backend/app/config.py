@@ -274,17 +274,10 @@ class Settings(BaseSettings):
     CIRCUIT_BREAKER_WINDOW_HOURS: int = 24
 
     # --- Agent / notifications ---
-    # Where agent alerts (positive-reply pings, task reminders, the daily
-    # digest) are emailed.  Empty = notifications persist in the DB but
-    # no email goes out.
-    OWNER_NOTIFY_EMAIL: str = ""
-    OWNER_NOTIFY_NAME: str = "Operator"
-    # The FROM address for agent alert emails.  Defaults (empty) fall back
-    # to the campaign Brevo sender, but agent alerts are internal mail to
-    # the operator, so they read better from your own address rather than
-    # whatever name campaigns send under.  Must be a verified Brevo sender.
-    OWNER_NOTIFY_FROM_EMAIL: str = ""
-    OWNER_NOTIFY_FROM_NAME: str = ""
+    # Agent alerts go to workspace MEMBERS (the record owner, or owners/
+    # admins for workspace-wide alerts) via the workspace's Brevo sender —
+    # see services/notifications.py.  The retired OWNER_NOTIFY_* env vars
+    # are read only by migrations 0044/0046 to seed the bootstrap workspace.
     # Master kill-switch for every autonomous agent behaviour (reply
     # classification, reminders, nudges, digest).  The finer-grained
     # per-behaviour toggles live in the runtime-editable AgentSettings

@@ -15,6 +15,9 @@ from fastapi.responses import Response
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import ownership
+from app.services.ownership import inherit_owner
+from app.tenancy.context import current_user_id
 from app.database import get_db
 from sqlalchemy.orm import selectinload
 
@@ -70,6 +73,16 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
+async def _owner_kwargs(db: AsyncSession, payload) -> dict:
+    """``owner_id`` kwargs for a create payload: an explicitly sent owner
+    (validated as a workspace member; null = unassigned), else nothing so
+    the creator becomes the owner."""
+    if "owner_id" not in payload.model_fields_set:
+        return {}
+    await ownership.validate_owner(db, payload.owner_id)
+    return {"owner_id": payload.owner_id}
+
+
 async def _default_pipeline_id(db: AsyncSession) -> uuid.UUID | None:
     return (await db.execute(
         select(Pipeline.id)
@@ -107,7 +120,9 @@ async def create_lead(
 ) -> dict:
     """Create a campaign-less CRM lead.  It appears in the global Leads
     list immediately; it does NOT enter any compose/send pipeline."""
+    owner_kw = await _owner_kwargs(db, payload)
     lead = Lead(
+        **owner_kw,
         campaign_id=None,
         email=payload.email,
         first_name=payload.first_name,
@@ -123,7 +138,10 @@ async def create_lead(
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
-    return {"id": str(lead.id), "email": lead.email, "crm_status": lead.crm_status}
+    return {
+        "id": str(lead.id), "email": lead.email, "crm_status": lead.crm_status,
+        "owner_id": str(lead.owner_id) if lead.owner_id else None,
+    }
 
 
 @router.patch("/leads/{lead_id}", status_code=200)
@@ -157,12 +175,15 @@ async def update_lead_crm(
     ):
         if f in updates:
             setattr(lead, f, updates[f])
+    if "owner_id" in updates:
+        await ownership.set_owner(db, lead, updates["owner_id"])
 
     await db.commit()
     await db.refresh(lead)
     return {
         "id": str(lead.id),
         "crm_status": lead.crm_status,
+        "owner_id": str(lead.owner_id) if lead.owner_id else None,
         "email": lead.email,
         "first_name": lead.first_name,
         "last_name": lead.last_name,
@@ -234,6 +255,7 @@ async def convert_lead(
         job_title=lead.job_title,
         linkedin_url=lead.linkedin_url,
         source_lead_id=lead.id,
+        **inherit_owner(lead),
     )
     # Dual-write the configurable stage graph (back-compat: NULL when no
     # pipeline is seeded — the enum still drives behavior).
@@ -250,6 +272,7 @@ async def convert_lead(
     # Conversion is itself a logged activity so the timeline tells the
     # full story.
     db.add(CrmActivity(
+        **inherit_owner(lead),
         lead_id=lead.id,
         opportunity_id=opp.id,
         activity_type=CrmActivityType.NOTE,
@@ -303,7 +326,9 @@ async def create_opportunity(
     payload: OpportunityCreate,
     db: AsyncSession = Depends(get_db),
 ) -> OpportunityResponse:
+    owner_kw = await _owner_kwargs(db, payload)
     opp = Opportunity(
+        **owner_kw,
         name=payload.name,
         stage=payload.stage,
         amount=payload.amount,
@@ -341,9 +366,12 @@ async def list_opportunities(
     stage: OpportunityStage | None = Query(default=None),
     open_only: bool = Query(default=False),
     search: str | None = Query(default=None),
+    owner: str | None = Query(default=None, description="me | unassigned | <user id>"),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedOpportunities:
     filters = []
+    if (clause := ownership.owner_filter(Opportunity, owner)) is not None:
+        filters.append(clause)
     if stage is not None:
         filters.append(Opportunity.stage == stage)
     if open_only:
@@ -379,15 +407,19 @@ async def list_opportunities(
 
 
 @router.get("/opportunities/pipeline", response_model=list[PipelineSummary])
-async def pipeline_summary(db: AsyncSession = Depends(get_db)) -> list[PipelineSummary]:
+async def pipeline_summary(
+    owner: str | None = Query(default=None, description="me | unassigned | <user id>"),
+    db: AsyncSession = Depends(get_db),
+) -> list[PipelineSummary]:
     """Per-stage roll-up for the Kanban board header."""
-    rows = (await db.execute(
-        select(
-            Opportunity.stage,
-            func.count(),
-            func.coalesce(func.sum(Opportunity.amount), 0),
-        ).group_by(Opportunity.stage)
-    )).all()
+    q = select(
+        Opportunity.stage,
+        func.count(),
+        func.coalesce(func.sum(Opportunity.amount), 0),
+    ).group_by(Opportunity.stage)
+    if (clause := ownership.owner_filter(Opportunity, owner)) is not None:
+        q = q.where(clause)
+    rows = (await db.execute(q)).all()
     by_stage = {r[0]: (r[1], float(r[2])) for r in rows}
     return [
         PipelineSummary(
@@ -473,12 +505,14 @@ async def update_opportunity(
             from_stage_key=old_stage.value if old_stage is not None else None,
             to_stage_key=new_stage.value,
             source="user",                 # human-initiated drag/stepper
-            changed_by=opp.owner_id,        # design-ready (no users table yet)
+            changed_by=current_user_id.get(),
         ))
     updates.pop("stage", None)
 
     if "email" in updates and updates["email"]:
         updates["email"] = updates["email"].strip().lower()
+    if "owner_id" in updates:
+        await ownership.set_owner(db, opp, updates.pop("owner_id"))
 
     for key, value in updates.items():
         setattr(opp, key, value)
@@ -538,12 +572,23 @@ async def create_activity(
             status_code=422,
             detail="Activity needs a lead_id and/or an opportunity_id",
         )
-    if payload.lead_id is not None and await db.get(Lead, payload.lead_id) is None:
+    parent_lead = await db.get(Lead, payload.lead_id) if payload.lead_id is not None else None
+    if payload.lead_id is not None and parent_lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
-    if payload.opportunity_id is not None and await db.get(Opportunity, payload.opportunity_id) is None:
+    parent_opp = (
+        await db.get(Opportunity, payload.opportunity_id)
+        if payload.opportunity_id is not None else None
+    )
+    if payload.opportunity_id is not None and parent_opp is None:
         raise HTTPException(status_code=404, detail="Opportunity not found")
 
+    # Assignee: explicit > the deal's owner > the lead's owner > creator.
+    if "owner_id" in payload.model_fields_set:
+        owner_kw = await _owner_kwargs(db, payload)
+    else:
+        owner_kw = ownership.inherit_owner(parent_opp) or ownership.inherit_owner(parent_lead)
     activity = CrmActivity(
+        **owner_kw,
         lead_id=payload.lead_id,
         opportunity_id=payload.opportunity_id,
         activity_type=payload.activity_type,
@@ -576,6 +621,7 @@ async def list_activities(
     opportunity_id: uuid.UUID | None = None,
     activity_type: CrmActivityType | None = Query(default=None),
     open_tasks: bool = Query(default=False),
+    owner: str | None = Query(default=None, description="me | unassigned | <user id>"),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedActivities:
     """List activities; filter by parent / type.  ``open_tasks=true``
@@ -591,6 +637,8 @@ async def list_activities(
     if open_tasks:
         filters.append(CrmActivity.activity_type == CrmActivityType.TASK)
         filters.append(CrmActivity.completed_at.is_(None))
+    if (clause := ownership.owner_filter(CrmActivity, owner)) is not None:
+        filters.append(clause)
 
     total = (await db.execute(
         select(func.count()).select_from(CrmActivity).where(*filters)
@@ -631,6 +679,8 @@ async def update_activity(
         activity.completed_at = _now()
     elif completed is False:
         activity.completed_at = None
+    if "owner_id" in updates:
+        await ownership.set_owner(db, activity, updates.pop("owner_id"))
 
     for key, value in updates.items():
         setattr(activity, key, value)

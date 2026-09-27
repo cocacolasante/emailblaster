@@ -1,21 +1,22 @@
 """Daily digest email (Celery beat, crontab at AGENT_DIGEST_HOUR_UTC).
 
-One email a day summarising what needs the operator's attention:
+One digest per workspace MEMBER (with ``digest_enabled``) per day:
 
-  - open tasks due today + overdue tasks
+  - the member's own open tasks due today + overdue
   - inbound replies in the last 24h grouped by sentiment
   - pipeline movement (deals opened / closed in the last 24h)
   - alerts that never got emailed (quiet hours / missing owner email)
 
 The digest bypasses quiet hours on purpose — its send hour is itself
 operator-configured, and it's the sweep-up channel for emails that
-quiet hours deferred.  Idempotent via the ``digest:<date>`` dedup key,
-so a beat double-fire can't send two.
+quiet hours deferred.  Idempotent via the ``digest:<date>:<user>`` dedup
+key, so a beat double-fire can't send two.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -34,7 +35,9 @@ from app.models import (
     NotificationKind,
     Opportunity,
 )
+from app.models.identity import Membership
 from app.services import agent_core, notifications
+from app.tenancy.context import require_tenant_id
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -44,8 +47,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def build_digest(session: AsyncSession) -> dict[str, Any]:
-    """Collect the digest's raw numbers + line items.  Read-only."""
+async def build_digest(
+    session: AsyncSession, owner_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """Collect the digest's raw numbers + line items.  Read-only.
+
+    ``owner_id`` narrows the task lists to that member's tasks; replies,
+    deal movement and unsent alerts stay workspace-wide."""
     now = _now()
     day_ago = now - timedelta(hours=24)
     # "Due today" = due within the next 24h.  A rolling horizon (not
@@ -54,14 +62,15 @@ async def build_digest(session: AsyncSession) -> dict[str, Any]:
     # nothing as upcoming.
     horizon = now + timedelta(hours=24)
 
-    open_tasks = (await session.execute(
-        select(CrmActivity).where(
-            CrmActivity.activity_type == CrmActivityType.TASK,
-            CrmActivity.completed_at.is_(None),
-            CrmActivity.due_at.is_not(None),
-            CrmActivity.due_at <= horizon,
-        ).order_by(CrmActivity.due_at)
-    )).scalars().all()
+    task_q = select(CrmActivity).where(
+        CrmActivity.activity_type == CrmActivityType.TASK,
+        CrmActivity.completed_at.is_(None),
+        CrmActivity.due_at.is_not(None),
+        CrmActivity.due_at <= horizon,
+    )
+    if owner_id is not None:
+        task_q = task_q.where(CrmActivity.owner_id == owner_id)
+    open_tasks = (await session.execute(task_q.order_by(CrmActivity.due_at))).scalars().all()
     overdue = [t for t in open_tasks if t.due_at < now]
     due_today = [t for t in open_tasks if t.due_at >= now]
 
@@ -140,7 +149,7 @@ def render_digest(data: dict[str, Any]) -> tuple[str, str]:
     if data["unsent_alerts"]:
         lines.append(
             f"{data['unsent_alerts']} alert(s) from the last 24h were not "
-            "emailed (quiet hours or no owner email) — see the in-app feed."
+            "emailed (quiet hours or email alerts off) — see the in-app feed."
         )
     if not lines:
         lines.append("Nothing needs attention today. 🎉")
@@ -148,8 +157,9 @@ def render_digest(data: dict[str, Any]) -> tuple[str, str]:
 
 
 async def send_daily_session(session: AsyncSession) -> dict[str, Any]:
-    """Build + persist + email the daily digest.  Caller owns the
-    transaction.  Returns a summary dict."""
+    """Build + persist + email the current workspace's daily digests (one
+    per member with ``digest_enabled``).  Caller owns the transaction.
+    Returns a summary dict."""
     if not settings.AGENT_ENABLED:
         return {"skipped": "agent_disabled"}
     agent_settings = await agent_core.get_agent_settings(session)
@@ -172,36 +182,54 @@ async def send_daily_session(session: AsyncSession) -> dict[str, Any]:
     await agent_core.complete_handled_tasks(session, list(candidates))
 
     today = _now().strftime("%Y-%m-%d")
-    data = await build_digest(session)
-    title, body = render_digest(data)
+    member_ids = (await session.execute(
+        select(Membership.user_id).where(
+            Membership.tenant_id == require_tenant_id(),
+            Membership.digest_enabled.is_(True),
+        ).order_by(Membership.created_at)
+    )).scalars().all()
 
-    row = await notifications.create_notification(
-        session,
-        kind=NotificationKind.DIGEST,
-        title=title,
-        body=body,
-        dedup_key=f"digest:{today}",
-    )
-    if row is None:
+    sent = 0
+    emailed_any = False
+    titles: list[str] = []
+    for user_id in member_ids:
+        data = await build_digest(session, owner_id=user_id)
+        title, body = render_digest(data)
+        row = await notifications.create_notification(
+            session,
+            kind=NotificationKind.DIGEST,
+            title=title,
+            body=body,
+            dedup_key=f"digest:{today}:{user_id}",
+            recipient_user_id=user_id,
+        )
+        if row is None:
+            continue  # already sent today
+        # The digest deliberately bypasses quiet hours: its hour is operator-
+        # configured and it's the sweep-up channel for deferred alerts.
+        emailed = await notifications.send_notification_email(
+            session, row, agent_settings, digest=True,
+        )
+        emailed_any = emailed_any or emailed
+        sent += 1
+        titles.append(title)
+        agent_core.record_agent_action(
+            session,
+            action_type=AgentActionType.DIGEST,
+            status=AgentActionStatus.SUCCESS,
+            summary=title[:300],
+            detail={
+                "user_id": str(user_id),
+                "emailed": emailed,
+                "overdue": len(data["overdue"]),
+                "due_today": len(data["due_today"]),
+                "replies": sum(data["replies_by_sentiment"].values()),
+                "unsent_alerts": data["unsent_alerts"],
+            },
+        )
+    if not sent:
         return {"skipped": "already_sent_today"}
-
-    # The digest deliberately bypasses quiet hours: its hour is operator-
-    # configured and it's the sweep-up channel for deferred alerts.
-    emailed = await notifications.send_notification_email(row)
-    agent_core.record_agent_action(
-        session,
-        action_type=AgentActionType.DIGEST,
-        status=AgentActionStatus.SUCCESS,
-        summary=title[:300],
-        detail={
-            "emailed": emailed,
-            "overdue": len(data["overdue"]),
-            "due_today": len(data["due_today"]),
-            "replies": sum(data["replies_by_sentiment"].values()),
-            "unsent_alerts": data["unsent_alerts"],
-        },
-    )
-    return {"sent": True, "emailed": emailed, "title": title}
+    return {"sent": sent, "emailed": emailed_any, "title": titles[0]}
 
 
 async def _send_daily_async() -> dict[str, Any]:

@@ -58,6 +58,8 @@ class NotificationKind(str, enum.Enum):
     PROSPECT_SIGNAL = "prospect_signal"
     # ICP lookalike discovery (migration 0031).
     LOOKALIKE_BATCH = "lookalike_batch"
+    # A member assigned records to you (multi-tenancy P3, migration 0046).
+    ASSIGNED = "assigned"
 
 
 class AgentActionType(str, enum.Enum):
@@ -92,6 +94,11 @@ class AgentSettings(TenantMixin, Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
+
+    # Alert-email sender override (must be a verified Brevo sender);
+    # NULL = the workspace's Brevo default sender.
+    notify_from_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notify_from_name: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Autonomy toggles — each one gates a specific agent behaviour.
     auto_log_replies: Mapped[bool] = mapped_column(
@@ -142,7 +149,10 @@ class AgentSettings(TenantMixin, Base):
 
 
 class Notification(TenantMixin, Base):
-    """A persisted alert for the operator (powers the UI bell/feed).
+    """A persisted alert (powers the UI bell/feed).
+
+    ``user_id`` is the recipient member; NULL = the whole workspace (shown
+    to everyone, emailed to owners/admins).
 
     ``dedup_key`` is the idempotency anchor — e.g.
     ``positive_reply:<message_id>`` or ``task_due:<activity_id>``.
@@ -166,6 +176,10 @@ class Notification(TenantMixin, Base):
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
 
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

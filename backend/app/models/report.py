@@ -21,10 +21,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-from app.tenancy.mixin import TenantMixin
+from app.tenancy.mixin import OwnedMixin, TenantMixin
 
 
-class ReportDefinition(TenantMixin, Base):
+class ReportDefinition(TenantMixin, OwnedMixin, Base):
     __tablename__ = "report_definitions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -41,7 +41,6 @@ class ReportDefinition(TenantMixin, Base):
         JSONB, nullable=False, default=dict, server_default="{}",
     )
     # Design-ready owner (no FK — no users table yet).
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,

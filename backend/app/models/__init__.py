@@ -197,3 +197,9 @@ __all__ = [
     "canonical_email",
     "WebhookEvent",
 ]
+
+# Composite owner FKs (tenant_id, owner_id) → memberships, for create_all.
+from app.database import Base as _Base  # noqa: E402
+from app.tenancy.mixin import install_owner_fk_ddl as _install_owner_fk_ddl  # noqa: E402
+
+_install_owner_fk_ddl(_Base.metadata)

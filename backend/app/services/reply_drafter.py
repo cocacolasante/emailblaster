@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
+from app.services import credentials
 from app.services._anthropic import extract_text, get_client
 from app.services._anthropic_cost import message_cost_usd
 
@@ -93,7 +94,7 @@ async def draft_reply(
         sentiment=getattr(classification, "sentiment", "neutral"),
         intent=getattr(classification, "intent", "other"),
         summary=getattr(classification, "summary", "") or "(none)",
-        sender_name=sender_name or settings.OWNER_NOTIFY_NAME,
+        sender_name=sender_name or credentials.default_sender()[0] or "the team",
     )
     try:
         message = await get_client().messages.create(

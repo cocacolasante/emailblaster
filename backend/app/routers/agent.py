@@ -13,12 +13,15 @@ import math
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import credentials
+from app.tenancy.context import current_user_id
 from app.database import get_db
 from app.models import (
     AgentAction,
@@ -58,7 +61,7 @@ def _settings_response(row) -> AgentSettingsResponse:
         quiet_hours_start_utc=row.quiet_hours_start_utc,
         quiet_hours_end_utc=row.quiet_hours_end_utc,
         agent_enabled=settings.AGENT_ENABLED,
-        owner_email_configured=bool(settings.OWNER_NOTIFY_EMAIL),
+        owner_email_configured=credentials.is_configured("brevo"),
         updated_at=row.updated_at,
     )
 
@@ -138,14 +141,25 @@ async def _notification_summaries(
     return out
 
 
+def _notification_scope(scope: str) -> list:
+    if scope == "all":
+        return []
+    return [or_(Notification.user_id == current_user_id.get(), Notification.user_id.is_(None))]
+
+
 @router.get("/notifications", response_model=PaginatedNotifications)
 async def list_notifications(
     unread: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    scope: Literal["mine", "all"] = Query(
+        default="mine",
+        description="mine = addressed to me + workspace-wide; all = every member's",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedNotifications:
-    filters = []
+    scope_filters = _notification_scope(scope)
+    filters = list(scope_filters)
     if unread:
         filters.append(Notification.read_at.is_(None))
 
@@ -154,7 +168,7 @@ async def list_notifications(
     )).scalar_one()
     unread_count = (await db.execute(
         select(func.count()).select_from(Notification)
-        .where(Notification.read_at.is_(None))
+        .where(Notification.read_at.is_(None), *scope_filters)
     )).scalar_one()
 
     rows = list((await db.execute(
@@ -211,7 +225,7 @@ async def mark_all_notifications_read(
 ) -> dict:
     result = await db.execute(
         update(Notification)
-        .where(Notification.read_at.is_(None))
+        .where(Notification.read_at.is_(None), *_notification_scope("mine"))
         .values(read_at=datetime.now(timezone.utc))
     )
     await db.commit()

@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import credentials
 from app.models import (
     Campaign, CampaignStatus, ComposeStatus, IcpIntentProfile,
     IntentSignalStatus, Lead, NotificationKind, Org, OrgIntentScore,
@@ -76,8 +77,8 @@ async def _get_or_create_draft_campaign(
         name=name,
         goal="Outreach to orgs surfaced by the intent engine — review every draft before approving.",
         tone="warm, concise, consultative",
-        sender_name=settings.OWNER_NOTIFY_NAME or "Your name",
-        sender_email=settings.OWNER_NOTIFY_EMAIL or "you@example.com",
+        sender_name=credentials.default_sender()[0] or "Your name",
+        sender_email=credentials.default_sender()[1] or "you@example.com",
         research_mode=ResearchMode.TEMPLATE,   # zero-cost render; no AI, no research
         template_subject=_DRAFT_SUBJECT,
         template_body=_DRAFT_BODY,
