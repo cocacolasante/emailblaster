@@ -26,32 +26,36 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Where we are
 
-- **Last completed:** **Retarget campaigns no longer stranded in DRAFT.**
-  User created "Retarget — grantmind email campaign 2", published the
-  sequence, enrolled 583 leads — campaign stayed `draft` with everything
-  pending.  Root cause: the ONLY draft-exit in the status machine is CSV
-  `confirm-upload` (`routers/leads.py`); both retarget paths
-  (`POST /campaigns/` with `retarget_source_campaign_id`, and
-  `POST /campaigns/{id}/retarget`) copy leads in via
-  `add_leads_to_campaign` (which holds draft campaigns "until launch")
-  and left the target in DRAFT with no launch path — publishing a
-  sequence only flips `sequences.is_published`, never campaign status,
-  and the UI's "Review & Launch" button only renders on `previewing`.
-  Fix: new `retarget.launch_retarget_campaign(db, target)` — mirrors
-  confirm-upload: marks preview samples (`select_sample_indices`), flips
-  DRAFT → PREVIEWING (or RUNNING for a non-email entry), commits, kicks
-  `run_campaign_research`.  No-op unless DRAFT + has leads, so re-running
-  retarget into a stuck pre-fix draft target rescues it.  Called from
-  both retarget call sites; `/retarget` response now carries
-  `launched` + `target_status`; RetargetModal toast appends "preparing
-  drafts for review".  Live remediation: ran the launcher on the stuck
-  campaign — now PREVIEWING, samples composed, awaiting Review & Launch.
-  Tests: 3 new + 1 extended in `test_phase60_retarget.py` (+ autouse
-  fixture capturing the research kick).  NOTE: 2 PRE-EXISTING failures
-  unrelated (`test_phase34_social_discovery::
-  test_discover_posts_extracts_valid_linkedin_urls`,
-  `test_phase56_intent_engine_api::test_recompute_and_promote_flow`) —
-  they fail on a clean checkout too.
+- **Last completed:** **Multi-tenancy — workspaces, users, owners,
+  per-workspace credentials.**  Full design + checklist in
+  [`docs/tenancy.md`](docs/tenancy.md).  Branch `multitenancy`
+  (commits P0–P7):
+  - **Identity (0044):** `tenants` (UI "Workspace"), `users` (argon2id),
+    `memberships` (owner/admin/member + per-member email/digest prefs),
+    `user_sessions` (httpOnly `eb_session`, SHA-256 stored), `invitations`,
+    `auth_tokens`.  `/auth/*` (register/login/logout/me/switch-workspace/
+    forgot/reset/invite) + `/team/*`.  Existing data → bootstrap
+    workspace owned by `OWNER_NOTIFY_EMAIL` (password via
+    `python -m app.scripts.set_password <email>`).
+  - **Isolation:** `TenantMixin.tenant_id` (NOT NULL, 0045/0047) on 42
+    tables; ORM auto-scoping (`app/tenancy/scoping.py`); Postgres RLS
+    (0049) under the non-owner `APP_DATABASE_URL` role
+    (`app.scripts.bootstrap_db`); workers via `@in_record_tenant` /
+    `run_per_tenant`; per-workspace webhook URLs.
+  - **Owners (0046):** `OwnedMixin.owner_id` on leads/campaigns/opps/
+    activities/accounts/contacts/reports, composite FK to memberships;
+    `POST /owners/assign` bulk, `?owner=me|unassigned|<id>` filters,
+    notifications route to the record owner; per-member digest;
+    `OWNER_NOTIFY_*` retired.
+  - **Credentials (0048):** `tenant_provider_keys` (Fernet); Settings →
+    Integrations UI (save/test/remove, webhook secret, register Unipile
+    webhooks).  No `.env` fallback — provider keys are gone from
+    `Settings`; 0048 seeded the bootstrap workspace from `.env`.
+  - Verified end-to-end on a copy of the real DB under RLS (all 10
+    campaigns / 9,168 leads / 6 integrations intact; a new signup is
+    empty + isolated; invite → teammate sees data; assign → "My leads").
+  - **NOT yet applied to the live dev DB** — run the upgrade steps in
+    `docs/tenancy.md` → "Upgrading an existing single-tenant install".
 
 - **Recent highlights** (full task-by-task history is archived in
   [`docs/claude-history.md`](docs/claude-history.md)):
@@ -100,9 +104,14 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     `session_cookies_encrypted` / `proxy_url` on `linkedin_accounts`
     are dead.  Schedule a migration to drop them once the legacy DIY
     rows are gone from production.
+  - **Multi-tenant follow-ups:** per-user read state for workspace-wide
+    notifications (read_at is per row today); owners on connected
+    inboxes / LinkedIn accounts; email verification on signup; move
+    heavy per-tenant beat loops (intent collectors, funding) to fan-out
+    tasks once workspaces multiply; drop the legacy global webhook
+    routes once every workspace uses its per-workspace URL.
   - **Cross-cutting cleanup** from `docs/roadmap.md#cross-cutting-tasks`
-    (sequence templates, multi-tenant readiness, named node_modules
-    volume).
+    (sequence templates, named node_modules volume).
   - **Phase 2** — whatever you have in mind next.
 
 ## Stack
@@ -192,6 +201,42 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
 
 ## Conventions and gotchas
 
+- **Everything is workspace-scoped (multi-tenancy — read
+  [`docs/tenancy.md`](docs/tenancy.md)).**  Rules of thumb:
+  - Feature routers are authenticated router-wide (`get_tenant_context`
+    in `app/main.py`); keep using `Depends(get_db)`.  Only auth /
+    webhooks / unsubscribe may use `get_public_db` (test-enforced).
+  - ORM queries are auto-filtered to the current workspace; new rows are
+    auto-stamped.  Don't hand-write `tenant_id` filters in feature code,
+    and never `skip_tenant_filter` outside the allowlist.
+  - New customer-data table → `TenantMixin` (+ `OwnedMixin` if it has an
+    accountable member) AND add it to an RLS migration; the schema + RLS
+    tests fail otherwise.  Add it to the conftest TRUNCATE list.
+  - Celery: record tasks decorate their async body with
+    `@in_record_tenant(kind, arg)`; periodic tasks run via
+    `run_per_tenant(body)`.  Open DB sessions INSIDE the context (a
+    transaction keeps the RLS `app.tenant_id` it began with).
+  - Provider keys: `credentials.require("brevo")` / `.get("hunter")` —
+    never `settings.*_API_KEY` (those fields no longer exist).  Missing →
+    `MissingCredential` → HTTP 409 `integration_not_configured`.
+  - Shared-namespace Redis keys (domain / LinkedIn page / funding source /
+    Brevo watermark) go through `app/tenancy/keys.py`.
+  - Tests run as `DEFAULT_USER` (owner of `DEFAULT_TENANT`) via the real
+    cookie path (`client`; `client_factory(token)` / `create_test_user` for
+    more users/workspaces).  Tests have NO provider credentials unless
+    they call the `set_creds` fixture.  `APP_DATABASE_URL` is forced
+    empty in tests (owner role); RLS has its own test DB
+    (`test_rls_isolation.py`).
+  - Owners: `owner_id` defaults to the acting user, else parent
+    (campaign → its leads, lead → converted deal, deal → tasks), else the
+    workspace's primary owner (background rows).  Visibility is
+    workspace-wide regardless of owner.
+- **Two DB roles.**  `DATABASE_URL` = owner (Alembic, `set_password`,
+  `bootstrap_db`); `APP_DATABASE_URL` = non-owner runtime role that RLS
+  binds (backend/worker/beat).  The backend runs `bootstrap_db` on start
+  to create/refresh the role + default privileges.  Migrations:
+  `docker compose run --rm backend alembic upgrade head`.  A startup
+  warning fires if the runtime role can bypass RLS.
 - **Publishing a sequence never launches a campaign.**  Save & Publish
   only flips `sequences.is_published`; the status machine's sole
   draft-exit is CSV `confirm-upload`.  Campaigns whose leads arrive by
@@ -205,10 +250,12 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   `email_address` to the alias and `username` to the primary mailbox.
   The connect modal has an inline hint about this
   ([`ConnectInboxModal.jsx`](frontend/src/components/ConnectInboxModal.jsx)).
-- **Encryption invariant:** only `app/services/imap_client.py` may call
-  `encryption.decrypt(` (allowlist is `{imap_client.py, encryption.py}`
-  — the DIY LinkedIn consumer was stripped along with Playwright).  A
-  test in `test_phase15_hardening.py` greps the codebase to enforce.
+- **Encryption invariant:** only `app/services/imap_client.py` (inbox
+  passwords) and `app/services/credentials.py` (workspace provider keys)
+  may call `encryption.decrypt(` (allowlist `{imap_client.py,
+  encryption.py, credentials.py}`).  A test in `test_phase15_hardening.py`
+  greps the codebase to enforce.  `encryption` is a MultiFernet:
+  `ENCRYPTION_KEY_OLD` keeps decrypting during a key rotation.
 - **Docker network quirk:** if Docker Desktop restarts while containers
   are up, postgres can become detached from `emailblaster_default`
   (you'll see `socket.gaierror: Name or service not known` in backend
@@ -248,7 +295,8 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   `autouse` fixture that does this for every test in the file — copy
   that pattern in any new file exercising LinkedIn rate limits.
 - **`encryption.decrypt` allowlist:** the hardening grep test in
-  `test_phase15_hardening.py` lists `imap_client.py` + `encryption.py`.
+  `test_phase15_hardening.py` lists `imap_client.py`, `encryption.py`,
+  `credentials.py`.
   Adding a new credential consumer means updating this list AND keeping
   plaintext within the new module's local scope (delete before return).
 - **InMail premium-required path:** when Unipile reports the account
@@ -404,7 +452,7 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   `make_unsubscribe_url(lead_id)` is the helper for templates that
   embed the link.
 - **Unipile webhook is now idempotent.**  ``webhook_events(provider,
-  event_id)`` table (migration 0007) records every incoming Unipile
+  tenant_id, event_id)`` table (unique NULLS NOT DISTINCT) (migration 0007) records every incoming Unipile
   event id and acts as the dedup guard.  The route inserts the row in
   its own transaction up front; UniqueViolation → ``{"ok": True,
   "duplicate": True}`` with no handler dispatch.  When Unipile sends a
@@ -510,7 +558,9 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   newly advanced into a node via `_advance_cursor` get `next_run_at =
   now`, so a batch arriving in one tick momentarily shares a timestamp
   until the next tick re-spreads them — a transient, not a pile.
-- **Brevo events come from polling, not a webhook.**  The inbound
+- **Brevo events come from polling (per workspace, with that workspace's
+  key); the per-workspace webhook `/webhooks/brevo/{tenant_id}` is an
+  optional real-time add-on.**  The inbound
   `/webhooks/brevo` route was removed; events are pulled from
   `GET /v3/smtp/statistics/events` by `brevo_events_poller.poll` every
   `BREVO_EVENTS_POLL_INTERVAL_MINUTES` (default 10).  Trade-off: up to
@@ -596,18 +646,18 @@ App: <http://localhost:5173>  ·  API: <http://localhost:8000>  ·  Docs:
 
 ---
 
-_Last updated: 2026-08-26 — retarget campaigns now launch (were stranded
-in DRAFT with no path out); stuck "Retarget — grantmind email campaign 2"
-remediated to PREVIEWING.  (2026-07-27: compacted this file; task-by-task
-history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
+_Last updated: 2026-09-27 — multi-tenancy (workspaces, users, owners,
+per-workspace credentials, RLS) on branch `multitenancy`; see
+[`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
+task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1240 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **436 passing**._
+_Backend tests: **1331 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **497 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
 > below — it walks through every step (ngrok / cloudflared tunnel,
-> Unipile webhook config, .env wiring, force-recreate) needed to get
-> the stack talking to Unipile on a new machine.
+> per-workspace Unipile connection + webhooks) needed to get the stack
+> talking to Unipile on a new machine.
 
 ## Unipile integration
 
@@ -633,11 +683,13 @@ residential IPs).  Key surface:
    - `DELETE /{id}` — also calls Unipile's `delete_account` so we
      don't leak a session on their side.
 
-3. **Webhook handler** `POST /webhooks/unipile` in `routers/webhooks.py`.
-   Unipile doesn't HMAC-sign bodies — auth is a static custom header.
-   Handler reads `request.headers[settings.UNIPILE_WEBHOOK_AUTH_HEADER]`
-   (default `X-Unipile-Auth`) and constant-time-compares against
-   `settings.UNIPILE_WEBHOOK_SECRET`.  Routes events: `account.connected`,
+3. **Webhook handler** `POST /webhooks/unipile/{tenant_id}` (per
+   workspace; the legacy `POST /webhooks/unipile` resolves the workspace
+   from the payload's account) in `routers/webhooks.py`.  Unipile doesn't
+   HMAC-sign bodies — auth is a static custom header.  Handler reads
+   `request.headers[settings.UNIPILE_WEBHOOK_AUTH_HEADER]` (default
+   `X-Unipile-Auth`) and constant-time-compares against THAT WORKSPACE's
+   stored Unipile webhook secret.  Routes events: `account.connected`,
    `account.disconnected`, `account.checkpoint`, `message.received`,
    `invitation.accepted`.  Event-name casing normalised.
 
@@ -658,15 +710,15 @@ script that does the whole dance:
 python3 scripts/dev_tunnel.py
 ```
 
-It detects (or starts) ngrok pointing at `localhost:8000`, deletes
-every Unipile webhook on the workspace, recreates the three canonical
-ones (`messaging`, `account_status`, `users`) pointing at the live
-tunnel, patches `.env` (`WEBHOOK_BASE_URL`, optionally
-`UNIPILE_WEBHOOK_SECRET` with `--rotate-secret`), and only
-force-recreates `backend`/`worker`/`beat` when `.env` actually
-changed (idempotent — safe to re-run).  Pure stdlib, no pip install.
-Useful flags: `--dry-run`, `--rotate-secret`, `--no-recreate`,
-`--port N`.
+It detects (or starts) ngrok pointing at `localhost:8000`, sets
+`WEBHOOK_BASE_URL` in `.env` and force-recreates `backend`/`worker`/
+`beat` when it changed.  Unipile credentials + webhook secrets are per
+workspace now, so it no longer touches Unipile: afterwards click
+**Settings → Integrations → Unipile → "Register webhooks automatically"**
+in each workspace (creates the three webhooks — `messaging`,
+`account_status`, `users` — at `<tunnel>/webhooks/unipile/<workspace
+id>` with the workspace's secret header).  Flags: `--dry-run`,
+`--no-recreate`, `--port N`.
 
 Use the full runbook below only when wiring a fresh dev box from
 scratch (Unipile account creation, ngrok install, etc.).
@@ -718,49 +770,22 @@ request inspector.
 the tunnel terminal running; if it dies, update all three webhook URLs
 in Unipile + `WEBHOOK_BASE_URL` in `.env` + force-recreate containers.
 
-### 3. Create the three Unipile webhooks
+### 3. Connect Unipile to the workspace (Settings → Integrations)
 
-Unipile splits webhooks by data source, so you need **three** webhooks
-that all POST to the same `/webhooks/unipile` endpoint.  Our handler
-dispatches on event-name internally, so it doesn't care which webhook
-delivered the event.
+Unipile credentials are **per workspace**, not in `.env`:
 
-**Unipile doesn't HMAC-sign request bodies.** Their auth model is a
-**static custom header** — you specify a header key + value when
-creating the webhook, and Unipile echoes that exact header (same value)
-on every delivery. Our handler reads
-`settings.UNIPILE_WEBHOOK_AUTH_HEADER` (default `X-Unipile-Auth`),
-constant-time-compares the value against `settings.UNIPILE_WEBHOOK_SECRET`,
-and 401s on mismatch. See `_verify_unipile_auth()` in `routers/webhooks.py`
-and the Unipile docs "Authentication" section on the Webhooks page.
-
-The dashboard UI for adding custom headers is inconsistent across
-Unipile flavours, so the most reliable path is **creating webhooks via
-the Unipile API**:
-
-```bash
-DSN=$(grep '^UNIPILE_DSN=' .env | cut -d'=' -f2-)
-KEY=$(grep '^UNIPILE_API_KEY=' .env | cut -d'=' -f2-)
-SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-TUNNEL=https://<your-ngrok-or-cloudflared-host>
-
-for SRC in messaging account_status users; do
-  curl -s -X POST "https://$DSN/api/v1/webhooks" \
-    -H "X-API-KEY: $KEY" -H "content-type: application/json" \
-    -d "{
-      \"name\": \"emailblaster - $SRC\",
-      \"request_url\": \"$TUNNEL/webhooks/unipile\",
-      \"source\": \"$SRC\",
-      \"headers\": [
-        {\"key\": \"Content-Type\", \"value\": \"application/json\"},
-        {\"key\": \"X-Unipile-Auth\", \"value\": \"$SECRET\"}
-      ]
-    }"
-done
-
-# Save the secret to paste into .env next:
-echo "$SECRET"
-```
+1. Set `WEBHOOK_BASE_URL=https://<tunnel-host>` in `.env` (or run
+   `python3 scripts/dev_tunnel.py`), then
+   `docker compose up -d --force-recreate backend worker beat`
+   (`restart` does NOT re-read `.env`).
+2. Open <http://localhost:5173/settings?tab=integrations> → **Unipile**
+   → enter the DSN + access token → Save.  A webhook secret is generated
+   automatically.
+3. Click **Test connection**, then **Register webhooks automatically** —
+   it creates the three Unipile webhooks (`messaging`, `account_status`,
+   `users`) pointing at `<WEBHOOK_BASE_URL>/webhooks/unipile/<workspace
+   id>` with the `X-Unipile-Auth: <workspace secret>` header.  (Manual
+   alternative: the card shows the URL + header, and "Reveal secret".)
 
 **Verified working `source` values (2026-05-14):**
 
@@ -770,68 +795,20 @@ echo "$SECRET"
 | `account_status` | Unipile account state changes (`account.connected`, `account.checkpoint`, `account.disconnected`) |
 | `users` | new relations (`invitation.accepted`, new connections) |
 
-We don't use Unipile's `mailing` / `mail_tracking` / `calendar` sources.
+To list / delete webhooks by hand: `GET` / `DELETE`
+`https://$DSN/api/v1/webhooks[/<id>]` with the `X-API-KEY` header.
 
-To list / delete webhooks: `GET` / `DELETE` `https://$DSN/api/v1/webhooks[/<id>]`
-with the `X-API-KEY` header.
+### 4. Sanity-check the tunnel is reachable
 
-### 4. Wire `.env`
-
-Open `.env` (project root) and set these four:
-
-```env
-UNIPILE_DSN=api12.unipile.com:13443      # your DSN from step 1
-UNIPILE_API_KEY=<access token from step 1>
-UNIPILE_WEBHOOK_SECRET=<the static header-value secret from step 3>
-UNIPILE_WEBHOOK_AUTH_HEADER=X-Unipile-Auth   # optional, this IS the default
-WEBHOOK_BASE_URL=https://<tunnel-host-no-trailing-slash>
-```
-
-`WEBHOOK_BASE_URL` must point to the SAME tunnel host you gave Unipile
-in step 3.  It's used by `POST /linkedin-accounts/connect-via-unipile`
-to build the `notify_url` Unipile attaches to the hosted-auth flow.
-
-### 5. Force-recreate so `.env` actually takes effect
-
-`docker compose restart` does NOT re-read `.env` (already a gotcha in
-the Conventions section).  Use:
-
-```powershell
-docker compose up -d --force-recreate backend worker beat
-```
-
-Verify it took:
-
-```powershell
-docker compose exec backend printenv UNIPILE_DSN UNIPILE_API_KEY UNIPILE_WEBHOOK_SECRET WEBHOOK_BASE_URL
-```
-
-All four should print non-empty values.
-
-### 6. Sanity-check the tunnel is reachable
-
-```powershell
-# Without the auth header → 401 (proves auth-check fires AND routing works)
-curl.exe -X POST "https://<tunnel>/webhooks/unipile" -H "Content-Type: application/json" -d "{}"
+```bash
+# Wrong secret → 401 (proves auth fires AND routing works)
+curl -X POST "https://<tunnel>/webhooks/unipile/<workspace id>" \
+  -H "Content-Type: application/json" -H "X-Unipile-Auth: wrong" -d '{}'
 # Expected: 401 {"detail":"invalid auth header"}
-
-# With the right header → 400 invalid JSON (auth passed, just no real event in body)
-curl.exe -X POST "https://<tunnel>/webhooks/unipile" `
-  -H "Content-Type: application/json" `
-  -H "X-Unipile-Auth: <THE_SECRET>" `
-  -d "{}"
-# Expected: 400 {"detail":"invalid JSON: ..."} or similar — the point is we got PAST auth
 ```
 
-Both responses confirm routing through the tunnel works.  Then hit the
-**Send test event** button on each Unipile webhook and watch:
-
-```powershell
-docker compose logs -f backend | findstr /I unipile
-```
-
-You should see three `Unipile webhook event='...'` lines, each returning
-200.
+Then hit **Send test event** on each Unipile webhook and watch
+`docker compose logs -f backend | grep -i unipile`.
 
 ### 7. End-to-end smoke (link a real LinkedIn account)
 
@@ -864,8 +841,8 @@ Unipile) vs. the old 9-second-then-challenge pattern.
 
 | Symptom | Probable cause | Fix |
 |---|---|---|
-| `401 invalid auth header` in backend logs after Unipile send-test | `UNIPILE_WEBHOOK_SECRET` in `.env` doesn't match the `X-Unipile-Auth` header value in Unipile's webhook config | Re-copy the secret into `.env`, force-recreate, OR re-create the webhook via the API with the matching value |
-| Unipile dashboard shows delivery `timeout` | Tunnel died, or `WEBHOOK_BASE_URL` host doesn't match Unipile's webhook URL host | Restart tunnel, update all three webhook URLs in Unipile + `WEBHOOK_BASE_URL`, force-recreate |
+| `401 invalid auth header` in backend logs after Unipile send-test | The webhook's `X-Unipile-Auth` value isn't this workspace's stored secret (or the legacy global URL couldn't map the account to a workspace) | Settings → Integrations → Unipile → "Register webhooks automatically" (recreates them with the right URL + secret) |
+| Unipile dashboard shows delivery `timeout` | Tunnel died, or `WEBHOOK_BASE_URL` host doesn't match Unipile's webhook URL host | Restart tunnel (`scripts/dev_tunnel.py`), then "Register webhooks automatically" in each workspace |
 | `account.connected` fires but row never flips OK | Unipile sent the event with an empty `name` | Check the delivery payload in Unipile's dashboard for `name == <our local UUID>`; if blank, ensure the `connect-via-unipile` endpoint successfully called `create_hosted_auth_link` with `name=str(acc.id)` |
-| `UnipileError: UNIPILE_DSN not set` | `.env` not loaded into the container | Did you force-recreate?  `docker compose restart` won't do it |
+| `UnipileError: UNIPILE_DSN not set` / 409 `integration_not_configured` | The workspace hasn't connected Unipile | Settings → Integrations → Unipile |
 

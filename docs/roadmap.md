@@ -307,8 +307,9 @@ Not milestone-scoped — pick up when convenient.
   test-environment drift bug noted in `claude.md`.
 - **Sequence templates / sharing** — let users export/import sequences
   or share via URL.
-- **Multi-tenant readiness** — when commercializing: user accounts,
-  org scoping, billing. Out of scope for Phase 1.5.
+- ~~**Multi-tenant readiness**~~ — DONE (2026-09-27): workspaces, users,
+  roles, invites, record owners, per-workspace encrypted credentials,
+  Postgres RLS.  See `docs/tenancy.md`.  Billing still out of scope.
 - **Document the condition language** — `docs/condition_language.md`
   with every op + example. Useful once we start onboarding non-engineer
   users.

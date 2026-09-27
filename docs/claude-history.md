@@ -7,6 +7,33 @@ distilled from these tasks live in `CLAUDE.md` → "Conventions and gotchas".
 
 ## Task log (from "Where we are")
 
+- **Previously:** **Retarget campaigns no longer stranded in DRAFT.**
+  User created "Retarget — grantmind email campaign 2", published the
+  sequence, enrolled 583 leads — campaign stayed `draft` with everything
+  pending.  Root cause: the ONLY draft-exit in the status machine is CSV
+  `confirm-upload` (`routers/leads.py`); both retarget paths
+  (`POST /campaigns/` with `retarget_source_campaign_id`, and
+  `POST /campaigns/{id}/retarget`) copy leads in via
+  `add_leads_to_campaign` (which holds draft campaigns "until launch")
+  and left the target in DRAFT with no launch path — publishing a
+  sequence only flips `sequences.is_published`, never campaign status,
+  and the UI's "Review & Launch" button only renders on `previewing`.
+  Fix: new `retarget.launch_retarget_campaign(db, target)` — mirrors
+  confirm-upload: marks preview samples (`select_sample_indices`), flips
+  DRAFT → PREVIEWING (or RUNNING for a non-email entry), commits, kicks
+  `run_campaign_research`.  No-op unless DRAFT + has leads, so re-running
+  retarget into a stuck pre-fix draft target rescues it.  Called from
+  both retarget call sites; `/retarget` response now carries
+  `launched` + `target_status`; RetargetModal toast appends "preparing
+  drafts for review".  Live remediation: ran the launcher on the stuck
+  campaign — now PREVIEWING, samples composed, awaiting Review & Launch.
+  Tests: 3 new + 1 extended in `test_phase60_retarget.py` (+ autouse
+  fixture capturing the research kick).  NOTE: 2 PRE-EXISTING failures
+  unrelated (`test_phase34_social_discovery::
+  test_discover_posts_extracts_valid_linkedin_urls`,
+  `test_phase56_intent_engine_api::test_recompute_and_promote_flow`) —
+  they fail on a clean checkout too.
+
 - **Previously:** **Fixed the Brevo events poller dropping nearly all
   opens + added an open-rate-by-send-week cohort panel to campaign
   Analytics.**  User saw "opens going down"; investigation showed open
