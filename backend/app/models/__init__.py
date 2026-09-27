@@ -41,6 +41,7 @@ from app.models.crm import (
     PipelineStage,
 )
 from app.models.report import ReportDefinition
+from app.models.tenant_keys import TenantProviderKey
 from app.models.email_event import EmailEvent, EmailEventType
 from app.models.icp import (
     IcpProfile,
@@ -102,6 +103,7 @@ from app.models.suppression import Suppression, SuppressionReason, canonical_ema
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
+    "TenantProviderKey",
     "AuthToken",
     "AuthTokenPurpose",
     "Invitation",

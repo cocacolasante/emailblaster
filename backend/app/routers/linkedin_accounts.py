@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services import credentials
+from app.services import credentials, integrations
+from app.tenancy.context import require_tenant_id
 from app.database import get_db
 from app.models import LinkedInAccount, LinkedInAccountStatus
 from app.schemas.linkedin_account import (
@@ -78,7 +79,9 @@ async def connect_via_unipile(
     # Unipile account_id belongs to which row.
     provider = UnipileLinkedInProvider()
     try:
-        notify_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/webhooks/unipile"
+        # This workspace's webhook URL — Unipile posts account.connected
+        # there, authenticated with the workspace's own secret.
+        notify_url = integrations.webhook_url("unipile", require_tenant_id())
         link = await provider.create_hosted_auth_link(
             success_redirect_url=payload.success_redirect_url,
             failure_redirect_url=payload.failure_redirect_url,

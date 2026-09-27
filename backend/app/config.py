@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Anthropic
-    ANTHROPIC_API_KEY: str = ""
+    # Anthropic — the API KEY is per workspace (Settings → Integrations,
+    # stored encrypted in tenant_provider_keys); only models/budgets here.
     # Compose model — writes the actual email copy, so quality matters.
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
     # Research model — just extracts structured facts from web-search results,
@@ -83,9 +83,6 @@ class Settings(BaseSettings):
     LINKEDIN_DISCOVERY_WEB_SEARCH_MAX_USES: int = 5
 
     # Email sending
-    BREVO_API_KEY: str = ""
-    BREVO_SENDER_EMAIL: str = "noreply@example.com"
-    BREVO_SENDER_NAME: str = "Email Blaster"
     # Set to False to mirror "Click tracking" being turned OFF in the Brevo
     # dashboard (Transactional → Settings).  Disabling click tracking removes
     # Brevo's link-rewriting (a strong bulk/marketing fingerprint that gets
@@ -110,16 +107,7 @@ class Settings(BaseSettings):
     # (never suppress on soft bounce — Brevo still escalates persistent ones
     # to hard bounces/blocks, which always suppress).
     SOFT_BOUNCE_SUPPRESS_THRESHOLD: int = 1
-    # Legacy: the (now-deleted) /webhooks/brevo route used this as a
-    # shared-secret gate.  No longer referenced anywhere; keep the
-    # setting for one release so anybody whose .env still has it doesn't
-    # see a load-time error from pydantic-settings extra=forbid.  Safe
-    # to delete in a follow-up after .env templates are scrubbed.
-    BREVO_WEBHOOK_SECRET: str = ""
-
     # Enrichment (optional)
-    APOLLO_API_KEY: str = ""
-    HUNTER_API_KEY: str = ""
     # Hunter Domain Search result cap. The FREE plan rejects limit > 10 (400);
     # raise on a paid plan.
     HUNTER_DOMAIN_SEARCH_LIMIT: int = 10
@@ -194,10 +182,8 @@ class Settings(BaseSettings):
     # orgs — weaker "a comparable peer got funded" signal).  0 = no cap.
     INTENT_USASPENDING_MAX_AWARD_AMOUNT: float = 1_000_000.0
     # Adzuna job-aggregator API — sources the Tier-1 dev_role_posted signal.
-    # No key → the collector no-ops (opt-in, like Hunter).  Free tier:
-    # https://developer.adzuna.com (register an app → app_id + app_key).
-    ADZUNA_APP_ID: str = ""
-    ADZUNA_APP_KEY: str = ""
+    # Keys are per workspace (Settings → Integrations); none → the collector
+    # no-ops.  Free tier: https://developer.adzuna.com (app_id + app_key).
     ADZUNA_COUNTRY: str = "us"
     INTENT_DEV_ROLE_LOOKBACK_DAYS: int = 30
     INTENT_DEV_ROLE_MAX_PER_RUN: int = 200
@@ -213,27 +199,23 @@ class Settings(BaseSettings):
 
     # Encryption
     ENCRYPTION_KEY: str = ""
+    # Previous key, still accepted for decryption during a rotation.
+    ENCRYPTION_KEY_OLD: str = ""
 
     # IMAP polling
     IMAP_POLL_INTERVAL_MINUTES: int = 20
 
-    # Unipile (hosted LinkedIn browser API on residential IPs).
-    # DSN is the tenant host returned from the dashboard, e.g.
-    # "api12.unipile.com:13443".  API key from dashboard → access-tokens.
-    # Webhook auth: Unipile doesn't HMAC-sign bodies; instead, when creating
-    # the webhook you configure a custom HTTP header that Unipile echoes
-    # back on every delivery.  We check the inbound request for the same
-    # header + value.
-    UNIPILE_DSN: str = ""
-    UNIPILE_API_KEY: str = ""
-    UNIPILE_WEBHOOK_SECRET: str = ""
+    # Unipile (hosted LinkedIn browser API on residential IPs).  DSN, API
+    # key and webhook secret are per workspace (Settings → Integrations).
+    # Webhook auth: Unipile doesn't HMAC-sign bodies; when creating the
+    # webhook you configure a custom HTTP header (this NAME) whose value is
+    # the workspace's webhook secret, echoed on every delivery.
     UNIPILE_WEBHOOK_AUTH_HEADER: str = "X-Unipile-Auth"
     # Brevo outbound (transactional event) webhook — real-time delivery of
     # delivered/opened/clicked/bounce/spam/unsubscribe/blocked events, on top
     # of the polling backstop.  Brevo doesn't HMAC-sign bodies; like Unipile we
-    # use a static shared-secret header (configured on the webhook in Brevo,
-    # echoed on every delivery).  Empty secret → the route rejects everything.
-    BREVO_WEBHOOK_SECRET: str = ""
+    # use a static shared-secret header (this NAME; value = the workspace's
+    # Brevo webhook secret).  No secret → the route rejects everything.
     BREVO_WEBHOOK_AUTH_HEADER: str = "X-Brevo-Auth"
 
     # LinkedIn rate limits.  Unipile manages humanization on its side, but
@@ -360,17 +342,13 @@ class ConfigurationError(RuntimeError):
 # These either have safe defaults (`FRONTEND_URL`, `WEBHOOK_BASE_URL`) or
 # only matter for optional features (`UNIPILE_*`, `APOLLO_*`, `HUNTER_*`).
 _HARD_REQUIRED = (
-    # Without these the first compose / send / IMAP test crashes
-    # unrecoverably with `RuntimeError: ... is not configured`.
-    "ANTHROPIC_API_KEY",
-    "BREVO_API_KEY",
-    "BREVO_SENDER_EMAIL",
+    # Provider API keys are NOT here: they're per workspace (stored
+    # encrypted in the DB), so a fresh deployment boots without any.
     "ENCRYPTION_KEY",
     "SECRET_KEY",
 )
 _DANGEROUS_DEFAULTS = {
     "SECRET_KEY": "dev-secret-change-me",
-    "BREVO_SENDER_EMAIL": "noreply@example.com",
 }
 
 

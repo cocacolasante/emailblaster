@@ -277,11 +277,14 @@ def test_no_decrypt_calls_outside_imap_client():
         stripped in favour of Unipile, which never receives a plaintext
         password from us).
       - encryption.py — the encrypt/decrypt helpers themselves.
+      - credentials.py — workspace provider keys (tenant_provider_keys);
+        plaintext stays inside the typed creds bundle for the request /
+        task and is never returned by the API.
     """
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent / "app"
-    allowed = {"imap_client.py", "encryption.py"}
+    allowed = {"imap_client.py", "encryption.py", "credentials.py"}
     offenders = []
     for path in root.rglob("*.py"):
         if path.name in allowed:

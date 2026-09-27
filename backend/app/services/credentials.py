@@ -14,19 +14,23 @@ Resolution is bound to the tenant context: the request dependency
 duration of the unit of work, so lookups are synchronous and cheap and
 always match the tenant the queries are scoped to.
 
-Interim (pre-P5) behaviour: with no bundle bound, credentials are read
-from the process settings so the single-tenant deployment keeps working.
-P5 removes that branch — there is no .env fallback for workspaces.
+Keys live encrypted in ``tenant_provider_keys`` (one row per workspace
++ provider).  There is deliberately NO .env fallback: a workspace that
+hasn't connected a provider simply doesn't have it, and the feature
+reports ``MissingCredential`` (→ 409 ``integration_not_configured``).
+This is the only module that decrypts provider keys (hardening test).
 """
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Iterator, Literal, Union
 
-from app.config import settings
+logger = logging.getLogger(__name__)
 
 Provider = Literal["anthropic", "brevo", "hunter", "apollo", "unipile", "adzuna"]
 PROVIDERS: tuple[Provider, ...] = (
@@ -160,34 +164,10 @@ def current_bundle() -> CredentialBundle | None:
     return _bundle.get()
 
 
-def _from_settings(provider: str) -> Creds | None:
-    """Interim single-tenant source (removed in P5)."""
-    raw: dict[str, str] = {
-        "anthropic": {"api_key": settings.ANTHROPIC_API_KEY},
-        "brevo": {
-            "api_key": settings.BREVO_API_KEY,
-            "sender_email": settings.BREVO_SENDER_EMAIL,
-            "sender_name": settings.BREVO_SENDER_NAME,
-            "webhook_secret": settings.BREVO_WEBHOOK_SECRET,
-        },
-        "hunter": {"api_key": settings.HUNTER_API_KEY},
-        "apollo": {"api_key": settings.APOLLO_API_KEY},
-        "unipile": {
-            "dsn": settings.UNIPILE_DSN,
-            "api_key": settings.UNIPILE_API_KEY,
-            "webhook_secret": settings.UNIPILE_WEBHOOK_SECRET,
-        },
-        "adzuna": {"app_id": settings.ADZUNA_APP_ID, "app_key": settings.ADZUNA_APP_KEY},
-    }[provider]
-    return build_creds(provider, raw)
-
-
 def get(provider: Provider) -> Creds | None:
     """The current workspace's credentials for ``provider``, or None."""
     bundle = _bundle.get()
-    if bundle is None:
-        return _from_settings(provider)
-    return bundle.get(provider)
+    return bundle.get(provider) if bundle is not None else None
 
 
 def require(provider: Provider) -> Creds:
@@ -210,10 +190,60 @@ def default_sender() -> tuple[str, str]:
     return c.sender_name, c.sender_email  # type: ignore[union-attr]
 
 
-async def load_bundle(factory, tenant_id: uuid.UUID) -> CredentialBundle | None:
-    """Load the workspace's credential bundle.
+def encrypt_fields(data: dict[str, str]) -> str:
+    from app.services import encryption
 
-    Interim (pre-P5): returns None, so ``get`` falls back to process
-    settings for the single bootstrap workspace.
-    """
-    return None
+    return encryption.encrypt(json.dumps(data, sort_keys=True))
+
+
+def decrypt_fields(token: str) -> dict[str, str]:
+    from app.services import encryption
+
+    return json.loads(encryption.decrypt(token))
+
+
+def mask(value: str) -> str:
+    v = (value or "").strip()
+    return ("••••" + v[-4:]) if len(v) > 4 else "••••"
+
+
+def preview_for(provider: str, data: dict[str, str]) -> str:
+    """Masked, non-secret summary shown in Settings → Integrations."""
+    primary = {"adzuna": "app_key"}.get(provider, "api_key")
+    parts = [mask(data.get(primary, ""))]
+    if provider == "brevo" and data.get("sender_email"):
+        parts.append(data["sender_email"])
+    if provider == "unipile" and data.get("dsn"):
+        parts.append(data["dsn"])
+    if provider == "adzuna" and data.get("app_id"):
+        parts.append(f"app {data['app_id']}")
+    return " · ".join(parts)
+
+
+async def load_bundle(factory, tenant_id: uuid.UUID) -> CredentialBundle:
+    """Load + decrypt the workspace's provider keys.  Call with the tenant
+    context already set (RLS applies to ``tenant_provider_keys``)."""
+    from sqlalchemy import select
+
+    from app.models.tenant_keys import TenantProviderKey
+
+    bundle = CredentialBundle(tenant_id)
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                select(TenantProviderKey.provider, TenantProviderKey.encrypted_credentials)
+                .where(TenantProviderKey.tenant_id == tenant_id)
+            )
+        ).all()
+    for provider, token in rows:
+        if provider not in CREDS_CLASSES:
+            continue
+        try:
+            creds = build_creds(provider, decrypt_fields(token))
+        except Exception as exc:  # noqa: BLE001 — bad key/rotation: treat as missing
+            logger.warning("could not decrypt %s credentials for tenant %s: %s",
+                           provider, tenant_id, exc)
+            continue
+        if creds is not None:
+            bundle.creds[provider] = creds
+    return bundle

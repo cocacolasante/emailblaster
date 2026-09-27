@@ -158,16 +158,6 @@ def _default_tenant_context():
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_provider_credentials(monkeypatch):
-    """Tests never see real provider keys (docker compose injects the real
-    .env into the test container).  Every provider reads as NOT configured
-    unless a test opts in with ``set_creds``."""
-    from app.services import credentials
-
-    monkeypatch.setattr(credentials, "_from_settings", lambda provider: None)
-
-
-@pytest.fixture(autouse=True)
 def _isolated_auth_ratelimit(monkeypatch):
     """Auth rate-limit counters go to a per-test fakeredis, never the real
     Redis the test container can reach (counters would leak across runs)."""
@@ -206,6 +196,7 @@ async def _engine():
             "webhook_events, research_cache, "
             "social_listening_opportunities, social_listening_posts, "
             "social_listening_searches, "
+            "tenant_provider_keys, "
             "invitations, auth_tokens, user_sessions, memberships, users, tenants "
             "RESTART IDENTITY CASCADE"
         ))
