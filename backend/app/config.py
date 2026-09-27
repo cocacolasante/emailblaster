@@ -311,6 +311,23 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:5173"
     WEBHOOK_BASE_URL: str = "http://localhost:8000"
 
+    # --- Multi-tenancy / auth ---
+    # Runtime DB URL for the NON-OWNER role that Postgres RLS applies to.
+    # Empty ⇒ fall back to DATABASE_URL (owner; RLS bypassed — dev/tests
+    # before P6).  DATABASE_URL stays the owner role for Alembic.
+    APP_DATABASE_URL: str = ""
+    SESSION_TTL_DAYS: int = 30
+    # Set true when served over HTTPS (production).
+    SESSION_COOKIE_SECURE: bool = False
+    # Open self-serve signup.  Stays off until tenant isolation is complete.
+    ALLOW_SIGNUP: bool = False
+    # Platform mail (password resets + team invites) — the ONLY provider
+    # key that stays process-level.  Optional: without it reset links are
+    # logged server-side and invites return a copyable link.
+    PLATFORM_BREVO_API_KEY: str = ""
+    PLATFORM_SENDER_EMAIL: str = ""
+    PLATFORM_SENDER_NAME: str = "Email Blaster"
+
     @field_validator("IRS_BMF_STATES", mode="before")
     @classmethod
     def _split_states(cls, v: object) -> object:

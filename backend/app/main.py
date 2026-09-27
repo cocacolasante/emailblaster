@@ -1,14 +1,17 @@
 import logging
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings, validate_required_settings
+from app.database import get_tenant_context
 from app.services.credentials import MissingCredential
 from app.routers import (
     agent,
+    auth,
+    team,
     icp,
     intent_profiles,
     signals,
@@ -58,6 +61,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_EXEMPT_PREFIXES = ("/webhooks/", "/unsubscribe/")
+
+
+@app.middleware("http")
+async def csrf_origin_check(request: Request, call_next):
+    """Defence in depth on top of SameSite=Lax cookies: a state-changing
+    request that carries a session cookie AND an Origin header must come
+    from the frontend origin.  (Non-browser clients send no Origin.)"""
+    if (
+        request.method in _UNSAFE_METHODS
+        and "eb_session" in request.cookies
+        and not request.url.path.startswith(_CSRF_EXEMPT_PREFIXES)
+    ):
+        origin = request.headers.get("origin")
+        if origin and origin.rstrip("/") != settings.FRONTEND_URL.rstrip("/"):
+            return JSONResponse(status_code=403, content={"detail": "cross-origin request blocked"})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -126,21 +149,26 @@ async def health() -> dict:
     return {"status": "ok", "version": app.version}
 
 
-app.include_router(campaigns.router)
-app.include_router(leads.router)
-app.include_router(preview.router)
-app.include_router(analytics.router)
+# Every feature router is authenticated + tenant-scoped router-wide; only
+# auth (login/signup/invite) and webhooks/unsubscribe are public.
+_AUTHED = [Depends(get_tenant_context)]
+app.include_router(auth.router)
+app.include_router(team.router, dependencies=_AUTHED)
+app.include_router(campaigns.router, dependencies=_AUTHED)
+app.include_router(leads.router, dependencies=_AUTHED)
+app.include_router(preview.router, dependencies=_AUTHED)
+app.include_router(analytics.router, dependencies=_AUTHED)
 app.include_router(webhooks.router)
-app.include_router(connected_accounts.router)
-app.include_router(linkedin_accounts.router)
-app.include_router(settings_router.router)
-app.include_router(sequences.router)
-app.include_router(research_client.router)
-app.include_router(social_radar.router)
-app.include_router(crm.router)
-app.include_router(reports.router)
-app.include_router(report_builder.router)
-app.include_router(agent.router)
-app.include_router(signals.router)
-app.include_router(icp.router)
-app.include_router(intent_profiles.router)
+app.include_router(connected_accounts.router, dependencies=_AUTHED)
+app.include_router(linkedin_accounts.router, dependencies=_AUTHED)
+app.include_router(settings_router.router, dependencies=_AUTHED)
+app.include_router(sequences.router, dependencies=_AUTHED)
+app.include_router(research_client.router, dependencies=_AUTHED)
+app.include_router(social_radar.router, dependencies=_AUTHED)
+app.include_router(crm.router, dependencies=_AUTHED)
+app.include_router(reports.router, dependencies=_AUTHED)
+app.include_router(report_builder.router, dependencies=_AUTHED)
+app.include_router(agent.router, dependencies=_AUTHED)
+app.include_router(signals.router, dependencies=_AUTHED)
+app.include_router(icp.router, dependencies=_AUTHED)
+app.include_router(intent_profiles.router, dependencies=_AUTHED)

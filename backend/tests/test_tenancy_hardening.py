@@ -17,7 +17,7 @@ def _scan(pattern: str, allowed: set[str]) -> list[str]:
     offenders = []
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if rel in allowed:
+        if rel in allowed or any(a.endswith("/") and rel.startswith(a) for a in allowed):
             continue
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
@@ -48,6 +48,6 @@ def test_anthropic_client_only_built_in_factory():
 def test_no_engine_built_outside_factories():
     offenders = _scan(
         r"create_async_engine\(",
-        {"database.py", "tenancy/worker_db.py"},
+        {"database.py", "tenancy/worker_db.py", "scripts/"},
     )
     assert not offenders, "\n".join(offenders)

@@ -9,6 +9,17 @@ from app.models.agent import (
     NotificationKind,
 )
 from app.models.campaign import Campaign, CampaignStatus, ResearchMode
+from app.models.identity import (
+    AuthToken,
+    AuthTokenPurpose,
+    Invitation,
+    Membership,
+    MembershipRole,
+    Tenant,
+    TenantStatus,
+    User,
+    UserSession,
+)
 from app.models.copy_feedback import CampaignCopyInsights, ReplyOutcome
 from app.models.connected_account import ConnectedAccount, ConnectedAccountTestStatus
 from app.models.crm import (
@@ -90,6 +101,15 @@ from app.models.suppression import Suppression, SuppressionReason, canonical_ema
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
+    "AuthToken",
+    "AuthTokenPurpose",
+    "Invitation",
+    "Membership",
+    "MembershipRole",
+    "Tenant",
+    "TenantStatus",
+    "User",
+    "UserSession",
     "AGENT_SETTINGS_SINGLETON_ID",
     "AgentAction",
     "AgentActionStatus",

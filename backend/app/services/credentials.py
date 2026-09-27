@@ -208,3 +208,12 @@ def default_sender() -> tuple[str, str]:
     if c is None:
         return "", ""
     return c.sender_name, c.sender_email  # type: ignore[union-attr]
+
+
+async def load_bundle(factory, tenant_id: uuid.UUID) -> CredentialBundle | None:
+    """Load the workspace's credential bundle.
+
+    Interim (pre-P5): returns None, so ``get`` falls back to process
+    settings for the single bootstrap workspace.
+    """
+    return None

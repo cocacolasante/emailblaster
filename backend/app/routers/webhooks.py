@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_db
+from app.database import get_public_db
 from app.models import (
     Campaign,
     EmailEvent,
@@ -125,7 +125,7 @@ def make_unsubscribe_url(lead_id: uuid.UUID | str) -> str:
 async def unsubscribe_confirm_page(
     lead_id: uuid.UUID,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ) -> HTMLResponse:
     """Render a confirmation page (no side effects).  Side effects move to
     POST so email-scanner GET prefetches can't auto-unsubscribe leads."""
@@ -145,7 +145,7 @@ async def unsubscribe_confirm_page(
 async def unsubscribe(
     lead_id: uuid.UUID,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ) -> HTMLResponse:
     """Apply the suppression.  Tokenised + POST-only — a scanner GET never
     fires this branch.
@@ -490,7 +490,7 @@ def _parse_iso(value: Any) -> datetime | None:
 @router.post("/webhooks/unipile")
 async def unipile_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ) -> dict[str, Any]:
     """Receive Unipile push events.
 
@@ -596,7 +596,7 @@ async def unipile_webhook(
 @router.post("/webhooks/brevo")
 async def brevo_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_public_db),
 ) -> dict[str, Any]:
     """Receive Brevo transactional event pushes in real time.
 

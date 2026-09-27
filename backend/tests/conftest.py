@@ -71,6 +71,72 @@ asyncio.run(_initialize_test_db())
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# Default identity: every test runs as DEFAULT_USER (owner) in
+# DEFAULT_TENANT, authenticated through the real session-cookie path.
+# --------------------------------------------------------------------------
+
+import hashlib  # noqa: E402
+import uuid  # noqa: E402
+
+DEFAULT_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+DEFAULT_USER_EMAIL = "owner@test.local"
+DEFAULT_SESSION_TOKEN = "test-session-token-default-user"
+
+
+def _token_hash(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _seed_default_identity(conn) -> None:
+    await conn.execute(text(
+        "INSERT INTO tenants (id, name, slug) VALUES (:t, 'Test Workspace', 'test-workspace')"
+    ), {"t": DEFAULT_TENANT_ID})
+    await conn.execute(text(
+        "INSERT INTO users (id, email, name) VALUES (:u, :e, 'Test Owner')"
+    ), {"u": DEFAULT_USER_ID, "e": DEFAULT_USER_EMAIL})
+    await conn.execute(text(
+        "INSERT INTO memberships (tenant_id, user_id, role) VALUES (:t, :u, 'owner')"
+    ), {"t": DEFAULT_TENANT_ID, "u": DEFAULT_USER_ID})
+    await conn.execute(text(
+        "INSERT INTO user_sessions (token_hash, user_id, tenant_id, expires_at) "
+        "VALUES (:h, :u, :t, now() + interval '1 day')"
+    ), {"h": _token_hash(DEFAULT_SESSION_TOKEN), "u": DEFAULT_USER_ID, "t": DEFAULT_TENANT_ID})
+
+
+async def create_test_user(
+    engine, *, tenant_id=None, email=None, role="member", name=None,
+    new_tenant_name=None,
+):
+    """Insert a user (+ optional new workspace) with a live session.
+
+    Returns ``(user_id, tenant_id, session_token)``.
+    """
+    user_id = uuid.uuid4()
+    email = email or f"user-{user_id.hex[:8]}@test.local"
+    token = f"test-session-{user_id.hex}"
+    async with engine.begin() as conn:
+        if tenant_id is None:
+            tenant_id = uuid.uuid4()
+            await conn.execute(text(
+                "INSERT INTO tenants (id, name, slug) VALUES (:t, :n, :s)"
+            ), {"t": tenant_id, "n": new_tenant_name or "Other Workspace",
+                "s": f"ws-{tenant_id.hex[:10]}"})
+        await conn.execute(text(
+            "INSERT INTO users (id, email, name) VALUES (:u, :e, :n)"
+        ), {"u": user_id, "e": email, "n": name})
+        await conn.execute(text(
+            "INSERT INTO memberships (tenant_id, user_id, role) "
+            "VALUES (:t, :u, CAST(:r AS membership_role))"
+        ), {"t": tenant_id, "u": user_id, "r": role})
+        await conn.execute(text(
+            "INSERT INTO user_sessions (token_hash, user_id, tenant_id, expires_at) "
+            "VALUES (:h, :u, :t, now() + interval '1 day')"
+        ), {"h": _token_hash(token), "u": user_id, "t": tenant_id})
+    return user_id, tenant_id, token
+
+
 @pytest_asyncio.fixture
 async def _engine():
     """Per-test async engine bound to the current event loop. Truncates first."""
@@ -94,9 +160,11 @@ async def _engine():
             "linkedin_accounts, linkedin_profile_cache, "
             "webhook_events, research_cache, "
             "social_listening_opportunities, social_listening_posts, "
-            "social_listening_searches "
+            "social_listening_searches, "
+            "invitations, auth_tokens, user_sessions, memberships, users, tenants "
             "RESTART IDENTITY CASCADE"
         ))
+        await _seed_default_identity(conn)
     try:
         yield engine
     finally:
@@ -109,31 +177,55 @@ async def db_session(_engine):
         yield session
 
 
+def _make_client(app, token: str | None) -> AsyncClient:
+    c = AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    )
+    if token:
+        c.cookies.set("eb_session", token)
+    return c
+
+
 @pytest_asyncio.fixture
-async def client(_engine):
-    """AsyncClient against the FastAPI app with get_db pointing at the test engine.
+async def client_factory(_engine):
+    """Build extra clients: ``client_factory(token)`` (or ``None`` for an
+    anonymous client).  All share the test DB via the factory override."""
+    from app.database import get_session_factory
+    from app.main import app
+
+    SessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
+    app.dependency_overrides[get_session_factory] = lambda: SessionLocal
+    made: list[AsyncClient] = []
+
+    def _factory(token: str | None = DEFAULT_SESSION_TOKEN) -> AsyncClient:
+        c = _make_client(app, token)
+        made.append(c)
+        return c
+
+    try:
+        yield _factory
+    finally:
+        for c in made:
+            await c.aclose()
+        app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def client(client_factory):
+    """AsyncClient authenticated as DEFAULT_USER (owner of DEFAULT_TENANT),
+    through the real cookie-session → get_db path against the test DB.
 
     raise_app_exceptions=False so the global exception handler can return a
     500 response in tests instead of httpx re-raising the original exception.
     """
-    from app.database import get_db
-    from app.main import app
+    yield client_factory()
 
-    SessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
 
-    async def _override_get_db():
-        async with SessionLocal() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app, raise_app_exceptions=False),
-            base_url="http://test",
-        ) as c:
-            yield c
-    finally:
-        app.dependency_overrides.clear()
+@pytest_asyncio.fixture
+async def anon_client(client_factory):
+    """Unauthenticated AsyncClient."""
+    yield client_factory(None)
 
 
 # --------------------------------------------------------------------------
