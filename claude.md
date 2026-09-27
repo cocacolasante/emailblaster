@@ -54,8 +54,11 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   - Verified end-to-end on a copy of the real DB under RLS (all 10
     campaigns / 9,168 leads / 6 integrations intact; a new signup is
     empty + isolated; invite → teammate sees data; assign → "My leads").
-  - **NOT yet applied to the live dev DB** — run the upgrade steps in
-    `docs/tenancy.md` → "Upgrading an existing single-tenant install".
+  - Applied to the dev DB 2026-09-27 (backup in `backups/`); counts
+    verified identical before/after.
+  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 22
+    pinned tools, named tunnel `outreach.blueprintautomation.tech`; see
+    [`docs/muse-mcp.md`](docs/muse-mcp.md).
 
 - **Recent highlights** (full task-by-task history is archived in
   [`docs/claude-history.md`](docs/claude-history.md)):
@@ -231,6 +234,23 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     (campaign → its leads, lead → converted deal, deal → tasks), else the
     workspace's primary owner (background rows).  Visibility is
     workspace-wide regardless of owner.
+- **Muse / MCP agent access** ([`docs/muse-mcp.md`](docs/muse-mcp.md)).
+  `POST /mcp` (stateless JSON-RPC, Streamable HTTP) authenticated by a
+  workspace API key (`Authorization: Bearer eb_…`, hashed in `api_keys`,
+  verified via SECURITY DEFINER `api_key_verify()`); a key acts as its
+  creator.  Tools in `app/mcp/tools.py` MUST go through the existing API
+  routes (in-process), never straight to the DB, and the pinned list in
+  `tests/test_mcp.py` must be edited deliberately — nothing that sends,
+  launches, deletes, or manages team/keys/integrations.  New endpoints
+  that manage credentials/team use `require_session`/`require_manager`
+  (they refuse API keys).
+- **Public origin = named Cloudflare tunnel** `outreach.blueprintautomation.tech`
+  (tunnel `outreach`, `scripts/named-tunnel-setup.sh`,
+  `docker-compose.named-tunnel.yml`).  It forwards only `/mcp`,
+  `/webhooks/*`, `/unsubscribe/*`, `/health`.  `.env` has
+  `PUBLIC_ORIGIN` + `WEBHOOK_BASE_URL` pointing at it — bring the stack up
+  with `-f docker-compose.yml -f docker-compose.named-tunnel.yml`.  This
+  replaces ngrok / `scripts/dev_tunnel.py` for day-to-day use.
 - **Two DB roles.**  `DATABASE_URL` = owner (Alembic, `set_password`,
   `bootstrap_db`); `APP_DATABASE_URL` = non-owner runtime role that RLS
   binds (backend/worker/beat).  The backend runs `bootstrap_db` on start
@@ -651,7 +671,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1331 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **497 passing**._
+_Backend tests: **1358 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
