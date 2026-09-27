@@ -18,6 +18,7 @@ import {
 import { useToast } from '../components/Toast.jsx';
 import ActivityLog from '../components/ActivityLog.jsx';
 import { Skeleton } from '../components/states.jsx';
+import { OwnerPicker } from '../components/OwnerPicker.jsx';
 import { STAGES, fmtAmount } from './Opportunities.jsx';
 
 function fmtDate(iso) {
@@ -235,7 +236,15 @@ export default function OpportunityDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Left column: details + products + documents */}
         <div className="space-y-4">
-          <DetailsCard opp={opp} onSave={(payload) => updateMut.mutate(payload)} />
+          <DetailsCard
+            opp={opp}
+            onSave={(payload) => updateMut.mutate(payload)}
+            onOwnerChange={(ownerId) => updateMut.mutate(
+              { owner_id: ownerId },
+              { onSuccess: () => toast.success(ownerId ? 'Owner updated' : 'Deal unassigned') },
+            )}
+            savingOwner={updateMut.isPending}
+          />
           <ProductsCard oppId={id} dealAmount={opp.amount} />
           <DocumentsCard oppId={id} />
         </div>
@@ -243,7 +252,7 @@ export default function OpportunityDetail() {
         {/* Right column: activities + meta */}
         <div className="space-y-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-            <ActivityLog opportunityId={id} />
+            <ActivityLog opportunityId={id} defaultOwnerId={opp.owner_id ?? null} />
           </div>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 text-xs text-slate-500">
             <div>Created {fmtDate(opp.created_at)} · last touched {fmtDate(opp.updated_at)}</div>
@@ -275,7 +284,7 @@ export default function OpportunityDetail() {
 }
 
 
-function DetailsCard({ opp, onSave }) {
+function DetailsCard({ opp, onSave, onOwnerChange, savingOwner = false }) {
   const [amount, setAmount] = useState(opp.amount ?? '');
   const [closeDate, setCloseDate] = useState(opp.close_date ?? '');
   const [probability, setProbability] = useState(opp.probability ?? '');
@@ -284,6 +293,17 @@ function DetailsCard({ opp, onSave }) {
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4" data-testid="details-card">
       <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Details</div>
+      <div className="mb-3">
+        <OwnerPicker
+          value={opp.owner_id ?? null}
+          onChange={(v) => { if ((v ?? null) !== (opp.owner_id ?? null)) onOwnerChange?.(v); }}
+          disabled={savingOwner}
+          label="Owner"
+          showLabel
+          className="w-full"
+          testId="opp-owner-picker"
+        />
+      </div>
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div>
           <label className="block text-xs font-semibold text-slate-600 mb-1">Amount ($)</label>

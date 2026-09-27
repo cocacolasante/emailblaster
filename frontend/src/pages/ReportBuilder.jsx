@@ -9,6 +9,8 @@ import { useToast } from '../components/Toast.jsx';
 import { SimpleBarChart, SimpleLineChart, SimplePieChart } from '../components/charts.jsx';
 import { Button } from '../components/ui.jsx';
 import { formatNumber } from '../utils/format.js';
+import { OwnerFilter } from '../components/OwnerPicker.jsx';
+import { memberName, useOwnerLabel, useOwnerLookup, withOwnerNames } from '../components/OwnerAvatar.jsx';
 
 const OP_LABELS = {
   equals: 'is', not_equals: 'is not', contains: 'contains', not_contains: 'does not contain',
@@ -40,9 +42,44 @@ function toCsv(columns, rows) {
 }
 
 
+/** Owner-typed filter value: a member id or the literal "me" ("any of" →
+ *  a multi-select producing a list). */
+function OwnerValueInput({ op, value, onChange }) {
+  const { members } = useOwnerLookup();
+  if (op === 'in') {
+    const selected = Array.isArray(value) ? value : [];
+    return (
+      <select
+        multiple
+        data-testid="filter-value"
+        aria-label="Owners"
+        value={selected}
+        onChange={(e) => onChange([...e.target.selectedOptions].map((o) => o.value))}
+        className="px-2 py-1 border border-slate-300 rounded-lg text-sm min-w-[12rem]"
+      >
+        <option value="me">Me</option>
+        {members.map((m) => <option key={m.user_id} value={m.user_id}>{memberName(m)}</option>)}
+      </select>
+    );
+  }
+  return (
+    <OwnerFilter
+      value={typeof value === 'string' ? value : ''}
+      onChange={onChange}
+      allLabel={null}
+      includeUnassigned={false}
+      label="Owner"
+      testId="filter-value"
+      className="!py-1.5"
+    />
+  );
+}
+
+
 function FilterValueInput({ fieldMeta, op, value, relativeRanges, onChange }) {
   if (!fieldMeta || NO_VALUE_OPS.has(op)) return null;
   const t = fieldMeta.type;
+  if (t === 'owner') return <OwnerValueInput op={op} value={value} onChange={onChange} />;
   if (op === 'relative_range') {
     return (
       <select data-testid="filter-value" value={value || ''} onChange={(e) => onChange(e.target.value)}
@@ -85,6 +122,7 @@ function FilterValueInput({ fieldMeta, op, value, relativeRanges, onChange }) {
 export default function ReportBuilder() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const ownerLabel = useOwnerLabel();
 
   const { data: metadata } = useQuery({ queryKey: ['report-metadata'], queryFn: getReportMetadata });
   const { data: saved = [] } = useQuery({ queryKey: ['saved-reports'], queryFn: listReports });
@@ -164,7 +202,8 @@ export default function ReportBuilder() {
 
   function exportCsv() {
     if (!result?.rows?.length) return;
-    const blob = new Blob([toCsv(result.columns, result.rows)], { type: 'text/csv;charset=utf-8' });
+    const rows = withOwnerNames(result.columns, result.rows, ownerLabel);
+    const blob = new Blob([toCsv(result.columns, rows)], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = `${(def.name || 'report').replace(/\s+/g, '-')}.csv`;
@@ -374,7 +413,11 @@ export default function ReportBuilder() {
 
 
 function Results({ result, chartType, setChartType, groupKey, numericAggKeys, onExport }) {
-  const { columns, rows, grouped, truncated, row_count: rowCount } = result;
+  const ownerLabel = useOwnerLabel();
+  const { columns, grouped, truncated, row_count: rowCount } = result;
+  // Owner columns come back as user ids — show member names in the table
+  // and chart labels.
+  const rows = withOwnerNames(columns, result.rows, ownerLabel);
   const showChart = grouped && groupKey && numericAggKeys.length > 0;
   const yKey = numericAggKeys[0];
 

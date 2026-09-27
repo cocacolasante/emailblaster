@@ -9,7 +9,11 @@ import { formatCurrency, formatNumber, formatPercent } from '../utils/format.js'
 import { getReportOverview } from '../api/reports.js';
 import { listCampaigns } from '../api/campaigns.js';
 import { listReports, runSavedReport } from '../api/reportBuilder.js';
+import { getPipelineSummary } from '../api/crm.js';
 import { STAGES } from './Opportunities.jsx';
+import { ScopeToggle } from '../components/OwnerPicker.jsx';
+import { useOwnerLabel, withOwnerNames } from '../components/OwnerAvatar.jsx';
+import { useOwnerParam } from '../hooks/useOwnerParam.js';
 
 const STAGE_LABEL = Object.fromEntries(STAGES.map((s) => [s.value, s.label]));
 
@@ -31,9 +35,10 @@ function aggregateCampaigns(campaigns) {
 
 
 function SavedReportResult({ result }) {
+  const ownerLabel = useOwnerLabel();
   if (!result) return null;
   const cols = result.columns || [];
-  const rows = (result.rows || []).slice(0, 50);
+  const rows = withOwnerNames(cols, (result.rows || []).slice(0, 50), ownerLabel);
   if (rows.length === 0) {
     return <EmptyState title="No rows" hint="This report returned nothing." />;
   }
@@ -68,14 +73,24 @@ function SavedReportResult({ result }) {
 
 export default function Dashboard() {
   const [activeReport, setActiveReport] = useState(null);
+  // "Mine" re-scopes only the widgets whose endpoints take ?owner= (the
+  // open-pipeline chart via /crm/opportunities/pipeline + the outreach
+  // snapshot via /campaigns).  The 90-day KPI overview is workspace-wide.
+  const [owner, setOwner] = useOwnerParam();
+  const mine = owner === 'me';
 
   const { data: overview, isLoading, error, refetch } = useQuery({
     queryKey: ['dashboard-overview'],
     queryFn: () => getReportOverview(),
   });
   const { data: campaigns = [] } = useQuery({
-    queryKey: ['dashboard-campaigns'],
-    queryFn: listCampaigns,
+    queryKey: ['dashboard-campaigns', mine ? 'me' : 'all'],
+    queryFn: () => listCampaigns(mine ? { owner: 'me' } : undefined),
+  });
+  const { data: myPipeline } = useQuery({
+    queryKey: ['crm-pipeline', { owner: 'me' }],
+    queryFn: () => getPipelineSummary({ owner: 'me' }),
+    enabled: mine,
   });
   const { data: savedReports = [] } = useQuery({
     queryKey: ['dashboard-saved-reports'],
@@ -101,7 +116,11 @@ export default function Dashboard() {
     { label: 'Activities', value: formatNumber(k.activities_logged) },
   ] : [];
 
-  const pipelineData = (overview?.pipeline_by_stage || []).map((s) => ({
+  const closedStage = (st) => String(st).startsWith('closed_');
+  const pipelineSource = mine
+    ? (myPipeline || []).filter((s) => !closedStage(s.stage))
+    : (overview?.pipeline_by_stage || []);
+  const pipelineData = pipelineSource.map((s) => ({
     stage: STAGE_LABEL[s.stage] || s.stage,
     value: s.total_amount,
   }));
@@ -110,17 +129,20 @@ export default function Dashboard() {
   const campaignMetrics = [
     { label: 'Campaigns', value: formatNumber(camp.count) },
     { label: 'Emails sent', value: formatNumber(camp.sent) },
-    { label: 'Open rate', value: formatPercent(camp.openRate), tooltip: 'Across all campaigns' },
-    { label: 'Reply rate', value: formatPercent(camp.replyRate), tooltip: 'Across all campaigns' },
+    { label: 'Open rate', value: formatPercent(camp.openRate), tooltip: mine ? 'Across your campaigns' : 'Across all campaigns' },
+    { label: 'Reply rate', value: formatPercent(camp.replyRate), tooltip: mine ? 'Across your campaigns' : 'Across all campaigns' },
   ];
 
   return (
     <div className="p-6 max-w-[100rem] mx-auto" data-testid="dashboard">
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-2xl font-bold text-slate-900 m-0">Dashboard</h1>
-        <Link to="/reports/builder" className="text-sm text-brand-600 hover:underline">
-          Build a custom report →
-        </Link>
+        <div className="flex items-center gap-3">
+          <ScopeToggle mine={mine} onChange={(m) => setOwner(m ? 'me' : '')} testId="dashboard-scope" />
+          <Link to="/reports/builder" className="text-sm text-brand-600 hover:underline">
+            Build a custom report →
+          </Link>
+        </div>
       </div>
       <p className="text-sm text-slate-500 mb-5">
         Pipeline health, outreach performance, and your saved reports — one view.
@@ -134,20 +156,25 @@ export default function Dashboard() {
         <div className="space-y-6">
           {/* CRM KPIs */}
           <section>
-            <h2 className="text-sm font-semibold text-slate-700 mb-2">Pipeline (last 90 days)</h2>
+            <h2 className="text-sm font-semibold text-slate-700 mb-2">
+              Pipeline (last 90 days)
+              {mine && <span className="ml-1.5 font-normal text-slate-400">· whole workspace</span>}
+            </h2>
             <MetricsGrid metrics={kpiTop} />
             <MetricsGrid metrics={kpiBottom} />
           </section>
 
           {/* Pipeline by stage */}
           <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-            <h2 className="text-sm font-semibold text-slate-700 mb-3">Open pipeline by stage</h2>
+            <h2 className="text-sm font-semibold text-slate-700 mb-3">
+              {mine ? 'My open pipeline by stage' : 'Open pipeline by stage'}
+            </h2>
             <SimpleBarChart data={pipelineData} xKey="stage" yKey="value" testId="dashboard-pipeline-chart" />
           </section>
 
           {/* Campaign snapshot */}
           <section>
-            <h2 className="text-sm font-semibold text-slate-700 mb-2">Outreach</h2>
+            <h2 className="text-sm font-semibold text-slate-700 mb-2">{mine ? 'My outreach' : 'Outreach'}</h2>
             <MetricsGrid metrics={campaignMetrics} />
           </section>
 

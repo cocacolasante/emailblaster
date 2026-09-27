@@ -29,6 +29,7 @@ import LeadUpload from '../components/LeadUpload.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
 import { Skeleton } from '../components/states.jsx';
+import { OwnerPicker } from '../components/OwnerPicker.jsx';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { AnalyticsContent } from './Analytics.jsx';
 
@@ -2213,6 +2214,19 @@ export default function CampaignDetail() {
     onError: (e) => toast.error(e?.response?.data?.detail || e.message || 'Update failed'),
   });
 
+  const ownerMutation = useMutation({
+    mutationFn: (ownerId) => updateCampaign(id, { owner_id: ownerId }),
+    onSuccess: (_data, ownerId) => {
+      toast.success(ownerId ? 'Campaign owner updated' : 'Campaign unassigned');
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] });
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+    },
+    onError: (e) => {
+      const d = e?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : e.message || 'Update failed');
+    },
+  });
+
   const pauseMutation = useMutation({
     mutationFn: () => pauseCampaign(id),
     onSuccess: () => {
@@ -2330,6 +2344,18 @@ export default function CampaignDetail() {
           </button>
           <StatusBadge status={campaign.status} />
         </div>
+      </div>
+      <div className="flex items-center gap-2 text-sm text-slate-500" data-testid="campaign-owner">
+        <span className="text-xs font-medium text-slate-500">Owner</span>
+        <OwnerPicker
+          value={campaign.owner_id ?? null}
+          onChange={(v) => ownerMutation.mutate(v)}
+          disabled={ownerMutation.isPending}
+          label="Campaign owner"
+          size="sm"
+          className="w-56"
+          testId="campaign-owner-picker"
+        />
       </div>
 
       <Tabs

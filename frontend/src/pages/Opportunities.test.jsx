@@ -22,6 +22,8 @@ vi.mock('../api/crm.js', () => ({
 import * as api from '../api/crm.js';
 import Opportunities, { resolveDropTarget, fmtAmount } from './Opportunities.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
+import { http, HttpResponse } from 'msw';
+import { server, api as apiUrl } from '../test/server.js';
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -171,5 +173,35 @@ describe('Opportunities board', () => {
       expect(payload.name).toBe('Fresh deal');
       expect(payload.amount).toBe(5000);
     });
+  });
+});
+
+
+describe('Opportunities owners', () => {
+  it('"My deals" refetches with owner=me; list shows owners + bulk-assigns', async () => {
+    let body = null;
+    server.use(http.post(apiUrl('/owners/assign'), async ({ request }) => {
+      body = await request.json();
+      return HttpResponse.json({ updated: 1 });
+    }));
+    api.listOpportunities.mockResolvedValue(paged([{ ...OPP, owner_id: 'user-1' }]));
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId('opp-card-o1');
+    await waitFor(() => expect(screen.getByTestId('opp-card-owner-o1'))
+      .toHaveAttribute('aria-label', 'Owner: Ada Lovelace (you)'));
+
+    await user.click(screen.getByTestId('my-deals-toggle'));
+    await waitFor(() => expect(api.listOpportunities.mock.calls.at(-1)[0]).toEqual({ page_size: 500, owner: 'me' }));
+
+    await user.click(screen.getByTestId('view-list'));
+    expect(await screen.findByTestId('opp-owner-o1')).toHaveTextContent('Ada Lovelace');
+    await user.click(screen.getByTestId('select-opp-o1'));
+    await user.click(screen.getByTestId('opp-bulk-assign-btn'));
+    const modal = await screen.findByTestId('bulk-assign-modal');
+    await user.selectOptions(within(modal).getByTestId('bulk-assign-picker'), 'Unassigned');
+    await user.click(within(modal).getByTestId('bulk-assign-confirm'));
+    await waitFor(() => expect(body).toEqual({ record_type: 'opportunity', ids: ['o1'], owner_id: null }));
+    expect(await screen.findByText('Unassigned 1 deal')).toBeInTheDocument();
   });
 });

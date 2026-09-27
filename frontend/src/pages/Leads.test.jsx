@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
+import { http, HttpResponse } from 'msw';
+import { server, api as apiUrl } from '../test/server.js';
+import { LocationProbe } from '../test/utils.jsx';
 
 vi.mock('../api/campaigns.js', () => ({
   addLeadsToCampaign: vi.fn(),
@@ -35,13 +39,16 @@ import * as signalsApi from '../api/signals.js';
 import Leads from './Leads.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
-function renderPage() {
+function renderPage(path = '/leads') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <ToastProvider>
-        <Leads />
-      </ToastProvider>
+      <MemoryRouter initialEntries={[path]}>
+        <ToastProvider>
+          <Leads />
+          <LocationProbe />
+        </ToastProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -585,5 +592,97 @@ describe('Track signals from the lead modal', () => {
       expect(payload.watch_type).toBe('custom');
       expect(payload.lead_id).toBe('l1');
     });
+  });
+});
+
+describe('Owners', () => {
+  const MEMBERS = [
+    { user_id: 'user-1', email: 'ada@example.com', name: 'Ada Lovelace', display_name: 'Ada Lovelace', role: 'owner', joined_at: null },
+    { user_id: 'user-2', email: 'grace@example.com', name: 'Grace Hopper', display_name: 'Grace Hopper', role: 'member', joined_at: null },
+  ];
+  const ROWS = [
+    { id: 'l1', campaign_id: 'c1', campaign_name: 'Q2 outreach', email: 'a@example.com', send_status: 'sent', has_notes: false, owner_id: 'user-2' },
+    { id: 'l2', campaign_id: 'c1', campaign_name: 'Q2 outreach', email: 'b@example.com', send_status: 'pending', has_notes: false, owner_id: null },
+    { id: 'l3', campaign_id: 'c1', campaign_name: 'Q2 outreach', email: 'c@example.com', send_status: 'pending', has_notes: false, owner_id: 'user-1' },
+  ];
+
+  beforeEach(() => {
+    server.use(http.get(apiUrl('/team/members'), () => HttpResponse.json(MEMBERS)));
+    api.listAllLeads.mockResolvedValue(leadsPayload(ROWS));
+  });
+
+  it('renders an Owner column resolved to member names', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('lead-owner-l1')).toHaveTextContent('Grace Hopper'));
+    expect(screen.getByTestId('lead-owner-l2')).toHaveTextContent('Unassigned');
+    expect(screen.getByTestId('lead-owner-l3')).toHaveTextContent('Ada Lovelace');
+  });
+
+  it('"My leads" sets ?owner=me and requests /leads with owner=me', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('a@example.com');
+    await user.click(screen.getByTestId('my-leads-toggle'));
+
+    await waitFor(() => expect(api.listAllLeads.mock.calls.at(-1)[0].owner).toBe('me'));
+    expect(screen.getByTestId('location')).toHaveTextContent('/leads?owner=me');
+    expect(screen.getByTestId('my-leads-toggle')).toHaveAttribute('aria-pressed', 'true');
+    // The owner select mirrors the URL.
+    expect(screen.getByTestId('owner-filter')).toHaveValue('me');
+  });
+
+  it('reads the owner filter from the URL and supports a specific member', async () => {
+    const user = userEvent.setup();
+    renderPage('/leads?owner=unassigned');
+    await waitFor(() => expect(api.listAllLeads.mock.calls.at(-1)[0].owner).toBe('unassigned'));
+
+    const filter = screen.getByTestId('owner-filter');
+    await within(filter).findByRole('option', { name: 'Grace Hopper' });
+    await user.selectOptions(filter, 'Grace Hopper');
+    await waitFor(() => expect(api.listAllLeads.mock.calls.at(-1)[0].owner).toBe('user-2'));
+    expect(screen.getByTestId('location')).toHaveTextContent('owner=user-2');
+  });
+
+  it('bulk "Assign to…" posts /owners/assign and toasts the count', async () => {
+    let body = null;
+    server.use(http.post(apiUrl('/owners/assign'), async ({ request }) => {
+      body = await request.json();
+      return HttpResponse.json({ updated: 2 });
+    }));
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('a@example.com');
+
+    await user.click(screen.getByTestId('select-lead-l1'));
+    await user.click(screen.getByTestId('select-lead-l2'));
+    await user.click(screen.getByTestId('bulk-assign-btn'));
+
+    const modal = await screen.findByTestId('bulk-assign-modal');
+    const picker = within(modal).getByTestId('bulk-assign-picker');
+    await within(picker).findByRole('option', { name: /Grace Hopper/ });
+    await user.selectOptions(picker, 'user-2');
+    await user.click(within(modal).getByTestId('bulk-assign-confirm'));
+
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body.record_type).toBe('lead');
+    expect(body.ids.sort()).toEqual(['l1', 'l2']);
+    expect(body.owner_id).toBe('user-2');
+    expect(await screen.findByText('Assigned 2 leads')).toBeInTheDocument();
+    // Selection cleared → bar gone; list refetched.
+    await waitFor(() => expect(screen.queryByTestId('add-to-campaign-bar')).toBeNull());
+  });
+
+  it('owner picker in the lead modal PATCHes owner_id via updateLeadFields', async () => {
+    api.getLeadById.mockResolvedValue({ ...ROWS[1], history: [], history_counts: {}, research_summary: {} });
+    crmApi.updateLeadFields.mockResolvedValue({ id: 'l2', owner_id: 'user-2' });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByText('b@example.com'));
+
+    const picker = await screen.findByTestId('lead-owner-picker');
+    await waitFor(() => expect(picker).not.toBeDisabled());
+    await within(picker).findByRole('option', { name: /Grace Hopper/ });
+    await user.selectOptions(picker, 'user-2');
+    await waitFor(() => expect(crmApi.updateLeadFields).toHaveBeenCalledWith('l2', { owner_id: 'user-2' }));
   });
 });

@@ -13,7 +13,8 @@ export async function updateLeadCrmStatus(leadId, crmStatus) {
 }
 
 /** Update a lead's contact info / details (email, name, company,
- *  job_title, phone, linkedin_url, company_website, notes). PATCH —
+ *  job_title, phone, linkedin_url, company_website, notes, owner_id —
+ *  null owner_id unassigns). PATCH —
  *  only the keys you pass are changed. */
 export async function updateLeadFields(leadId, payload) {
   const { data } = await client.patch(`/crm/leads/${leadId}`, payload);
@@ -29,6 +30,8 @@ export async function convertLead(leadId, payload = {}) {
 
 // ---------- Opportunities ----------
 
+/** `params.owner` ('me' | 'unassigned' | <user id>) filters by owner on
+ *  every CRM list endpoint (opportunities, pipeline, activities). */
 export async function listOpportunities(params = {}) {
   const { data } = await client.get('/crm/opportunities', { params });
   return data;
@@ -54,8 +57,10 @@ export async function deleteOpportunity(id) {
 }
 
 /** Per-stage roll-up {stage, count, total_amount} for the Kanban header. */
-export async function getPipelineSummary() {
-  const { data } = await client.get('/crm/opportunities/pipeline');
+export async function getPipelineSummary(params) {
+  // Tolerate being passed straight to react-query as a queryFn.
+  const p = params && !params.queryKey ? params : undefined;
+  const { data } = await client.get('/crm/opportunities/pipeline', p ? { params: p } : undefined);
   return data;
 }
 

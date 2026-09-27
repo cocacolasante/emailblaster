@@ -8,6 +8,9 @@ import {
 } from '../api/campaigns.js';
 import { useToast } from '../components/Toast.jsx';
 import { PageHeader } from '../components/ui.jsx';
+import { OwnerAvatar } from '../components/OwnerAvatar.jsx';
+import { ScopeToggle } from '../components/OwnerPicker.jsx';
+import { useOwnerParam } from '../hooks/useOwnerParam.js';
 
 const STATUS_CLASSES = {
   draft:      'bg-slate-100 text-slate-600',
@@ -120,8 +123,11 @@ function CampaignCard({ campaign }) {
         </div>
       </div>
 
-      <div className="text-xs text-slate-400 mb-4">
-        Created {new Date(campaign.created_at).toLocaleDateString()}
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <span className="text-xs text-slate-400">
+          Created {new Date(campaign.created_at).toLocaleDateString()}
+        </span>
+        <OwnerAvatar ownerId={campaign.owner_id} size="xs" testId={`campaign-owner-${campaign.id}`} className="text-xs" />
       </div>
 
       <div className="flex gap-2 flex-wrap">
@@ -212,9 +218,12 @@ function EmptyState() {
 
 
 export default function Campaigns() {
+  const [owner, setOwner] = useOwnerParam();
+  const mine = owner === 'me';
+  // Unfiltered keeps the shared ['campaigns'] key (Leads / Signals reuse it).
   const { data: campaigns, isLoading, error } = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: listCampaigns,
+    queryKey: mine ? ['campaigns', { owner: 'me' }] : ['campaigns'],
+    queryFn: () => listCampaigns(mine ? { owner: 'me' } : undefined),
   });
 
   return (
@@ -222,12 +231,15 @@ export default function Campaigns() {
       <PageHeader
         title="Campaigns"
         actions={(
-          <Link
-            to="/campaigns/new"
-            className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors duration-fast no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1"
-          >
-            + New campaign
-          </Link>
+          <>
+            <ScopeToggle mine={mine} onChange={(m) => setOwner(m ? 'me' : '')} testId="campaign-scope" />
+            <Link
+              to="/campaigns/new"
+              className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors duration-fast no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1"
+            >
+              + New campaign
+            </Link>
+          </>
         )}
       />
 
@@ -237,7 +249,18 @@ export default function Campaigns() {
           Failed to load campaigns: {String(error?.message)}
         </div>
       )}
-      {!isLoading && !error && campaigns?.length === 0 && <EmptyState />}
+      {!isLoading && !error && campaigns?.length === 0 && (mine ? (
+        <div data-testid="mine-empty" className="text-center py-16 text-sm text-slate-500">
+          You don&apos;t own any campaigns yet.{' '}
+          <button
+            type="button"
+            onClick={() => setOwner('')}
+            className="text-brand-600 hover:underline bg-transparent border-none cursor-pointer p-0"
+          >
+            Show everyone&apos;s
+          </button>
+        </div>
+      ) : <EmptyState />)}
       {!isLoading && !error && campaigns?.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {campaigns.map((c) => (

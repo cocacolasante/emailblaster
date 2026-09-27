@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { deleteCampaignLead, listCampaignLeads } from '../api/campaigns.js';
+import { OwnerCell } from './OwnerAvatar.jsx';
 
 const SEND_STATUSES = ['', 'pending', 'scheduled', 'sent', 'failed'];
 
@@ -140,6 +141,7 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Name</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Email</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Company</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Owner</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Research</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Compose</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Send</th>
@@ -149,9 +151,9 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={8} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
+              <tr><td colSpan={9} className="px-4 py-3 text-slate-700 border-b border-slate-100 text-center">Loading…</td></tr>
             ) : data?.items?.length === 0 ? (
-              <tr><td colSpan={8} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
+              <tr><td colSpan={9} className="px-4 py-3 text-slate-500 border-b border-slate-100 text-center">No leads.</td></tr>
             ) : (
               data?.items?.map((lead) => (
                 <tr key={lead.id} className="hover:bg-slate-50">
@@ -162,6 +164,9 @@ export default function LeadTable({ campaignId, replyTrackingEnabled, onViewLead
                   </td>
                   <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{lead.email}</td>
                   <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{lead.company || '—'}</td>
+                  <td className="px-4 py-3 border-b border-slate-100">
+                    <OwnerCell ownerId={lead.owner_id} />
+                  </td>
                   <td className="px-4 py-3 border-b border-slate-100">
                     <StatusPill value={lead.research_status} />
                   </td>

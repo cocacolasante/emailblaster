@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link, useInRouterContext } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   listNotifications,
@@ -14,15 +15,34 @@ const KIND_ICONS = {
   stale_opportunity: '🥶',
   digest: '📋',
   agent_error: '⚠️',
+  assigned: '👤',
 };
+
+/** Where a notification points, from the record ids it carries.  Deals have
+ *  a page; leads open their record modal via /leads?lead=<id>. */
+export function notificationHref(n) {
+  if (n.opportunity_id) return `/opportunities/${n.opportunity_id}`;
+  if (n.lead_id) return `/leads?lead=${encodeURIComponent(n.lead_id)}`;
+  return null;
+}
+
+/** In-app Link when inside a Router; plain anchor otherwise (isolated
+ *  renders / tests). */
+function NotifLink({ to, onClick, children, ...props }) {
+  const inRouter = useInRouterContext();
+  if (inRouter) return <Link to={to} onClick={onClick} {...props}>{children}</Link>;
+  return <a href={to} onClick={onClick} {...props}>{children}</a>;
+}
 
 export default function NotificationBell() {
   const [open, setOpen] = useState(false);
+  // 'mine' (default server scope: mine + workspace-wide) | 'all' (everyone's).
+  const [scope, setScope] = useState('mine');
   const queryClient = useQueryClient();
 
   const { data } = useQuery({
-    queryKey: ['agent-notifications'],
-    queryFn: () => listNotifications({ page_size: 20 }),
+    queryKey: ['agent-notifications', scope],
+    queryFn: () => listNotifications(scope === 'all' ? { page_size: 20, scope: 'all' } : { page_size: 20 }),
     refetchInterval: 60_000,
   });
 
@@ -69,6 +89,15 @@ export default function NotificationBell() {
         >
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 sticky top-0 bg-white">
             <span className="font-semibold text-slate-800 text-sm">Notifications</span>
+            <label className="ml-auto mr-3 flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={scope === 'all'}
+                onChange={(e) => setScope(e.target.checked ? 'all' : 'mine')}
+                data-testid="bell-scope-all"
+              />
+              Everyone&apos;s
+            </label>
             {unread > 0 && (
               <button
                 type="button"
@@ -95,7 +124,21 @@ export default function NotificationBell() {
                 <div className="flex items-start gap-2">
                   <span className="text-base leading-5">{KIND_ICONS[n.kind] || '🔔'}</span>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-800 m-0 truncate">{n.title}</p>
+                    {notificationHref(n) ? (
+                      <NotifLink
+                        to={notificationHref(n)}
+                        onClick={() => {
+                          if (!n.read_at) readMutation.mutate(n.id);
+                          setOpen(false);
+                        }}
+                        data-testid={`notification-link-${n.id}`}
+                        className="block text-sm font-medium text-slate-800 m-0 truncate hover:text-indigo-700 hover:underline"
+                      >
+                        {n.title}
+                      </NotifLink>
+                    ) : (
+                      <p className="text-sm font-medium text-slate-800 m-0 truncate">{n.title}</p>
+                    )}
                     {n.body && (
                       <p className="text-xs text-slate-500 m-0 mt-0.5 line-clamp-2 whitespace-pre-line">{n.body}</p>
                     )}

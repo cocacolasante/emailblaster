@@ -82,3 +82,27 @@ describe('NotificationBell', () => {
     expect(screen.queryByTestId('bell-unread-count')).toBeNull();
   });
 });
+
+
+describe('NotificationBell assignment', () => {
+  it('renders the assigned kind with a link to the record, and the Everyone toggle uses scope=all', async () => {
+    api.listNotifications.mockResolvedValue({
+      items: [
+        { id: 'n2', kind: 'assigned', title: 'Sam assigned you 3 leads', body: null, read_at: null, created_at: '2026-06-12T10:00:00Z', lead_id: 'l9' },
+        { id: 'n3', kind: 'assigned', title: 'Sam assigned you a deal', body: null, read_at: null, created_at: '2026-06-12T10:00:00Z', opportunity_id: 'o9' },
+      ],
+      total: 2, unread: 2, page: 1, page_size: 20, total_pages: 1,
+    });
+    const user = userEvent.setup();
+    renderBell();
+    await screen.findByTestId('bell-unread-count');
+    await user.click(screen.getByTestId('bell-button'));
+    expect(screen.getByTestId('notification-link-n2')).toHaveAttribute('href', '/leads?lead=l9');
+    expect(screen.getByTestId('notification-link-n3')).toHaveAttribute('href', '/opportunities/o9');
+    expect(screen.getByTestId('notification-item-n2')).toHaveTextContent('👤');
+    expect(api.listNotifications).toHaveBeenLastCalledWith({ page_size: 20 });
+
+    await user.click(screen.getByTestId('bell-scope-all'));
+    await waitFor(() => expect(api.listNotifications).toHaveBeenLastCalledWith({ page_size: 20, scope: 'all' }));
+  });
+});

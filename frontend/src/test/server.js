@@ -20,8 +20,17 @@ export const TEST_ME = {
   allow_signup: true,
 };
 
+/** The workspace member list behind useMembers() / owner avatars + pickers. */
+export const TEST_MEMBERS = [
+  {
+    user_id: 'user-1', email: 'ada@example.com', name: 'Ada Lovelace',
+    display_name: 'Ada Lovelace', role: 'owner', joined_at: '2026-01-01T00:00:00Z',
+  },
+];
+
 export const defaultHandlers = [
   http.get(api('/auth/me'), () => HttpResponse.json(TEST_ME)),
+  http.get(api('/team/members'), () => HttpResponse.json(TEST_MEMBERS)),
   http.get(api('/auth/config'), () => HttpResponse.json({ allow_signup: true, platform_email: false })),
 ];
 

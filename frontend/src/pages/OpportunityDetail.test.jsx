@@ -28,6 +28,8 @@ vi.mock('../api/crm.js', () => ({
 import * as api from '../api/crm.js';
 import OpportunityDetail from './OpportunityDetail.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
+import { http, HttpResponse } from 'msw';
+import { server, api as apiUrl } from '../test/server.js';
 
 const OPP = {
   id: 'o1', name: 'Acme — managed IT', stage: 'proposal',
@@ -204,5 +206,79 @@ describe('OpportunityDetail page', () => {
     await user.click(await screen.findByTestId('delete-opportunity-btn'));
     await waitFor(() => expect(api.deleteOpportunity).toHaveBeenCalledWith('o1'));
     expect(await screen.findByTestId('pipeline-page')).toBeInTheDocument();
+  });
+});
+
+
+describe('OpportunityDetail owners', () => {
+  const MEMBERS = [
+    { user_id: 'user-1', email: 'ada@example.com', name: 'Ada Lovelace', display_name: 'Ada Lovelace', role: 'owner', joined_at: null },
+    { user_id: 'user-2', email: 'grace@example.com', name: 'Grace Hopper', display_name: 'Grace Hopper', role: 'member', joined_at: null },
+  ];
+  beforeEach(() => {
+    server.use(http.get(apiUrl('/team/members'), () => HttpResponse.json(MEMBERS)));
+  });
+
+  it('changing the owner PATCHes owner_id via updateOpportunity', async () => {
+    api.getOpportunity.mockResolvedValue({ ...OPP, owner_id: 'user-1' });
+    api.updateOpportunity.mockResolvedValue({ ...OPP, owner_id: 'user-2' });
+    const user = userEvent.setup();
+    renderPage();
+
+    const picker = await screen.findByTestId('opp-owner-picker');
+    expect(picker).toHaveValue('user-1');
+    await within(picker).findByRole('option', { name: /Grace Hopper/ });
+    await user.selectOptions(picker, 'user-2');
+    await waitFor(() => {
+      expect(api.updateOpportunity).toHaveBeenCalledWith('o1', { owner_id: 'user-2' });
+    });
+    expect(await screen.findByText('Owner updated')).toBeInTheDocument();
+  });
+
+  it('unassigning sends owner_id null', async () => {
+    api.getOpportunity.mockResolvedValue({ ...OPP, owner_id: 'user-2' });
+    api.updateOpportunity.mockResolvedValue({ ...OPP, owner_id: null });
+    const user = userEvent.setup();
+    renderPage();
+    const picker = await screen.findByTestId('opp-owner-picker');
+    await within(picker).findByRole('option', { name: /Grace Hopper/ });
+    await user.selectOptions(picker, 'Unassigned');
+    await waitFor(() => {
+      expect(api.updateOpportunity).toHaveBeenCalledWith('o1', { owner_id: null });
+    });
+  });
+
+  it('new tasks default the assignee to the deal owner; a change is sent as owner_id', async () => {
+    api.getOpportunity.mockResolvedValue({ ...OPP, owner_id: 'user-2' });
+    api.createActivity.mockResolvedValue({ id: 'a9' });
+    api.listActivities.mockResolvedValue(paged([
+      {
+        id: 't1', lead_id: null, opportunity_id: 'o1', activity_type: 'task',
+        subject: 'Send proposal', body: null, direction: null, due_at: null,
+        completed_at: null, occurred_at: '2026-06-11T12:00:00Z',
+        created_at: '2026-06-11T12:00:00Z', owner_id: 'user-2',
+      },
+    ]));
+    const user = userEvent.setup();
+    renderPage();
+
+    // Existing task shows its assignee avatar.
+    await waitFor(() => expect(screen.getByTestId('activity-owner-t1'))
+      .toHaveAttribute('aria-label', 'Owner: Grace Hopper'));
+
+    await user.click(screen.getByTestId('log-activity-toggle'));
+    await user.click(screen.getByTestId('activity-type-task'));
+    const assignee = screen.getByTestId('activity-assignee');
+    await within(assignee).findByRole('option', { name: /Grace Hopper/ });
+    expect(assignee).toHaveValue('user-2');
+
+    await user.selectOptions(assignee, 'Me');
+    await user.type(screen.getByTestId('activity-subject'), 'Call back');
+    await user.click(screen.getByTestId('activity-save-btn'));
+    await waitFor(() => {
+      const payload = api.createActivity.mock.calls[0][0];
+      expect(payload.activity_type).toBe('task');
+      expect(payload.owner_id).toBe('user-1');
+    });
   });
 });

@@ -8,6 +8,8 @@ import {
   updateActivity,
 } from '../api/crm.js';
 import { useToast } from './Toast.jsx';
+import { OwnerAvatar, useMyUserId } from './OwnerAvatar.jsx';
+import { OwnerPicker } from './OwnerPicker.jsx';
 
 const TYPE_META = {
   call: { label: 'Call', icon: '📞', hasDirection: true },
@@ -30,9 +32,10 @@ function fmt(iso) {
  * opportunity detail.
  *
  * Props: exactly one of `leadId` / `opportunityId` (or both for
- * conversion-spanning logs).
+ * conversion-spanning logs).  `defaultOwnerId` (the deal / lead owner)
+ * pre-selects the assignee picker on new tasks.
  */
-export default function ActivityLog({ leadId, opportunityId }) {
+export default function ActivityLog({ leadId, opportunityId, defaultOwnerId = null }) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -54,6 +57,11 @@ export default function ActivityLog({ leadId, opportunityId }) {
   const [direction, setDirection] = useState('outbound');
   const [dueAt, setDueAt] = useState('');
   const [open, setOpen] = useState(false);
+  // Task assignee: undefined = untouched → let the server inherit (deal
+  // owner → lead owner → creator), which is what the picker previews.
+  const [assignee, setAssignee] = useState(undefined);
+  const myId = useMyUserId();
+  const previewAssignee = assignee === undefined ? (defaultOwnerId || myId || null) : assignee;
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey });
@@ -74,12 +82,14 @@ export default function ActivityLog({ leadId, opportunityId }) {
       body: body.trim() || null,
       direction: TYPE_META[type].hasDirection ? direction : null,
       due_at: type === 'task' && dueAt ? new Date(dueAt).toISOString() : null,
+      ...(type === 'task' && assignee !== undefined ? { owner_id: assignee } : {}),
     }),
     onSuccess: () => {
       invalidate();
       setSubject('');
       setBody('');
       setDueAt('');
+      setAssignee(undefined);
       setOpen(false);
       toast.success('Activity logged');
     },
@@ -171,6 +181,17 @@ export default function ActivityLog({ leadId, opportunityId }) {
             data-testid="activity-body"
             className="w-full px-3 py-1.5 border border-slate-300 rounded-md text-sm bg-white"
           />
+          {type === 'task' && (
+            <OwnerPicker
+              value={previewAssignee}
+              onChange={setAssignee}
+              label="Assignee"
+              showLabel
+              size="sm"
+              className="w-full"
+              testId="activity-assignee"
+            />
+          )}
           {type === 'task' && (
             <label className="flex items-center gap-2 text-xs text-slate-600">
               Due
@@ -269,6 +290,12 @@ export default function ActivityLog({ leadId, opportunityId }) {
                     )}
                   </div>
                 </div>
+                <OwnerAvatar
+                  ownerId={a.owner_id ?? null}
+                  compact
+                  className="mt-0.5"
+                  testId={`activity-owner-${a.id}`}
+                />
                 <button
                   type="button"
                   onClick={() => deleteMut.mutate(a.id)}

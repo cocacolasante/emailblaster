@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -21,6 +22,10 @@ import {
   updateLeadFields,
 } from '../api/crm.js';
 import { createWatch } from '../api/signals.js';
+import { OwnerCell } from '../components/OwnerAvatar.jsx';
+import { OwnerFilter, OwnerPicker } from '../components/OwnerPicker.jsx';
+import BulkAssignOwner from '../components/BulkAssignOwner.jsx';
+import { useOwnerParam } from '../hooks/useOwnerParam.js';
 
 const STATUS_CLASSES = {
   pending: 'bg-slate-100 text-slate-700',
@@ -62,8 +67,34 @@ export default function Leads() {
   const [creating, setCreating] = useState(false);
   const [checked, setChecked] = useState(() => new Set());
   const [targetCampaignId, setTargetCampaignId] = useState('');
+  const [assigning, setAssigning] = useState(false);
+  const [owner, setOwnerParam] = useOwnerParam();
+  const setOwner = (v) => { setOwnerParam(v); setPage(1); };
   const toast = useToast();
   const queryClient = useQueryClient();
+
+  // Deep link (?lead=<id>) — e.g. from an "assigned you a lead"
+  // notification — opens that lead's record modal.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLeadId = searchParams.get('lead');
+  const { data: deepLead } = useQuery({
+    queryKey: ['lead-detail-v2', deepLeadId],
+    queryFn: () => getLeadById(deepLeadId),
+    enabled: !!deepLeadId,
+  });
+  useEffect(() => {
+    if (deepLead && deepLeadId && !selected) setSelected(deepLead);
+  }, [deepLead, deepLeadId]); // eslint-disable-line react-hooks/exhaustive-deps
+  function closeLead() {
+    setSelected(null);
+    if (deepLeadId) {
+      setSearchParams((prev) => {
+        const p = new URLSearchParams(prev);
+        p.delete('lead');
+        return p;
+      }, { replace: true });
+    }
+  }
 
   const { data: campaigns = [] } = useQuery({
     queryKey: ['campaigns'],
@@ -103,6 +134,7 @@ export default function Leads() {
   if (campaignId) params.campaign_id = campaignId;
   if (search.trim()) params.search = search.trim();
   if (hasNotes) params.has_notes = true;
+  if (owner) params.owner = owner;
 
   const { data: leadsPage, isLoading, error, refetch } = useQuery({
     queryKey: ['all-leads', params],
@@ -148,6 +180,20 @@ export default function Leads() {
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
+        <OwnerFilter value={owner} onChange={setOwner} />
+        <button
+          type="button"
+          onClick={() => setOwner(owner === 'me' ? '' : 'me')}
+          aria-pressed={owner === 'me'}
+          data-testid="my-leads-toggle"
+          className={`px-3 py-2 rounded-lg text-sm font-medium border focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+            owner === 'me'
+              ? 'bg-brand-600 border-brand-600 text-white'
+              : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          My leads
+        </button>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input
             type="checkbox"
@@ -188,6 +234,15 @@ export default function Leads() {
             className="px-4 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
           >
             {addMutation.isPending ? 'Adding…' : 'Add to campaign'}
+          </button>
+          <span className="w-px h-5 bg-brand-200" aria-hidden="true" />
+          <button
+            type="button"
+            data-testid="bulk-assign-btn"
+            onClick={() => setAssigning(true)}
+            className="px-4 py-1.5 bg-white border border-brand-300 text-brand-700 hover:bg-brand-50 text-sm font-medium rounded-lg"
+          >
+            Assign to…
           </button>
           <button
             type="button"
@@ -231,6 +286,7 @@ export default function Leads() {
               <th className="px-4 py-3 text-left">Email</th>
               <th className="px-4 py-3 text-left">Company</th>
               <th className="px-4 py-3 text-left">Campaign</th>
+              <th className="px-4 py-3 text-left">Owner</th>
               <th className="px-4 py-3 text-left">Send</th>
               <th className="px-4 py-3 text-left">Notes</th>
             </tr>
@@ -244,16 +300,17 @@ export default function Leads() {
                   <td className="px-4 py-3"><Skeleton className="h-4 w-40" /></td>
                   <td className="px-4 py-3"><Skeleton className="h-4 w-28" /></td>
                   <td className="px-4 py-3"><Skeleton className="h-4 w-28" /></td>
+                  <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
                   <td className="px-4 py-3"><Skeleton className="h-4 w-16" /></td>
                   <td className="px-4 py-3"><Skeleton className="h-4 w-32" /></td>
                 </tr>
               ))
             ) : error ? (
-              <tr><td colSpan={7} className="p-0">
+              <tr><td colSpan={8} className="p-0">
                 <ErrorState message="Couldn't load leads." onRetry={() => refetch()} testId="leads-error" />
               </td></tr>
             ) : (leadsPage?.items?.length ?? 0) === 0 ? (
-              <tr><td colSpan={7} className="p-0">
+              <tr><td colSpan={8} className="p-0">
                 <EmptyState
                   title="No leads found"
                   hint="Adjust your filters above, or add a lead with “+ New lead”."
@@ -286,6 +343,7 @@ export default function Leads() {
                   <td className="px-4 py-3 text-slate-700">{l.email}</td>
                   <td className="px-4 py-3 text-slate-700">{l.company || '—'}</td>
                   <td className="px-4 py-3 text-slate-700">{l.campaign_name || '—'}</td>
+                  <td className="px-4 py-3"><OwnerCell ownerId={l.owner_id} testId={`lead-owner-${l.id}`} /></td>
                   <td className="px-4 py-3"><StatusPill value={l.send_status} /></td>
                   <td className="px-4 py-3 text-slate-600 max-w-[260px] truncate" title={l.notes || ''}>
                     {l.has_notes ? l.notes : <span className="text-slate-400">—</span>}
@@ -325,8 +383,17 @@ export default function Leads() {
       )}
 
       {selected && (
-        <LeadCrmModal lead={selected} onClose={() => setSelected(null)} />
+        <LeadCrmModal lead={selected} onClose={closeLead} />
       )}
+      <BulkAssignOwner
+        open={assigning}
+        onClose={() => setAssigning(false)}
+        recordType="lead"
+        ids={[...checked]}
+        noun="lead"
+        invalidateKeys={[['all-leads'], ['lead-detail-v2']]}
+        onAssigned={() => setChecked(new Set())}
+      />
       {creating && (
         <NewLeadModal onClose={() => setCreating(false)} />
       )}
@@ -582,6 +649,19 @@ function LeadCrmModal({ lead, onClose }) {
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to update status'),
   });
 
+  const ownerMut = useMutation({
+    mutationFn: (ownerId) => updateLeadFields(lead.id, { owner_id: ownerId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['lead-detail-v2', lead.id] });
+      queryClient.invalidateQueries({ queryKey: ['all-leads'] });
+      toast.success('Owner updated');
+    },
+    onError: (err) => {
+      const d = err?.response?.data?.detail;
+      toast.error(typeof d === 'string' ? d : 'Failed to update owner');
+    },
+  });
+
   const convertMut = useMutation({
     mutationFn: () => convertLead(lead.id, {}),
     onSuccess: (data) => {
@@ -609,6 +689,7 @@ function LeadCrmModal({ lead, onClose }) {
     },
   });
 
+  const ownerId = view ? (view.owner_id ?? null) : (lead.owner_id ?? null);
   const isSuppressed = view?.is_suppressed === true;
   const suppressionReason = view?.suppression_reason;
   const crmStatus = view?.crm_status || 'new';
@@ -683,6 +764,15 @@ function LeadCrmModal({ lead, onClose }) {
                   🚫 Suppressed
                 </span>
               )}
+              <OwnerPicker
+                value={ownerId}
+                onChange={(v) => ownerMut.mutate(v)}
+                disabled={!view || ownerMut.isPending}
+                label="Lead owner"
+                size="sm"
+                className="w-44"
+                testId="lead-owner-picker"
+              />
               {counts.opened > 0 && (
                 <span className="px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700">
                   👀 {counts.opened} open{counts.opened === 1 ? '' : 's'}
@@ -993,7 +1083,7 @@ function LeadCrmModal({ lead, onClose }) {
 
         {/* Manual CRM activity log (calls / emails / meetings / notes / tasks) */}
         <div className="mb-4">
-          <ActivityLog leadId={lead.id} />
+          <ActivityLog leadId={lead.id} defaultOwnerId={ownerId} />
         </div>
 
         {/* Notes */}

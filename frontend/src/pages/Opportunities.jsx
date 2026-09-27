@@ -22,7 +22,6 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   createOpportunity,
   getDefaultPipeline,
-  getPipelineSummary,
   listOpportunities,
   updateOpportunity,
 } from '../api/crm.js';
@@ -31,6 +30,10 @@ import useReducedMotion from '../utils/useReducedMotion.js';
 import { formatCurrency, formatDate as fmtDate } from '../utils/format.js';
 import { Button } from '../components/ui.jsx';
 import { Skeleton } from '../components/states.jsx';
+import { OwnerAvatar, OwnerCell, useMyUserId } from '../components/OwnerAvatar.jsx';
+import { OwnerFilter, OwnerPicker } from '../components/OwnerPicker.jsx';
+import BulkAssignOwner from '../components/BulkAssignOwner.jsx';
+import { ownerParams, useOwnerParam } from '../hooks/useOwnerParam.js';
 
 // Pipeline order fallback — matches the backend OpportunityStage enum.  The
 // board prefers the CONFIGURABLE stages from /crm/pipelines/default; this is
@@ -116,7 +119,10 @@ function OpportunityCard({ opp, onOpen, reducedMotion }) {
       <div className="text-xs text-slate-500 mt-0.5 truncate">{cardSubtitle(opp)}</div>
       <div className="flex items-center justify-between mt-1.5 text-xs">
         <span className="font-semibold tabular-nums text-slate-700">{fmtAmount(opp.amount)}</span>
-        <span className="text-slate-400">{opp.close_date ? fmtDate(opp.close_date) : ''}</span>
+        <span className="flex items-center gap-1.5 text-slate-400">
+          {opp.close_date ? fmtDate(opp.close_date) : ''}
+          <OwnerAvatar ownerId={opp.owner_id} compact testId={`opp-card-owner-${opp.id}`} />
+        </span>
       </div>
       {opp.open_task_count > 0 && (
         <div className="mt-1 text-xs text-amber-600">
@@ -181,11 +187,14 @@ export default function Opportunities() {
   const [showClosed, setShowClosed] = useState(false);
   const [view, setView] = useState('board'); // 'board' | 'list'
   const [activeId, setActiveId] = useState(null);
+  const [owner, setOwner] = useOwnerParam();
 
-  const OPPS_KEY = ['crm-opportunities'];
+  // The owner filter scopes BOTH views; the column header counts/totals are
+  // summed from these (already filtered) cards, so they follow it too.
+  const OPPS_KEY = ['crm-opportunities', owner || 'all'];
   const { data: page, isLoading } = useQuery({
     queryKey: OPPS_KEY,
-    queryFn: () => listOpportunities({ page_size: 500 }),
+    queryFn: () => listOpportunities({ page_size: 500, ...ownerParams(owner) }),
   });
   // Configurable stages drive the columns; fall back to the enum order.
   const { data: pipeline } = useQuery({
@@ -304,6 +313,20 @@ export default function Opportunities() {
               </button>
             ))}
           </div>
+          <OwnerFilter value={owner} onChange={setOwner} className="!py-1.5" />
+          <button
+            type="button"
+            onClick={() => setOwner(owner === 'me' ? '' : 'me')}
+            aria-pressed={owner === 'me'}
+            data-testid="my-deals-toggle"
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+              owner === 'me'
+                ? 'bg-brand-600 border-brand-600 text-white'
+                : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            My deals
+          </button>
           <label className="flex items-center gap-2 text-sm text-slate-600">
             <input
               type="checkbox"
@@ -378,43 +401,112 @@ export default function Opportunities() {
 // --------------------------------------------------------------------------
 
 function OpportunityList({ opps, columns, onOpen, showClosed }) {
+  const [checked, setChecked] = useState(() => new Set());
+  const [assigning, setAssigning] = useState(false);
   const labelByKey = Object.fromEntries(columns.map((c) => [c.key, c.label]));
   const closedKeys = new Set(columns.filter((c) => c.closed).map((c) => c.key));
   const rows = showClosed ? opps : opps.filter((o) => !closedKeys.has(o.stage));
+  // Only count selections that are still visible (filters may hide some).
+  const visibleIds = new Set(rows.map((o) => o.id));
+  const selectedIds = [...checked].filter((id) => visibleIds.has(id));
+  const allChecked = rows.length > 0 && rows.every((o) => checked.has(o.id));
+
+  const toggle = (id) => setChecked((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   if (rows.length === 0) {
     return <div className="text-center text-slate-400 py-12" data-testid="list-empty">No opportunities.</div>;
   }
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200" data-testid="opportunity-list">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-slate-50 border-b border-slate-200">
-            {['Name', 'Stage', 'Company', 'Amount', 'Close date'].map((h) => (
-              <th key={h} className={`px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider ${h === 'Amount' ? 'text-right' : ''}`}>
-                {h}
+    <>
+      {selectedIds.length > 0 && (
+        <div
+          data-testid="opp-bulk-bar"
+          className="bg-brand-50 border border-brand-200 rounded-xl p-3 mb-3 flex flex-wrap items-center gap-3"
+        >
+          <span className="text-sm font-medium text-brand-900">
+            {selectedIds.length} deal{selectedIds.length === 1 ? '' : 's'} selected
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => setAssigning(true)} data-testid="opp-bulk-assign-btn">
+            Assign to…
+          </Button>
+          <button
+            type="button"
+            onClick={() => setChecked(new Set())}
+            className="text-sm text-slate-500 hover:text-slate-700"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+      <div className="overflow-hidden rounded-xl border border-slate-200" data-testid="opportunity-list">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              <th className="px-3 py-2.5 w-8">
+                <input
+                  type="checkbox"
+                  aria-label="Select all deals"
+                  data-testid="select-all-opps"
+                  checked={allChecked}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setChecked((prev) => {
+                      const next = new Set(prev);
+                      rows.forEach((o) => (on ? next.add(o.id) : next.delete(o.id)));
+                      return next;
+                    });
+                  }}
+                />
               </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((o) => (
-            <tr
-              key={o.id}
-              onClick={() => onOpen(o.id)}
-              data-testid={`opp-row-${o.id}`}
-              className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
-            >
-              <td className="px-4 py-2.5 font-medium text-slate-900">{o.name}</td>
-              <td className="px-4 py-2.5 text-slate-600">{labelByKey[o.stage] || o.stage}</td>
-              <td className="px-4 py-2.5 text-slate-600">{cardSubtitle(o)}</td>
-              <td className="px-4 py-2.5 text-right tabular-nums text-slate-700">{fmtAmount(o.amount)}</td>
-              <td className="px-4 py-2.5 text-slate-500">{o.close_date ? fmtDate(o.close_date) : '—'}</td>
+              {['Name', 'Stage', 'Company', 'Owner', 'Amount', 'Close date'].map((h) => (
+                <th key={h} className={`px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider ${h === 'Amount' ? 'text-right' : ''}`}>
+                  {h}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((o) => (
+              <tr
+                key={o.id}
+                onClick={() => onOpen(o.id)}
+                data-testid={`opp-row-${o.id}`}
+                className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
+              >
+                <td className="px-3 py-2.5 w-8" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${o.name}`}
+                    data-testid={`select-opp-${o.id}`}
+                    checked={checked.has(o.id)}
+                    onChange={() => toggle(o.id)}
+                  />
+                </td>
+                <td className="px-4 py-2.5 font-medium text-slate-900">{o.name}</td>
+                <td className="px-4 py-2.5 text-slate-600">{labelByKey[o.stage] || o.stage}</td>
+                <td className="px-4 py-2.5 text-slate-600">{cardSubtitle(o)}</td>
+                <td className="px-4 py-2.5"><OwnerCell ownerId={o.owner_id} testId={`opp-owner-${o.id}`} /></td>
+                <td className="px-4 py-2.5 text-right tabular-nums text-slate-700">{fmtAmount(o.amount)}</td>
+                <td className="px-4 py-2.5 text-slate-500">{o.close_date ? fmtDate(o.close_date) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <BulkAssignOwner
+        open={assigning}
+        onClose={() => setAssigning(false)}
+        recordType="opportunity"
+        ids={selectedIds}
+        noun="deal"
+        invalidateKeys={[['crm-opportunities'], ['crm-opportunity'], ['crm-pipeline']]}
+        onAssigned={() => setChecked(new Set())}
+      />
+    </>
   );
 }
 
@@ -426,6 +518,9 @@ function NewOpportunityModal({ onClose }) {
     name: '', amount: '', close_date: '', company: '',
     first_name: '', last_name: '', email: '',
   });
+  // undefined = leave to the server (the creator owns it).
+  const [ownerId, setOwnerId] = useState(undefined);
+  const myId = useMyUserId();
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const createMut = useMutation({
@@ -437,6 +532,7 @@ function NewOpportunityModal({ onClose }) {
       first_name: form.first_name.trim() || null,
       last_name: form.last_name.trim() || null,
       email: form.email.trim() || null,
+      ...(ownerId !== undefined ? { owner_id: ownerId } : {}),
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['crm-opportunities'] });
@@ -494,6 +590,14 @@ function NewOpportunityModal({ onClose }) {
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" />
             </div>
           </div>
+          <OwnerPicker
+            value={ownerId === undefined ? myId : ownerId}
+            onChange={setOwnerId}
+            label="Owner"
+            showLabel
+            className="w-full"
+            testId="new-opp-owner"
+          />
           <div className="flex justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
             <Button

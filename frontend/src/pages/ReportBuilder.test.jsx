@@ -192,3 +192,49 @@ describe('ReportBuilder', () => {
     await waitFor(() => expect(screen.getByTestId('data-source-select')).toHaveValue('leads'));
   });
 });
+
+
+describe('ReportBuilder owner field', () => {
+  const OWNER_META = {
+    ...METADATA,
+    objects: [{
+      ...METADATA.objects[0],
+      fields: [
+        ...METADATA.objects[0].fields,
+        { key: 'owner', label: 'Owner', type: 'owner', operators: ['equals', 'not_equals', 'in', 'is_empty', 'is_not_empty'], aggregates: ['count'], groupable: true, enum_values: null },
+      ],
+    }],
+  };
+
+  it('owner filter value is a member select that includes Me; owner cells render as names', async () => {
+    api.getReportMetadata.mockResolvedValue(OWNER_META);
+    api.runAdhocReport.mockResolvedValue({
+      data_source: 'opportunities',
+      columns: [{ key: 'name', label: 'Name', type: 'string' }, { key: 'owner', label: 'Owner', type: 'owner' }],
+      rows: [{ name: 'Acme big', owner: 'user-1' }, { name: 'Orphan', owner: null }],
+      row_count: 2, grouped: false, truncated: false, limit: 1000,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await selectOpportunities(user);
+
+    await user.click(screen.getByTestId('add-filter-btn'));
+    await user.selectOptions(screen.getByTestId('filter-field-0'), 'owner');
+    await user.selectOptions(screen.getByTestId('filter-op-0'), 'equals');
+    const value = screen.getByTestId('filter-value');
+    expect(value.tagName).toBe('SELECT');
+    await within(value).findByRole('option', { name: /Ada Lovelace/ });
+    expect(within(value).getByRole('option', { name: 'Me' })).toBeInTheDocument();
+    await user.selectOptions(value, 'Me');
+
+    await user.click(screen.getByTestId('run-btn'));
+    await waitFor(() => expect(api.runAdhocReport).toHaveBeenCalled());
+    expect(api.runAdhocReport.mock.calls[0][0].definition.filters)
+      .toEqual([{ field: 'owner', op: 'equals', value: 'me' }]);
+
+    const table = await screen.findByTestId('results-table');
+    await waitFor(() => expect(within(table).getByText('Ada Lovelace')).toBeInTheDocument());
+    expect(within(table).getByText('Unassigned')).toBeInTheDocument();
+    expect(within(table).queryByText('user-1')).toBeNull();
+  });
+});

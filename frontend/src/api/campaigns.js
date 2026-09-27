@@ -1,7 +1,11 @@
 import client from './client.js';
 
-export async function listCampaigns() {
-  const { data } = await client.get('/campaigns/');
+/** `params.owner` = 'me' | 'unassigned' | <user id> filters by owner.
+ *  Tolerates being used directly as a react-query `queryFn` (which passes
+ *  the query context, not params). */
+export async function listCampaigns(params) {
+  const p = params && !params.queryKey ? params : undefined;
+  const { data } = await client.get('/campaigns/', p ? { params: p } : undefined);
   return data;
 }
 
