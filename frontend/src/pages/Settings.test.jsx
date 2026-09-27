@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import Settings from './Settings.jsx';
+import Settings, { resolveSettingsTab } from './Settings.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
 
 vi.mock('../api/connectedAccounts.js', () => ({
@@ -110,41 +110,41 @@ beforeEach(() => {
 });
 
 describe('Settings page tabs', () => {
-  it('renders both tabs and starts on Connected inboxes', async () => {
+  it('starts on Connected inboxes and lists Integrations (no API status tab)', async () => {
     renderSettings();
     expect(screen.getByRole('tab', { name: /connected inboxes/i })).toHaveAttribute(
       'aria-selected', 'true'
     );
-    expect(screen.getByRole('tab', { name: /api status/i })).toHaveAttribute(
+    expect(screen.getByRole('tab', { name: /integrations/i })).toHaveAttribute(
       'aria-selected', 'false'
     );
+    expect(screen.queryByRole('tab', { name: /api status/i })).toBeNull();
     await waitFor(() => {
       expect(screen.getByTestId('empty-state')).toBeInTheDocument();
     });
   });
 
-  it('switches to API status tab and shows configured/unconfigured rows', async () => {
-    const user = userEvent.setup();
+  it('places Integrations right after Profile', () => {
     renderSettings();
-    await user.click(screen.getByRole('tab', { name: /api status/i }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('api-row-anthropic')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('api-row-anthropic')).toHaveTextContent(/configured/i);
-    expect(screen.getByTestId('api-row-brevo')).toHaveTextContent(/configured/i);
-    expect(screen.getByTestId('api-row-apollo')).toHaveTextContent(/not configured/i);
-    expect(screen.getByTestId('api-row-hunter')).toHaveTextContent(/not configured/i);
+    const labels = screen.getAllByRole('tab').map((t) => t.textContent);
+    expect(labels.indexOf('Integrations')).toBe(labels.indexOf('Profile') + 1);
   });
 
-  it('marks optional integrations as optional', async () => {
+  it('switches to the Integrations tab and renders provider cards', async () => {
     const user = userEvent.setup();
     renderSettings();
-    await user.click(screen.getByRole('tab', { name: /api status/i }));
-    await waitFor(() => screen.getByTestId('api-row-apollo'));
-    expect(screen.getByTestId('api-row-apollo')).toHaveTextContent(/optional/i);
-    expect(screen.getByTestId('api-row-hunter')).toHaveTextContent(/optional/i);
-    expect(screen.getByTestId('api-row-anthropic')).not.toHaveTextContent(/optional/i);
+    await user.click(screen.getByRole('tab', { name: /integrations/i }));
+    expect(await screen.findByTestId('integrations-tab')).toBeInTheDocument();
+    expect(await screen.findByTestId('integration-card-anthropic')).toBeInTheDocument();
+  });
+});
+
+describe('resolveSettingsTab', () => {
+  it('maps the legacy api/api-status keys onto integrations', () => {
+    expect(resolveSettingsTab('integrations')).toBe('integrations');
+    expect(resolveSettingsTab('api')).toBe('integrations');
+    expect(resolveSettingsTab('api-status')).toBe('integrations');
+    expect(resolveSettingsTab('bogus')).toBe('inboxes');
   });
 });
 

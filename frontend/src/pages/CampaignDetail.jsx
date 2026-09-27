@@ -30,6 +30,8 @@ import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
 import { Skeleton } from '../components/states.jsx';
 import { OwnerPicker } from '../components/OwnerPicker.jsx';
+import { IntegrationBanner, IntegrationHint } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { AnalyticsContent } from './Analytics.jsx';
 
@@ -1724,6 +1726,8 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
     onSuccess: () => { invalidateLead(); setEditingRecipient(false); toast.success('Recipient saved'); },
     onError: (err) => toast.error(err?.response?.data?.detail || 'Failed to save recipient'),
   });
+  const { isConfigured } = useIntegrations();
+  const hunterReady = isConfigured('hunter');
   const findContactMut = useMutation({
     mutationFn: () => findLeadContact(campaignId, lead.id, website.trim() ? { website: website.trim() } : {}),
     onSuccess: (data) => {
@@ -1911,13 +1915,15 @@ function LeadEmailModal({ campaignId, lead, onClose }) {
                     <button
                       type="button"
                       onClick={() => findContactMut.mutate()}
-                      disabled={findContactMut.isPending}
+                      disabled={findContactMut.isPending || !hunterReady}
                       data-testid="find-contact-btn"
+                      title={hunterReady ? undefined : 'Connect Hunter in Settings → Integrations'}
                       className="px-3 py-2 text-sm bg-white border border-brand-300 text-brand-700 rounded-lg hover:bg-brand-50 disabled:opacity-50 whitespace-nowrap"
                     >
                       {findContactMut.isPending ? 'Finding…' : 'Find contact'}
                     </button>
                   </div>
+                  <IntegrationHint providers="hunter" className="mt-1" />
                 </div>
               )}
             </div>
@@ -2357,6 +2363,11 @@ export default function CampaignDetail() {
           testId="campaign-owner-picker"
         />
       </div>
+      {campaign.status !== 'complete' && (
+        <IntegrationBanner providers="brevo" className="mt-3" testId="brevo-missing-banner">
+          Emails can't be sent from this workspace until Brevo is connected — launching is blocked.
+        </IntegrationBanner>
+      )}
 
       <Tabs
         testId="tab"

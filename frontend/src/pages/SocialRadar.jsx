@@ -18,6 +18,18 @@ import {
 import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
 import { Skeleton } from '../components/states.jsx';
+import { IntegrationBanner } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
+
+const RADAR_NEEDS_ANTHROPIC = 'Connect Anthropic in Settings → Integrations';
+
+function RadarAnthropicBanner() {
+  return (
+    <IntegrationBanner providers="anthropic" className="mb-4" testId="radar-anthropic-banner">
+      Radar runs use Claude to expand topics and score posts.
+    </IntegrationBanner>
+  );
+}
 
 /** Vertical stack of card-shaped skeletons for the opportunity feeds. */
 function FeedSkeleton({ count = 3, testId = 'feed-loading' }) {
@@ -123,6 +135,7 @@ export default function SocialRadar() {
   if (detailId) {
     return (
       <div className="p-6 max-w-7xl mx-auto">
+        <RadarAnthropicBanner />
         <SearchDetailView
           searchId={detailId}
           onBack={() => setDetailId(null)}
@@ -156,6 +169,7 @@ export default function SocialRadar() {
         scored intent feed.  All comments / connects stay manual — the system
         only drafts suggestions.
       </p>
+      <RadarAnthropicBanner />
 
       <Tabs
         testId="tab"
@@ -467,6 +481,8 @@ function SearchesTab({ onView, onEdit }) {
     queryFn: () => listSearches({ page_size: 200 }),
   });
 
+  const { isConfigured } = useIntegrations();
+  const anthropicReady = isConfigured('anthropic');
   const runMut = useMutation({
     mutationFn: (id) => runSearch(id),
     onSuccess: () => {
@@ -549,7 +565,8 @@ function SearchesTab({ onView, onEdit }) {
                   <td className="px-4 py-3 text-right whitespace-nowrap"
                       onClick={(e) => e.stopPropagation()}>
                     <button type="button" onClick={() => runMut.mutate(s.id)}
-                      disabled={runMut.isPending || s.last_run_status === 'running'}
+                      disabled={runMut.isPending || s.last_run_status === 'running' || !anthropicReady}
+                      title={anthropicReady ? undefined : RADAR_NEEDS_ANTHROPIC}
                       data-testid={`run-${s.id}`}
                       className="text-xs text-brand-600 hover:text-brand-700 mr-3 disabled:opacity-50">
                       Run now
@@ -620,6 +637,8 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
       search?.last_run_status === 'running' ? 5000 : false,
   });
 
+  const { isConfigured } = useIntegrations();
+  const anthropicReady = isConfigured('anthropic');
   const runMut = useMutation({
     mutationFn: () => runSearch(searchId),
     onSuccess: () => {
@@ -709,9 +728,11 @@ function SearchDetailView({ searchId, onBack, onEdit }) {
         <div className="flex gap-2 shrink-0">
           <button type="button"
             onClick={() => runMut.mutate()}
-            disabled={runMut.isPending || search.last_run_status === 'running'}
+            disabled={runMut.isPending || search.last_run_status === 'running' || !anthropicReady}
             data-testid="detail-run-btn"
-            title={estimate ? `Estimated cost: $${estimate.total_cost_usd.toFixed(2)} (cap $${estimate.max_run_cost_usd.toFixed(2)})` : undefined}
+            title={!anthropicReady
+              ? RADAR_NEEDS_ANTHROPIC
+              : (estimate ? `Estimated cost: $${estimate.total_cost_usd.toFixed(2)} (cap $${estimate.max_run_cost_usd.toFixed(2)})` : undefined)}
             className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50">
             {search.last_run_status === 'running'
               ? 'Running…'

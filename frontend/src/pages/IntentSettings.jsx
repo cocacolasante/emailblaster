@@ -15,6 +15,7 @@ import {
 } from '../api/intent.js';
 import { useToast } from '../components/Toast.jsx';
 import { Button } from '../components/ui.jsx';
+import { IntegrationHint, IntegrationsLink } from '../components/IntegrationHint.jsx';
 
 const TIER_BADGE = {
   1: 'bg-red-100 text-red-700',
@@ -275,8 +276,8 @@ export default function IntentTab() {
       {status && !status.adzuna_configured && (
         <div data-testid="adzuna-warning"
           className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
-          No Adzuna key configured — the job-posting (dev-role) collector is off. Add
-          {' '}<code>ADZUNA_APP_ID</code> / <code>ADZUNA_APP_KEY</code> and recreate the containers to enable it.
+          No Adzuna key configured — the job-posting (dev-role) collector is off. Connect Adzuna in
+          {' '}<IntegrationsLink>Settings → Integrations</IntegrationsLink> to enable it.
           The careers-page, ATS, and funding collectors work without it.
         </div>
       )}
@@ -324,6 +325,11 @@ export default function IntentTab() {
             Promote eligible → drafts
           </Button>
         </div>
+        {/* Only the careers-page collector calls Claude — ATS + funding
+            collectors still run, so this is a note rather than a block. */}
+        <IntegrationHint providers="anthropic" className="mt-2" testId="intent-anthropic-hint">
+          {' '}to enable the careers-page collector.
+        </IntegrationHint>
         <p className="text-xs text-slate-400 mt-2">
           Collectors hit external APIs (async). Recompute + promote run immediately. These also run daily on a schedule.
         </p>

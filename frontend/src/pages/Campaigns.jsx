@@ -11,6 +11,7 @@ import { PageHeader } from '../components/ui.jsx';
 import { OwnerAvatar } from '../components/OwnerAvatar.jsx';
 import { ScopeToggle } from '../components/OwnerPicker.jsx';
 import { useOwnerParam } from '../hooks/useOwnerParam.js';
+import WorkspaceSetupNudge from '../components/WorkspaceSetupNudge.jsx';
 
 const STATUS_CLASSES = {
   draft:      'bg-slate-100 text-slate-600',
@@ -242,6 +243,8 @@ export default function Campaigns() {
           </>
         )}
       />
+
+      <WorkspaceSetupNudge />
 
       {isLoading && <Skeleton />}
       {error && (

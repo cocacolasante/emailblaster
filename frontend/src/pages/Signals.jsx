@@ -21,6 +21,15 @@ import { listAccounts as listConnectedAccounts } from '../api/connectedAccounts.
 import { listCampaigns } from '../api/campaigns.js';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
 import { useToast } from '../components/Toast.jsx';
+import { IntegrationBanner, IntegrationHint } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
+
+/** Contact lookup is Hunter-first with a Claude web-lookup fallback, so it
+ *  works with either provider — blocked only when neither is connected. */
+function useContactLookupReady() {
+  const { isConfigured } = useIntegrations();
+  return isConfigured('hunter') || isConfigured('anthropic');
+}
 
 const TYPE_BADGES = {
   job_change: { label: 'Job change', cls: 'bg-violet-100 text-violet-700' },
@@ -60,6 +69,7 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['prospect-signals'] });
+  const lookupReady = useContactLookupReady();
 
   const actionMut = useMutation({
     mutationFn: () => actionSignal(signal.id),
@@ -160,7 +170,8 @@ function SignalCard({ signal, onOpen, checked, onToggle }) {
             <button
               type="button"
               data-testid={`enrich-signal-${signal.id}`}
-              disabled={enrichMut.isPending}
+              disabled={enrichMut.isPending || !lookupReady}
+              title={lookupReady ? undefined : 'Connect Hunter in Settings → Integrations'}
               onClick={stop(() => enrichMut.mutate())}
               className="text-sm px-3 py-1.5 rounded-lg border border-brand-300 text-brand-700 hover:bg-brand-50 disabled:opacity-50"
             >
@@ -266,6 +277,7 @@ function SignalDetailModal({ signal, onClose }) {
   });
 
   const [foundLinkedin, setFoundLinkedin] = useState(null);
+  const lookupReady = useContactLookupReady();
   const enrichMut = useMutation({
     mutationFn: () => enrichSignalContact(signal.id),
     onSuccess: (d) => {
@@ -427,12 +439,13 @@ function SignalDetailModal({ signal, onClose }) {
             <button
               type="button"
               data-testid="signal-enrich-btn"
-              disabled={enrichMut.isPending}
+              disabled={enrichMut.isPending || !lookupReady}
               onClick={() => enrichMut.mutate()}
               className="mt-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-brand-300 text-brand-700 bg-white hover:bg-brand-50 disabled:opacity-50"
             >
               {enrichMut.isPending ? 'Searching…' : '🔎 Find contact (web + LinkedIn)'}
             </button>
+            {!lookupReady && <IntegrationHint providers="hunter" className="mt-1" />}
           </div>
         ) : !emailable ? (
           <div data-testid="signal-linkedin-only" className="text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
@@ -855,6 +868,8 @@ function WatchesTab() {
   });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['signal-watches'] });
 
+  const { isConfigured } = useIntegrations();
+  const anthropicReady = isConfigured('anthropic');
   const runMut = useMutation({
     mutationFn: runWatchNow,
     onSuccess: () => toast.success('Check enqueued'),
@@ -871,6 +886,9 @@ function WatchesTab() {
 
   return (
     <div>
+      <IntegrationBanner providers="anthropic" className="mb-3" testId="watches-anthropic-banner">
+        Watch checks use Claude web research.
+      </IntegrationBanner>
       <div className="flex justify-end mb-3">
         <button
           type="button"
@@ -921,7 +939,15 @@ function WatchesTab() {
               </p>
             </div>
             <div className="flex gap-2 shrink-0 text-sm">
-              <button type="button" onClick={() => runMut.mutate(w.id)} className="text-brand-600 hover:text-brand-800">Run now</button>
+              <button
+                type="button"
+                onClick={() => runMut.mutate(w.id)}
+                disabled={!anthropicReady}
+                title={anthropicReady ? undefined : 'Connect Anthropic in Settings → Integrations'}
+                className="text-brand-600 hover:text-brand-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Run now
+              </button>
               <button
                 type="button"
                 onClick={() => pauseMut.mutate({ id: w.id, status: w.status === 'active' ? 'paused' : 'active' })}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -17,6 +17,7 @@ vi.mock('../api/connectedAccounts.js', () => ({
 import * as api from '../api/researchClient.js';
 import * as accountsApi from '../api/connectedAccounts.js';
 import ResearchClient from './ResearchClient.jsx';
+import { integrationsWithMissing, server } from '../test/server.js';
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -558,5 +559,22 @@ describe('ResearchClient — email action panel', () => {
     });
     // The send-by-email panel is email-only.
     expect(screen.queryByTestId('add-email-btn')).toBeNull();
+  });
+});
+
+describe('ResearchClient integration gating', () => {
+  it('disables Generate with a Settings → Integrations hint when Anthropic is not connected', async () => {
+    server.use(integrationsWithMissing('anthropic'));
+    const user = userEvent.setup();
+    renderPage();
+    const banner = await screen.findByTestId('anthropic-missing-banner');
+    expect(banner).toHaveTextContent(/connect anthropic in settings → integrations/i);
+    expect(within(banner).getByRole('link', { name: /settings → integrations/i }))
+      .toHaveAttribute('href', '/settings?tab=integrations');
+    await user.type(screen.getByTestId('input-linkedin-url'), 'https://www.linkedin.com/in/jane/');
+    await user.type(screen.getByTestId('input-goal'), 'Book a call');
+    const btn = screen.getByTestId('submit-research');
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('title', 'Connect Anthropic in Settings → Integrations');
   });
 });

@@ -9,14 +9,16 @@ import ConnectInboxModal from '../components/ConnectInboxModal.jsx';
 import LeadUpload from '../components/LeadUpload.jsx';
 import ScheduleConfig from '../components/ScheduleConfig.jsx';
 import { EmbeddedSequenceBuilder } from './SequenceBuilder.jsx';
+import { IntegrationBanner, IntegrationHint } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
 
 const TONES = ['Professional', 'Friendly', 'Direct', 'Conversational', 'Formal'];
 
 const RESEARCH_MODES = [
-  { value: 'fast', label: 'Fast (web only, ~10s/lead)' },
-  { value: 'deep', label: 'Deep (+Apollo, ~45s/lead)' },
-  { value: 'none', label: 'None (no research, AI writes from name + company)' },
-  { value: 'template', label: 'Template (no AI, you write it)' },
+  { value: 'fast', label: 'Fast (web only, ~10s/lead)', ai: true },
+  { value: 'deep', label: 'Deep (+Apollo, ~45s/lead)', ai: true },
+  { value: 'none', label: 'None (no research, AI writes from name + company)', ai: true },
+  { value: 'template', label: 'Template (no AI, you write it)', ai: false },
 ];
 
 const DEFAULT_FORM = {
@@ -70,6 +72,18 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
   }
 
   const selectedAccount = accounts.find((a) => a.id === form.connected_account_id);
+
+  // Every mode but Template calls Claude (research and/or compose).  Without
+  // an Anthropic key those modes are disabled and the form falls back to
+  // Template so the default selection is never an unusable one.
+  const { isConfigured, loaded: integrationsLoaded } = useIntegrations();
+  const anthropicReady = isConfigured('anthropic');
+  const aiModeSelected = RESEARCH_MODES.some((m) => m.ai && m.value === form.research_mode);
+  useEffect(() => {
+    if (integrationsLoaded && !anthropicReady && aiModeSelected) {
+      setForm((f) => ({ ...f, research_mode: 'template' }));
+    }
+  }, [integrationsLoaded, anthropicReady, aiModeSelected, setForm]);
 
   return (
     <form
@@ -185,14 +199,16 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
           <div>
             <span className="block text-sm font-medium text-slate-700 mb-2">Research mode</span>
             <div role="radiogroup" className="flex flex-wrap gap-2">
-              {RESEARCH_MODES.map(({ value, label }) => (
+              {RESEARCH_MODES.map(({ value, label, ai }) => (
                 <button
                   key={value}
                   type="button"
                   role="radio"
                   aria-checked={form.research_mode === value}
                   onClick={() => update('research_mode', value)}
-                  className={`px-4 py-2 rounded-full text-sm border font-medium transition-colors ${
+                  disabled={ai && !anthropicReady}
+                  title={ai && !anthropicReady ? 'Connect Anthropic in Settings → Integrations' : undefined}
+                  className={`px-4 py-2 rounded-full text-sm border font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                     form.research_mode === value
                       ? 'bg-brand-600 text-white border-brand-600'
                       : 'border-slate-300 text-slate-600 hover:border-brand-400 bg-white'
@@ -202,6 +218,7 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
                 </button>
               ))}
             </div>
+            <IntegrationHint providers="anthropic" className="mt-2" testId="research-mode-anthropic-hint" />
             {form.research_mode === 'none' && (
               <p className="mt-2 text-xs text-slate-500">
                 Skips all lead research. The AI still writes each email from
@@ -547,6 +564,9 @@ export default function CampaignCreate() {
   return (
     <div className={wide ? 'p-6 w-full' : 'p-8 max-w-2xl mx-auto'}>
       <h1 className="text-2xl font-bold text-slate-900 mb-6">New campaign</h1>
+      <IntegrationBanner providers="brevo" className="mb-6" testId="brevo-missing-banner">
+        You can set this campaign up now, but it can't send email until Brevo is connected.
+      </IntegrationBanner>
 
       {/* Step indicator */}
       <div role="list" aria-label="Steps" className="flex items-center gap-2 mb-8 flex-wrap">

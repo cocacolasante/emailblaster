@@ -28,7 +28,51 @@ export const TEST_MEMBERS = [
   },
 ];
 
+/** Build one GET /settings/integrations row.  Every provider defaults to
+ *  configured so feature entry points stay enabled in unrelated tests. */
+export function makeIntegration(provider, overrides = {}) {
+  const LABELS = {
+    anthropic: 'Anthropic', brevo: 'Brevo', hunter: 'Hunter.io',
+    apollo: 'Apollo.io', unipile: 'Unipile', adzuna: 'Adzuna',
+  };
+  const hasWebhook = provider === 'brevo' || provider === 'unipile';
+  return {
+    provider,
+    label: LABELS[provider] || provider,
+    description: `${LABELS[provider] || provider} integration`,
+    docs_url: `https://example.com/${provider}`,
+    fields: [
+      { key: 'api_key', label: 'API key', secret: true, required: true, placeholder: '', help: '' },
+    ],
+    configured: true,
+    preview: '••••ab12',
+    values: {},
+    last_test_status: 'ok',
+    last_tested_at: '2026-09-01T10:00:00Z',
+    last_test_error: null,
+    updated_at: '2026-09-01T10:00:00Z',
+    webhook_url: hasWebhook ? `https://api.example.com/webhooks/${provider}/ws-1` : null,
+    webhook_header: hasWebhook ? `X-${provider}-Auth` : null,
+    ...overrides,
+  };
+}
+
+export const INTEGRATION_PROVIDERS = ['anthropic', 'brevo', 'hunter', 'apollo', 'unipile', 'adzuna'];
+
+/** All providers configured (the default for every test). */
+export const TEST_INTEGRATIONS = INTEGRATION_PROVIDERS.map((p) => makeIntegration(p));
+
+/** Handler override: the listed providers report `configured: false`. */
+export function integrationsWithMissing(...missing) {
+  return http.get(api('/settings/integrations'), () => HttpResponse.json(
+    INTEGRATION_PROVIDERS.map((p) => makeIntegration(p, missing.includes(p)
+      ? { configured: false, preview: null, last_test_status: null, last_tested_at: null }
+      : {})),
+  ));
+}
+
 export const defaultHandlers = [
+  http.get(api('/settings/integrations'), () => HttpResponse.json(TEST_INTEGRATIONS)),
   http.get(api('/auth/me'), () => HttpResponse.json(TEST_ME)),
   http.get(api('/team/members'), () => HttpResponse.json(TEST_MEMBERS)),
   http.get(api('/auth/config'), () => HttpResponse.json({ allow_signup: true, platform_email: false })),

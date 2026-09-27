@@ -12,7 +12,6 @@ import {
   deleteLinkedInAccount,
   testLinkedInAccount,
 } from '../api/linkedinAccounts.js';
-import { getApiStatus } from '../api/settings.js';
 import { getAgentSettings, updateAgentSettings } from '../api/agent.js';
 import {
   listFundingSources,
@@ -27,6 +26,9 @@ import { Tabs } from '../components/ui.jsx';
 import IntentTab from './IntentSettings.jsx';
 import WorkspaceTab from './WorkspaceSettings.jsx';
 import ProfileTab from './ProfileSettings.jsx';
+import IntegrationsTab from './IntegrationsSettings.jsx';
+import { IntegrationHint, IntegrationsLink } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
 
 const STATUS_LABEL = {
   untested: 'Untested',
@@ -218,6 +220,8 @@ function ConnectedInboxesTab() {
 
 function LinkedInAccountsTab() {
   const queryClient = useQueryClient();
+  const { isConfigured } = useIntegrations();
+  const unipileReady = isConfigured('unipile');
   const [modalAccount, setModalAccount] = useState(undefined);
   const { data: accounts = [], isLoading, error } = useQuery({
     queryKey: ['linkedin-accounts'],
@@ -241,12 +245,18 @@ function LinkedInAccountsTab() {
     <div>
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-lg font-semibold text-slate-900 m-0">LinkedIn accounts</h2>
-        <button
-          onClick={() => setModalAccount(null)}
-          className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors"
-        >
-          + Connect LinkedIn account
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={() => setModalAccount(null)}
+            disabled={!unipileReady}
+            data-testid="connect-linkedin-button"
+            title={unipileReady ? undefined : 'Connect Unipile in Settings → Integrations'}
+            className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            + Connect LinkedIn account
+          </button>
+          <IntegrationHint providers="unipile" />
+        </div>
       </div>
 
       <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
@@ -329,66 +339,11 @@ function LinkedInAccountsTab() {
       {modalAccount !== undefined && (
         <ConnectLinkedInModal
           account={modalAccount}
+          unipileConfigured={unipileReady}
           onClose={() => setModalAccount(undefined)}
           onSaved={() => queryClient.invalidateQueries({ queryKey: ['linkedin-accounts'] })}
         />
       )}
-    </div>
-  );
-}
-
-
-function ApiStatusTab() {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['api-status'],
-    queryFn: getApiStatus,
-  });
-
-  if (isLoading) return <p className="text-sm text-slate-500">Loading API status…</p>;
-  if (error) return <p className="text-sm text-red-600">Failed to load API status</p>;
-
-  const rows = [
-    { key: 'anthropic', label: 'Anthropic API', required: true },
-    { key: 'brevo', label: 'Brevo', required: true },
-    { key: 'apollo', label: 'Apollo.io', required: false },
-    { key: 'hunter', label: 'Hunter.io', required: false },
-  ];
-
-  return (
-    <div>
-      <h2 className="text-lg font-semibold text-slate-900 mb-4">API status</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {rows.map((r) => {
-          const configured = data?.[r.key];
-          return (
-            <div key={r.key} data-testid={`api-row-${r.key}`} className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex items-center gap-4">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${configured ? 'bg-emerald-50' : 'bg-red-50'}`}>
-                {configured ? (
-                  <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                )}
-              </div>
-              <div className="flex-1">
-                <div className="font-semibold text-slate-900 text-sm">{r.label}</div>
-                {!r.required && (
-                  <div className="text-xs text-slate-400">optional — app works without this</div>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <StatusBadge status={configured ? 'ok' : 'untested'} />
-                <span className="text-xs text-slate-600">
-                  {configured ? 'Configured' : 'Not configured'}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -762,7 +717,8 @@ function DiscoveryTab() {
         >
           No Hunter API key configured — discovered orgs surface as
           notification-only signals (no contact email, so no lead/task is staged).
-          Add <code>HUNTER_API_KEY</code> to resolve decision-maker contacts.
+          Connect Hunter in <IntegrationsLink>Settings → Integrations</IntegrationsLink> to
+          resolve decision-maker contacts.
         </div>
       )}
 
@@ -782,19 +738,19 @@ function DiscoveryTab() {
 const SETTINGS_TABS = [
   { key: 'workspace', label: 'Workspace' },
   { key: 'profile', label: 'Profile' },
+  { key: 'integrations', label: 'Integrations' },
   { key: 'inboxes', label: 'Connected inboxes' },
   { key: 'linkedin', label: 'LinkedIn accounts' },
   { key: 'agent', label: 'Agent' },
   { key: 'discovery', label: 'Discovery' },
   { key: 'intent', label: 'Intent engine' },
-  { key: 'api', label: 'API status' },
 ];
 
 const DEFAULT_TAB = 'inboxes';
 
-// Deep-link aliases for ?tab= (e.g. the "integration not configured" toast
-// links to ?tab=integrations — provider status lives on the API status tab).
-const TAB_ALIASES = { integrations: 'api' };
+// Deep-link aliases for ?tab= — the old "API status" tab (keys `api` /
+// `api-status`) was folded into Integrations.
+const TAB_ALIASES = { api: 'integrations', 'api-status': 'integrations' };
 
 export function resolveSettingsTab(raw) {
   const key = TAB_ALIASES[raw] || raw;
@@ -826,12 +782,13 @@ export default function Settings() {
       />
       {tab === 'workspace' && <WorkspaceTab />}
       {tab === 'profile' && <ProfileTab />}
+      {tab === 'integrations' && <IntegrationsTab />}
       {tab === 'inboxes' && <ConnectedInboxesTab />}
       {tab === 'linkedin' && <LinkedInAccountsTab />}
       {tab === 'agent' && <AgentTab />}
       {tab === 'discovery' && <DiscoveryTab />}
       {tab === 'intent' && <IntentTab />}
-      {tab === 'api' && <ApiStatusTab />}
+
     </div>
   );
 }

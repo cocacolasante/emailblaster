@@ -3,6 +3,8 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { researchClient, sendClientEmail } from '../api/researchClient.js';
 import { listAccounts as listConnectedAccounts } from '../api/connectedAccounts.js';
 import { signatureToPreviewHtml } from '../utils/signaturePreview.js';
+import { IntegrationBanner } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
 
 const SENDER_NAME_KEY = 'researchClient.senderName';
 
@@ -485,6 +487,8 @@ export default function ResearchClient() {
   const [charLimit, setCharLimit] = useState(DEFAULT_LIMIT.linkedin_dm);
   const [touchedLimit, setTouchedLimit] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const { isConfigured } = useIntegrations();
+  const anthropicReady = isConfigured('anthropic');
 
   // Restore sender name from prior session.
   useEffect(() => {
@@ -555,6 +559,10 @@ export default function ResearchClient() {
           notifications — research uses public web search only.
         </p>
       </header>
+
+      <IntegrationBanner providers="anthropic" className="mb-4" testId="anthropic-missing-banner">
+        Research and message generation use Claude.
+      </IntegrationBanner>
 
       <form onSubmit={onSubmit} className="space-y-4 bg-white p-6 rounded-lg border border-slate-200">
         <div>
@@ -718,7 +726,8 @@ export default function ResearchClient() {
           ) : <span />}
           <button
             type="submit"
-            disabled={mutation.isPending || !linkedinUrl.trim() || !goal.trim()}
+            disabled={mutation.isPending || !linkedinUrl.trim() || !goal.trim() || !anthropicReady}
+            title={anthropicReady ? undefined : 'Connect Anthropic in Settings → Integrations'}
             data-testid="submit-research"
             className="px-5 py-2 bg-slate-900 text-white text-sm font-semibold rounded-md hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed"
           >

@@ -19,7 +19,7 @@ const SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------
 
-export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
+export default function ConnectLinkedInModal({ account, onClose, onSaved, unipileConfigured = true }) {
   const editing = Boolean(account);
 
   const [error, setError] = useState(null);
@@ -86,11 +86,10 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
         const detail = e?.response?.data?.detail || e?.message;
         if (status === 503) {
           setDiscoverableError(
-            "Unipile isn't configured for this workspace yet. Set "
-            + "UNIPILE_DSN + UNIPILE_API_KEY in .env and force-recreate "
-            + "the backend (see the Unipile setup runbook in CLAUDE.md). "
-            + "Once configured, both 'Connect via Unipile' and 'Already "
-            + "connected in Unipile?' will work."
+            "Unipile isn't configured for this workspace yet. Connect "
+            + "Unipile in Settings → Integrations. Once configured, both "
+            + "'Connect via Unipile' and 'Already connected in Unipile?' "
+            + "will work."
           );
         } else if (status === 502) {
           setDiscoverableError(
@@ -461,6 +460,15 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                   </div>
                 )}
 
+                {!unipileConfigured && (
+                  <p data-testid="unipile-not-configured" className="text-xs text-amber-700 m-0">
+                    Connect Unipile in{' '}
+                    <a href="/settings?tab=integrations" className="underline font-medium">
+                      Settings → Integrations
+                    </a>{' '}
+                    before linking a LinkedIn account.
+                  </p>
+                )}
                 <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
                   <button
                     type="button"
@@ -472,7 +480,9 @@ export default function ConnectLinkedInModal({ account, onClose, onSaved }) {
                   <button
                     type="button"
                     onClick={handleUnipileLaunch}
-                    disabled={unipileLaunching}
+                    disabled={unipileLaunching || !unipileConfigured}
+                    data-testid="connect-via-unipile"
+                    title={unipileConfigured ? undefined : 'Connect Unipile in Settings → Integrations'}
                     className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {unipileLaunching ? 'Starting…' : 'Connect via Unipile'}

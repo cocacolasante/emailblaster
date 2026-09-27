@@ -4,6 +4,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Campaigns from './Campaigns.jsx';
 import { ToastProvider } from '../components/Toast.jsx';
+import { http, HttpResponse } from 'msw';
+import { api as apiUrl, integrationsWithMissing, server, TEST_ME } from '../test/server.js';
 
 vi.mock('../api/campaigns.js', () => ({
   listCampaigns: vi.fn(),
@@ -46,6 +48,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  try { window.localStorage.clear(); } catch { /* noop */ }
 });
 
 describe('Campaigns list', () => {
@@ -148,5 +151,37 @@ describe('Campaigns list', () => {
     renderPage();
     await screen.findByTestId('campaign-card');
     expect(screen.getByText('Not tracked')).toBeInTheDocument();
+  });
+});
+
+describe('Workspace setup nudge', () => {
+  it('is hidden when Anthropic and Brevo are connected', async () => {
+    api.listCampaigns.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() => expect(api.listCampaigns).toHaveBeenCalled());
+    expect(screen.queryByTestId('workspace-setup-nudge')).toBeNull();
+  });
+
+  it('nudges managers to connect missing core providers and can be dismissed', async () => {
+    server.use(integrationsWithMissing('anthropic', 'brevo'));
+    api.listCampaigns.mockResolvedValue([]);
+    renderPage();
+    const nudge = await screen.findByTestId('workspace-setup-nudge');
+    expect(nudge).toHaveTextContent('Finish setting up your workspace: connect Anthropic and Brevo');
+    expect(screen.getByTestId('setup-nudge-link')).toHaveAttribute('href', '/settings?tab=integrations');
+    fireEvent.click(screen.getByTestId('setup-nudge-dismiss'));
+    expect(screen.queryByTestId('workspace-setup-nudge')).toBeNull();
+  });
+
+  it('is not shown to members', async () => {
+    server.use(
+      integrationsWithMissing('brevo'),
+      http.get(apiUrl('/auth/me'), () => HttpResponse.json({ ...TEST_ME, role: 'member' })),
+    );
+    api.listCampaigns.mockResolvedValue([]);
+    renderPage();
+    await waitFor(() => expect(api.listCampaigns).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId('workspace-setup-nudge')).toBeNull();
   });
 });

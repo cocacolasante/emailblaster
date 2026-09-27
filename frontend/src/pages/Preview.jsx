@@ -9,11 +9,17 @@ import {
 } from '../api/campaigns.js';
 import EmailPreviewCard from '../components/EmailPreviewCard.jsx';
 import { Skeleton, ErrorState } from '../components/states.jsx';
+import { IntegrationBanner } from '../components/IntegrationHint.jsx';
+import { useIntegrations } from '../hooks/useIntegrations.js';
 
 export default function Preview() {
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Launching sends email — blocked until the workspace connects Brevo.
+  const { isConfigured } = useIntegrations();
+  const brevoReady = isConfigured('brevo');
+  const launchBlockedTitle = brevoReady ? undefined : 'Connect Brevo in Settings → Integrations';
 
   const previewQuery = useQuery({
     queryKey: ['preview', id],
@@ -109,13 +115,18 @@ export default function Preview() {
           <button
             type="button"
             onClick={() => approveAllMutation.mutate()}
-            disabled={approveAllMutation.isPending || total === 0}
+            disabled={approveAllMutation.isPending || total === 0 || !brevoReady}
+            title={launchBlockedTitle}
             className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {approveAllMutation.isPending ? 'Launching…' : 'Approve all & launch'}
           </button>
         </div>
       </div>
+
+      <IntegrationBanner providers="brevo" className="mb-4" testId="brevo-missing-banner">
+        Launching sends email, which needs Brevo.
+      </IntegrationBanner>
 
       <div data-testid="campaign-context" className="flex gap-8 p-4 bg-slate-50 border border-slate-200 rounded-lg mb-6 text-sm">
         <div><span className="text-slate-500">Goal:</span> <strong className="font-medium text-slate-900">{campaign?.goal}</strong></div>
@@ -155,7 +166,8 @@ export default function Preview() {
           <button
             type="button"
             onClick={() => approveAllMutation.mutate()}
-            disabled={approveAllMutation.isPending || total === 0}
+            disabled={approveAllMutation.isPending || total === 0 || !brevoReady}
+            title={launchBlockedTitle}
             className="inline-flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {approveAllMutation.isPending ? 'Launching…' : 'Approve and launch campaign'}
