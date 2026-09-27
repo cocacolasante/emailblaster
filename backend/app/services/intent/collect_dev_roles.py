@@ -82,7 +82,7 @@ async def _emit_dev_role_signal(session: AsyncSession, org, job: dict, now: date
                          for k, v in job.items()},
             dedupe_key=f"adzuna:devrole:{job['id']}:{org.id}",
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_nothing(index_elements=["tenant_id", "dedupe_key"])
     )
     result = await session.execute(stmt)
     return "new" if result.rowcount else "deduped"

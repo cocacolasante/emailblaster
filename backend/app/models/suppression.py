@@ -4,11 +4,12 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Text, func
+from sqlalchemy import DateTime, Enum, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
 class SuppressionReason(str, enum.Enum):
@@ -35,11 +36,15 @@ def canonical_email(email: str | None) -> str:
     return (email or "").strip().lower()
 
 
-class Suppression(Base):
+class Suppression(TenantMixin, Base):
     __tablename__ = "suppression_list"
+    __table_args__ = (
+        # Per-workspace: an unsubscribe applies to the sender who got it.
+        UniqueConstraint("tenant_id", "email", name="uq_suppression_list_tenant_email"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    email: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     reason: Mapped[SuppressionReason] = mapped_column(
         Enum(SuppressionReason, name="suppression_reason", values_callable=lambda e: [m.value for m in e]),
         nullable=False,

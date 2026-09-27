@@ -83,7 +83,7 @@ async def _emit_rfp_signal(session: AsyncSession, org, opp: dict, now: datetime)
                          for k, v in opp.items()},
             dedupe_key=f"grantsgov:rfp:{opp['id']}:{org.id}",
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_nothing(index_elements=["tenant_id", "dedupe_key"])
     )
     result = await session.execute(stmt)
     return "new" if result.rowcount else "deduped"

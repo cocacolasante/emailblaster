@@ -22,11 +22,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Text, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 from app.models.social_listening import SocialSearchFrequency
 
 
@@ -48,7 +49,7 @@ class ProspectSignalStatus(str, enum.Enum):
     DISMISSED = "dismissed"
 
 
-class SignalWatch(Base):
+class SignalWatch(TenantMixin, Base):
     __tablename__ = "signal_watches"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -119,8 +120,11 @@ class SignalWatch(Base):
     )
 
 
-class ProspectSignal(Base):
+class ProspectSignal(TenantMixin, Base):
     __tablename__ = "prospect_signals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "dedup_key", name="uq_prospect_signals_tenant_dedup"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -142,7 +146,7 @@ class ProspectSignal(Base):
     # Structured payload: old/new title, round + amount, roles, source URL.
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     dedup_key: Mapped[str] = mapped_column(
-        Text, nullable=False, unique=True, index=True,
+        Text, nullable=False, index=True,
     )
     status: Mapped[ProspectSignalStatus] = mapped_column(
         Enum(ProspectSignalStatus, name="prospect_signal_status",

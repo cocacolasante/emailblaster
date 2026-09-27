@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
 # ---- enums -----------------------------------------------------------------
@@ -83,7 +84,7 @@ class SocialOpportunityStatus(str, enum.Enum):
 
 # ---- models ----------------------------------------------------------------
 
-class SocialListeningSearch(Base):
+class SocialListeningSearch(TenantMixin, Base):
     __tablename__ = "social_listening_searches"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -217,10 +218,10 @@ class SocialListeningSearch(Base):
     )
 
 
-class SocialListeningPost(Base):
+class SocialListeningPost(TenantMixin, Base):
     __tablename__ = "social_listening_posts"
     __table_args__ = (
-        UniqueConstraint("provider", "post_url", name="uq_social_posts_provider_url"),
+        UniqueConstraint("tenant_id", "provider", "post_url", name="uq_social_posts_provider_url"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -268,7 +269,7 @@ class SocialListeningPost(Base):
     )
 
 
-class SocialListeningOpportunity(Base):
+class SocialListeningOpportunity(TenantMixin, Base):
     """One row per qualified post.  Re-qualification overwrites in place
     (the FK + UNIQUE on ``post_id`` is the upsert key)."""
 

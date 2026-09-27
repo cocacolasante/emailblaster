@@ -25,7 +25,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    AGENT_SETTINGS_SINGLETON_ID,
     CLOSED_STAGES,
     AgentAction,
     AgentActionStatus,
@@ -39,6 +38,7 @@ from app.models import (
     Opportunity,
 )
 from app.services import notifications
+from app.tenancy.context import require_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +50,18 @@ STALE_OPP_NUDGE_SUBJECT = "Re-engage — deal has gone quiet"
 
 
 async def get_agent_settings(session: AsyncSession) -> AgentSettings:
-    """Return the singleton AgentSettings row, creating it with defaults
-    on first access so a fresh install needs no seed step.
+    """Return the CURRENT workspace's AgentSettings row, creating it with
+    defaults on first access so a new workspace needs no seed step.
 
     Caller owns the transaction — on the create path the new row is
     flushed (so defaults/PK are live) but not committed.
     """
-    row = await session.get(AgentSettings, AGENT_SETTINGS_SINGLETON_ID)
+    tenant_id = require_tenant_id()
+    row = await session.scalar(
+        select(AgentSettings).where(AgentSettings.tenant_id == tenant_id)
+    )
     if row is None:
-        row = AgentSettings(id=AGENT_SETTINGS_SINGLETON_ID)
+        row = AgentSettings(tenant_id=tenant_id)
         session.add(row)
         await session.flush()
         # Re-read so server_default columns (the bool toggles, the

@@ -487,7 +487,7 @@ async def test_usaspending_poll_uses_trailing_window(db_session, monkeypatch):
     assert captured["until"] == today
     assert captured["since"] == today - timedelta(days=30)
 
-    state = await db_session.get(FundingSourceState, "usaspending")
+    state = await db_session.scalar(select(FundingSourceState).where(FundingSourceState.source == "usaspending"))
     assert state is not None
     assert state.cursor["last_window_start"] == (today - timedelta(days=30)).isoformat()
     assert state.cursor["last_run_date"] == today.isoformat()
@@ -541,7 +541,7 @@ async def test_irs_bmf_first_run_guard_bounds_window(db_session, monkeypatch):
     assert captured["states"] == ["PA"]
     assert result["since_ruling"] == _yyyymm(today, 2)
 
-    state = await db_session.get(FundingSourceState, "irs_bmf")
+    state = await db_session.scalar(select(FundingSourceState).where(FundingSourceState.source == "irs_bmf"))
     assert state.cursor["last_file_month"] == _yyyymm(today)
     assert state.last_run_status == "done"
 
@@ -624,7 +624,7 @@ async def test_funding_sources_list_seeds_from_env(set_creds, client, db_session
     assert by_src["usaspending"]["signal_count"] == 0
 
     # Seeding persisted the rows.
-    state = await db_session.get(FundingSourceState, "usaspending")
+    state = await db_session.scalar(select(FundingSourceState).where(FundingSourceState.source == "usaspending"))
     assert state is not None and state.enabled is True
 
 
@@ -643,7 +643,7 @@ async def test_funding_source_patch_updates_config(client, db_session, monkeypat
     assert body["config"]["ruling_lookback_months"] == 3
     assert body["config"]["states"] == ["PA", "NJ", "NY"]
 
-    state = await db_session.get(FundingSourceState, "irs_bmf")
+    state = await db_session.scalar(select(FundingSourceState).where(FundingSourceState.source == "irs_bmf"))
     await db_session.refresh(state)
     assert state.enabled is True
     assert state.config["states"] == ["PA", "NJ", "NY"]

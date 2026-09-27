@@ -25,9 +25,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
-class ReplyOutcome(Base):
+class ReplyOutcome(TenantMixin, Base):
     __tablename__ = "reply_outcomes"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -55,7 +56,7 @@ class ReplyOutcome(Base):
     )
 
 
-class CampaignCopyInsights(Base):
+class CampaignCopyInsights(TenantMixin, Base):
     __tablename__ = "campaign_copy_insights"
 
     id: Mapped[uuid.UUID] = mapped_column(

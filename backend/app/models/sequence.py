@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
@@ -48,7 +49,7 @@ class LeadStepResult(str, enum.Enum):
     FAILED = "failed"
 
 
-class Sequence(Base):
+class Sequence(TenantMixin, Base):
     __tablename__ = "sequences"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -81,7 +82,7 @@ class Sequence(Base):
     )
 
 
-class SequenceNode(Base):
+class SequenceNode(TenantMixin, Base):
     __tablename__ = "sequence_nodes"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -118,7 +119,7 @@ class SequenceNode(Base):
     sequence: Mapped["Sequence"] = relationship(back_populates="nodes")
 
 
-class SequenceEdge(Base):
+class SequenceEdge(TenantMixin, Base):
     __tablename__ = "sequence_edges"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -148,7 +149,7 @@ class SequenceEdge(Base):
     sequence: Mapped["Sequence"] = relationship(back_populates="edges")
 
 
-class LeadSequenceState(Base):
+class LeadSequenceState(TenantMixin, Base):
     __tablename__ = "lead_sequence_states"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -189,7 +190,7 @@ class LeadSequenceState(Base):
     )
 
 
-class LeadStepExecution(Base):
+class LeadStepExecution(TenantMixin, Base):
     __tablename__ = "lead_step_executions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

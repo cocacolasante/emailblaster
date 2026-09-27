@@ -30,12 +30,14 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    UniqueConstraint,
     Boolean, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
 # 990 annual-revenue bands — the org-fit multiplier keys off these (the ICP
@@ -80,7 +82,7 @@ class IntentSignalStatus(str, enum.Enum):
     EXPIRED = "expired"
 
 
-class Org(Base):
+class Org(TenantMixin, Base):
     """The intent anchor.  Deduped by EIN within a tenant (partial unique)."""
     __tablename__ = "orgs"
     __table_args__ = (
@@ -96,9 +98,6 @@ class Org(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
-    )
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True,
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     ein: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
@@ -129,9 +128,12 @@ class Org(Base):
     )
 
 
-class Signal(Base):
+class Signal(TenantMixin, Base):
     """One evidenced intent event.  Idempotent via the unique ``dedupe_key``."""
     __tablename__ = "signals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "dedupe_key", name="uq_signals_tenant_dedupe"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -139,9 +141,6 @@ class Signal(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"),
         nullable=False, index=True,
-    )
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True,
     )
     signal_type: Mapped[IntentSignalType] = mapped_column(
         Enum(IntentSignalType, name="intent_signal_type",
@@ -163,7 +162,7 @@ class Signal(Base):
     evidence_url: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)  # the "why now" line
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     status: Mapped[IntentSignalStatus] = mapped_column(
         Enum(IntentSignalStatus, name="intent_signal_status",
              values_callable=lambda e: [m.value for m in e]),
@@ -177,16 +176,13 @@ class Signal(Base):
     )
 
 
-class OrgIntentScore(Base):
+class OrgIntentScore(TenantMixin, Base):
     """Rolled-up intent for an org — one row per org (org_id is the PK)."""
     __tablename__ = "org_intent_scores"
 
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orgs.id", ondelete="CASCADE"),
         primary_key=True,
-    )
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True,
     )
     intent_score: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, server_default="0",
@@ -203,7 +199,7 @@ class OrgIntentScore(Base):
     )
 
 
-class IcpIntentProfile(Base):
+class IcpIntentProfile(TenantMixin, Base):
     """Per-tenant collection + scoring config (the GrantMind switch).
 
     Distinct from the legacy ``icp_profiles`` (lookalike fingerprint from
@@ -213,9 +209,6 @@ class IcpIntentProfile(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
-    )
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True,
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     is_active: Mapped[bool] = mapped_column(

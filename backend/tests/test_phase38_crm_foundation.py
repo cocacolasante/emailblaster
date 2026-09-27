@@ -32,8 +32,10 @@ from app.models import (
     ReportDefinition,
 )
 
-TENANT = uuid.uuid4()
-OWNER = uuid.uuid4()
+from tests.conftest import DEFAULT_TENANT_ID, DEFAULT_USER_ID  # noqa: E402
+
+TENANT = DEFAULT_TENANT_ID
+OWNER = DEFAULT_USER_ID
 
 
 async def _default_pipeline(db_session) -> tuple[Pipeline, list[PipelineStage]]:
@@ -218,13 +220,10 @@ async def test_crm_activity_new_fields(db_session):
     assert reloaded.tenant_id == TENANT
 
 
-async def test_lead_tenant_id_nullable_and_settable(db_session):
+async def test_lead_tenant_id_defaults_to_ambient_tenant(db_session):
     lead = Lead(email="x@y.com")
     db_session.add(lead)
     await db_session.commit()
-    assert lead.tenant_id is None  # nullable, defaults to NULL
-
-    lead.tenant_id = TENANT
-    await db_session.commit()
+    assert lead.tenant_id == TENANT  # stamped from the tenant context
     reloaded = await db_session.get(Lead, lead.id)
     assert reloaded.tenant_id == TENANT

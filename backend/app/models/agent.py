@@ -29,17 +29,19 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    UniqueConstraint,
     Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, Text, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 # The one-and-only AgentSettings row id.  A plain integer sentinel keeps
 # the singleton enforcement trivial (PK collision) and the bootstrap
 # obvious (`get_or_create` on id=1).
-AGENT_SETTINGS_SINGLETON_ID = 1
+AGENT_SETTINGS_SINGLETON_ID = 1  # legacy (pre-tenancy singleton id); unused
 
 
 class NotificationKind(str, enum.Enum):
@@ -74,17 +76,21 @@ class AgentActionStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class AgentSettings(Base):
-    """Singleton runtime config (id is always ``AGENT_SETTINGS_SINGLETON_ID``).
+class AgentSettings(TenantMixin, Base):
+    """Per-workspace agent config — one row per tenant.
 
     Created lazily by ``services.agent_core.get_agent_settings`` on first
-    read so a fresh install needs no seed step.
+    read so a new workspace needs no seed step.
     """
 
     __tablename__ = "agent_settings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_agent_settings_tenant"),
+    )
 
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, default=AGENT_SETTINGS_SINGLETON_ID,
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
     )
 
     # Autonomy toggles — each one gates a specific agent behaviour.
@@ -135,7 +141,7 @@ class AgentSettings(Base):
     )
 
 
-class Notification(Base):
+class Notification(TenantMixin, Base):
     """A persisted alert for the operator (powers the UI bell/feed).
 
     ``dedup_key`` is the idempotency anchor — e.g.
@@ -145,6 +151,9 @@ class Notification(Base):
     """
 
     __tablename__ = "notifications"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "dedup_key", name="uq_notifications_tenant_dedup"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -175,7 +184,7 @@ class Notification(Base):
     )
 
     dedup_key: Mapped[str] = mapped_column(
-        Text, nullable=False, unique=True, index=True,
+        Text, nullable=False, index=True,
     )
 
     read_at: Mapped[datetime | None] = mapped_column(
@@ -193,7 +202,7 @@ class Notification(Base):
     )
 
 
-class AgentAction(Base):
+class AgentAction(TenantMixin, Base):
     """Append-only audit log of every autonomous agent decision.
 
     One row per decision INCLUDING skips ("confidence below threshold")

@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.tenancy.context import resolve_tenant
 from app.models import Lead, Org, OrgSizeBand, ProspectSignal
 from app.services.funding_sources import propublica
 
@@ -69,7 +70,8 @@ async def upsert_org(
         return None
 
     q = select(Org).where(Org.ein == norm)
-    q = q.where(Org.tenant_id.is_(None)) if tenant_id is None else q.where(Org.tenant_id == tenant_id)
+    tenant_id = resolve_tenant(tenant_id)
+    q = q.where(Org.tenant_id == tenant_id)
     org = await session.scalar(q)
 
     rev = Decimal(str(annual_revenue)) if annual_revenue is not None else None

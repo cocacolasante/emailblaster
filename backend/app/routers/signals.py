@@ -697,7 +697,9 @@ async def _seed_funding_state(db: AsyncSession, source: str) -> FundingSourceSta
     # Lazy import avoids any router↔worker import cycle at module load.
     from app.workers.funding_signals import _env_config, _env_enabled
 
-    state = await db.get(FundingSourceState, source)
+    state = await db.scalar(
+        select(FundingSourceState).where(FundingSourceState.source == source)
+    )
     if state is None:
         state = FundingSourceState(source=source, cursor={})
         db.add(state)

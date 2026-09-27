@@ -15,8 +15,8 @@ activate / delete, two presets (GrantMind vs a neutral generic baseline), and a
 read-only ranking + cross-profile comparison so the same orgs can be ranked
 under different profiles without persisting.
 
-Workspace awareness: profiles carry the repo-wide nullable ``tenant_id``.  No
-RLS (deferred) — selection is profile-scoped + forward-compatible.
+Workspace awareness: profiles are per-workspace (``tenant_id``); an omitted
+``tenant_id`` argument means the workspace in context.
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.tenancy.context import resolve_tenant
 from app.models import IcpIntentProfile, Org, Signal
 from app.services.intent import scoring
 
@@ -81,8 +82,7 @@ _EDITABLE = (
 
 async def list_profiles(session: AsyncSession, tenant_id=None) -> list[IcpIntentProfile]:
     q = select(IcpIntentProfile)
-    q = (q.where(IcpIntentProfile.tenant_id.is_(None)) if tenant_id is None
-         else q.where(IcpIntentProfile.tenant_id == tenant_id))
+    q = q.where(IcpIntentProfile.tenant_id == resolve_tenant(tenant_id))
     return list((await session.execute(q.order_by(IcpIntentProfile.created_at))).scalars().all())
 
 
@@ -95,6 +95,7 @@ async def create_profile(
 ) -> IcpIntentProfile:
     fields = {k: v for k, v in data.items() if k in _EDITABLE}
     activate = fields.pop("is_active", True)
+    tenant_id = resolve_tenant(tenant_id)
     profile = IcpIntentProfile(tenant_id=tenant_id, **fields)
     session.add(profile)
     await session.flush()
@@ -122,8 +123,7 @@ async def activate_profile(
 ) -> None:
     """Make this the single active profile for its tenant (others deactivated)."""
     stmt = update(IcpIntentProfile).values(is_active=False)
-    stmt = (stmt.where(IcpIntentProfile.tenant_id.is_(None)) if tenant_id is None
-            else stmt.where(IcpIntentProfile.tenant_id == tenant_id))
+    stmt = stmt.where(IcpIntentProfile.tenant_id == resolve_tenant(tenant_id))
     await session.execute(stmt.where(IcpIntentProfile.id != profile.id))
     profile.is_active = True
     await session.flush()
@@ -150,8 +150,7 @@ async def rank_orgs(
     """Read-only ranked intent list for every org that has a signal, scored
     under ``profile`` (no persistence).  Newest-strongest first."""
     org_ids = (await session.execute(
-        select(Org.id).where(Org.tenant_id == tenant_id) if tenant_id is not None
-        else select(Org.id)
+        select(Org.id).where(Org.tenant_id == resolve_tenant(tenant_id))
     )).scalars().all()
     ranked: list[dict] = []
     for oid in org_ids:

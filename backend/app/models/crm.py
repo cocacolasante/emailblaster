@@ -29,6 +29,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
 class CrmLeadStatus(str, enum.Enum):
@@ -76,7 +77,7 @@ class CrmActivityDirection(str, enum.Enum):
     OUTBOUND = "outbound"
 
 
-class Opportunity(Base):
+class Opportunity(TenantMixin, Base):
     __tablename__ = "crm_opportunities"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -136,7 +137,6 @@ class Opportunity(Base):
     )
     # No FK yet — no users/auth table exists; design-ready for a later refactor.
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
@@ -155,7 +155,7 @@ class Opportunity(Base):
     )
 
 
-class CrmActivity(Base):
+class CrmActivity(TenantMixin, Base):
     __tablename__ = "crm_activities"
     __table_args__ = (
         CheckConstraint(
@@ -200,7 +200,6 @@ class CrmActivity(Base):
         nullable=True, index=True,
     )
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     activity_type: Mapped[CrmActivityType] = mapped_column(
         Enum(CrmActivityType, name="crm_activity_type",
@@ -251,7 +250,7 @@ class CrmActivity(Base):
     opportunity: Mapped["Opportunity | None"] = relationship(back_populates="activities")
 
 
-class CrmDocument(Base):
+class CrmDocument(TenantMixin, Base):
     """File attachment on an opportunity (proposal, contract, quote).
 
     Bytes live in Postgres — right-sized for a single-operator tool
@@ -276,7 +275,7 @@ class CrmDocument(Base):
     )
 
 
-class OpportunityProduct(Base):
+class OpportunityProduct(TenantMixin, Base):
     """Product-of-interest line item (Salesforce OpportunityLineItem,
     lite).  Free-text product name — no global catalog in v1."""
 
@@ -316,7 +315,7 @@ class OpportunityProduct(Base):
 # make stages first-class + configurable.
 
 
-class Pipeline(Base):
+class Pipeline(TenantMixin, Base):
     """An ordered set of opportunity stages.  v1 ships a single
     ``is_default`` pipeline (seeded to mirror the legacy enum); the schema
     supports multiple pipelines later without a migration."""
@@ -324,7 +323,6 @@ class Pipeline(Base):
     __tablename__ = "pipelines"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false",
@@ -344,7 +342,7 @@ class Pipeline(Base):
     )
 
 
-class PipelineStage(Base):
+class PipelineStage(TenantMixin, Base):
     """A configurable, ordered stage within a pipeline.  ``key`` mirrors the
     legacy ``OpportunityStage`` enum value for seeded stages so reporting can
     map old rows; ``is_won`` / ``is_lost`` replace the hard-coded
@@ -356,7 +354,6 @@ class PipelineStage(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     pipeline_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("pipelines.id", ondelete="CASCADE"),
@@ -380,7 +377,7 @@ class PipelineStage(Base):
     pipeline: Mapped["Pipeline"] = relationship(back_populates="stages")
 
 
-class Account(Base):
+class Account(TenantMixin, Base):
     """A company.  Normalizes the ``company`` text denormalized on leads /
     opportunities.  Existing lead handling is unchanged — accounts are linked
     to NEW opportunities/contacts going forward, no historical backfill."""
@@ -388,7 +385,6 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     domain: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     website: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -407,7 +403,7 @@ class Account(Base):
     )
 
 
-class Contact(Base):
+class Contact(TenantMixin, Base):
     """A person, optionally a member of an Account.  Distinct from ``leads``
     (the outreach recipient): a contact is the CRM person record.  Can be
     seeded from a lead via ``source_lead_id`` without disrupting the lead."""
@@ -415,7 +411,6 @@ class Contact(Base):
     __tablename__ = "contacts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("accounts.id", ondelete="SET NULL"),
@@ -443,7 +438,7 @@ class Contact(Base):
     account: Mapped["Account | None"] = relationship(back_populates="contacts")
 
 
-class OpportunityStageChange(Base):
+class OpportunityStageChange(TenantMixin, Base):
     """Append-only audit of every opportunity stage move (the Phase 2 Kanban
     writes one per drag).  Stores both the stage FK and the stage ``key`` so
     history survives a stage being renamed/deactivated.  ``source`` is
@@ -456,7 +451,6 @@ class OpportunityStageChange(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("crm_opportunities.id", ondelete="CASCADE"),

@@ -153,7 +153,7 @@ async def collect_for_org(session: AsyncSession, org: Org, now: datetime) -> str
             raw_payload={"title": title, "careers_url": careers_url, "via": "careers_page"},
             dedupe_key=f"careers:devrole:{org.id}:{key_title}",
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_nothing(index_elements=["tenant_id", "dedupe_key"])
     )
     result = await session.execute(stmt)
     return "new" if result.rowcount else "deduped"

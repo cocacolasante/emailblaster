@@ -79,6 +79,8 @@ asyncio.run(_initialize_test_db())
 import hashlib  # noqa: E402
 import uuid  # noqa: E402
 
+import pytest  # noqa: E402
+
 DEFAULT_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
 DEFAULT_USER_EMAIL = "owner@test.local"
@@ -135,6 +137,39 @@ async def create_test_user(
             "VALUES (:h, :u, :t, now() + interval '1 day')"
         ), {"h": _token_hash(token), "u": user_id, "t": tenant_id})
     return user_id, tenant_id, token
+
+
+@pytest.fixture(autouse=True)
+def _default_tenant_context():
+    """Every test runs inside DEFAULT_TENANT's context (and DEFAULT_USER's),
+    so rows a test inserts directly via ``db_session`` are stamped by the
+    TenantMixin default — just as a request would stamp them.
+
+    Deliberately a SYNC fixture: pytest-asyncio runs async fixtures in
+    their own task, and ContextVars set there never reach the test.
+    """
+    from app.tenancy.context import current_tenant_id, current_user_id
+
+    t1 = current_tenant_id.set(DEFAULT_TENANT_ID)
+    t2 = current_user_id.set(DEFAULT_USER_ID)
+    yield
+    current_user_id.reset(t2)
+    current_tenant_id.reset(t1)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_auth_ratelimit(monkeypatch):
+    """Auth rate-limit counters go to a per-test fakeredis, never the real
+    Redis the test container can reach (counters would leak across runs)."""
+    import fakeredis.aioredis
+
+    from app.auth import ratelimit
+
+    server = fakeredis.FakeServer()
+    monkeypatch.setattr(
+        ratelimit, "_redis",
+        lambda: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True),
+    )
 
 
 @pytest_asyncio.fixture

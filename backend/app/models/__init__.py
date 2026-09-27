@@ -1,4 +1,5 @@
 """SQLAlchemy models. Import side-effect registers all tables on Base.metadata."""
+import app.tenancy.scoping  # noqa: F401 — registers the tenant-scoping Session listeners
 from app.models.agent import (
     AGENT_SETTINGS_SINGLETON_ID,
     AgentAction,

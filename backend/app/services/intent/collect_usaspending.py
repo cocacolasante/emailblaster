@@ -86,7 +86,7 @@ async def _emit_peer_signal(
             raw_payload=detail,
             dedupe_key=f"usaspending:peer:{award_id}:{org.id}",
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_nothing(index_elements=["tenant_id", "dedupe_key"])
     )
     result = await session.execute(stmt)
     return "new" if result.rowcount else "deduped"

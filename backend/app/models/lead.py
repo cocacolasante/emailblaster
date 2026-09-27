@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
@@ -50,7 +51,7 @@ class LinkedInConnectionStatus(str, enum.Enum):
     WITHDRAWN = "withdrawn"
 
 
-class Lead(Base):
+class Lead(TenantMixin, Base):
     __tablename__ = "leads"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -139,7 +140,6 @@ class Lead(Base):
     )
     # Tenancy-ready (migration 0038): nullable now, scoped later. Leads remain
     # both the outreach recipient and the CRM lead exactly as before.
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

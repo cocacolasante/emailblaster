@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
@@ -21,16 +22,17 @@ class ConnectedAccountTestStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class ConnectedAccount(Base):
+class ConnectedAccount(TenantMixin, Base):
     __tablename__ = "connected_accounts"
     __table_args__ = (
         # Partial unique index — only enforces uniqueness on TRUE rows so
         # any number of False rows is fine.  Mirrors the migration 0022
         # index; declared here too so the test DB (built from
         # Base.metadata, not migrations) also gets it.
+        # One default sender PER WORKSPACE.
         Index(
             "ix_connected_accounts_single_default_sender",
-            "is_default_sender",
+            "tenant_id",
             unique=True,
             postgresql_where=text("is_default_sender IS TRUE"),
         ),

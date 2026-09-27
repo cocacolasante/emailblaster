@@ -18,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models import (
-    AGENT_SETTINGS_SINGLETON_ID,
     AgentAction,
     AgentActionStatus,
     AgentActionType,
@@ -39,7 +38,9 @@ pytestmark = pytest.mark.asyncio
 
 async def test_get_agent_settings_bootstraps_singleton(db_session):
     row = await get_agent_settings(db_session)
-    assert row.id == AGENT_SETTINGS_SINGLETON_ID
+    from tests.conftest import DEFAULT_TENANT_ID
+
+    assert row.tenant_id == DEFAULT_TENANT_ID
     # Documented defaults.
     assert row.auto_log_replies is True
     assert row.auto_create_convert_reminders is True

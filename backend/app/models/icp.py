@@ -19,11 +19,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Text, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
 class IcpProfileSource(str, enum.Enum):
@@ -44,7 +45,7 @@ class LookalikeCandidateStatus(str, enum.Enum):
     REJECTED = "rejected"
 
 
-class IcpProfile(Base):
+class IcpProfile(TenantMixin, Base):
     __tablename__ = "icp_profiles"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -84,8 +85,11 @@ class IcpProfile(Base):
     )
 
 
-class LookalikeCandidate(Base):
+class LookalikeCandidate(TenantMixin, Base):
     __tablename__ = "lookalike_candidates"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "dedup_key", name="uq_lookalike_candidates_tenant_dedup"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -107,7 +111,7 @@ class LookalikeCandidate(Base):
     source: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Domain or linkedin_url — the forever-dedup anchor.
     dedup_key: Mapped[str] = mapped_column(
-        Text, nullable=False, unique=True, index=True,
+        Text, nullable=False, index=True,
     )
     status: Mapped[LookalikeCandidateStatus] = mapped_column(
         Enum(LookalikeCandidateStatus, name="lookalike_candidate_status",

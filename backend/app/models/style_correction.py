@@ -9,12 +9,13 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
 
 
-class StyleCorrection(Base):
+class StyleCorrection(TenantMixin, Base):
     __tablename__ = "style_corrections"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

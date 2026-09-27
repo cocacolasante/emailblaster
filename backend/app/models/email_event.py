@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
@@ -29,7 +30,7 @@ class EmailEventType(str, enum.Enum):
     BLOCKED = "blocked"
 
 
-class EmailEvent(Base):
+class EmailEvent(TenantMixin, Base):
     __tablename__ = "email_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

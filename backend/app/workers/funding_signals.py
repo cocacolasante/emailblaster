@@ -213,7 +213,9 @@ async def _get_or_create_state(session: AsyncSession, source: str) -> FundingSou
     env defaults when unset (first run, or NULL after the 0033 migration).
     The env vars are the SEED; the DB row is authoritative afterward, so
     the Settings → Discovery panel can override them live."""
-    state = await session.get(FundingSourceState, source)
+    state = await session.scalar(
+        select(FundingSourceState).where(FundingSourceState.source == source)
+    )
     if state is None:
         state = FundingSourceState(source=source, cursor={})
         session.add(state)

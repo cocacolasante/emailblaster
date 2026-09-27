@@ -11,18 +11,26 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Integer, Text, func, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 
-class FundingSourceState(Base):
+class FundingSourceState(TenantMixin, Base):
     __tablename__ = "funding_source_state"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source", name="uq_funding_source_state_tenant_source"),
+    )
 
-    # 'usaspending' | 'irs_bmf'
-    source: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    # 'usaspending' | 'irs_bmf' — one row per (workspace, source).
+    source: Mapped[str] = mapped_column(Text, nullable=False)
     # Runtime on/off, editable from Settings → Discovery (migration 0033).
     # NULL = not yet seeded; the worker/API seed it from the env default.
     enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -47,7 +55,7 @@ class FundingEnrichmentStatus(str, enum.Enum):
     MAILED = "mailed"          # exhausted → direct-mail CRM task created
 
 
-class FundingEnrichmentQueue(Base):
+class FundingEnrichmentQueue(TenantMixin, Base):
     """Deferred-enrichment queue (migration 0036).
 
     Discovered orgs that resolve NO contact never enter the
@@ -58,6 +66,9 @@ class FundingEnrichmentQueue(Base):
     into a direct-mail task) after a few tries.
     """
     __tablename__ = "funding_enrichment_queue"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "dedup_key", name="uq_funding_enrichment_queue_tenant_dedup"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -66,7 +77,7 @@ class FundingEnrichmentQueue(Base):
     ein: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The org's eventual ProspectSignal dedup_key — UNIQUE so promotion can
     # never double-emit against the prospect_signals unique constraint.
-    dedup_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    dedup_key: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     org_name: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str | None] = mapped_column(Text, nullable=True)
     ntee_code: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -52,3 +52,8 @@ def tenant_scope(
     finally:
         current_user_id.reset(t2)
         current_tenant_id.reset(t1)
+
+
+def resolve_tenant(tenant_id: uuid.UUID | None = None) -> uuid.UUID | None:
+    """An explicit tenant id, else the ambient one."""
+    return tenant_id if tenant_id is not None else current_tenant_id.get()

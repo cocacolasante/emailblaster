@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,10 +21,21 @@ from app.database import Base
 class WebhookEvent(Base):
     __tablename__ = "webhook_events"
     __table_args__ = (
-        UniqueConstraint("provider", "event_id", name="uq_webhook_events_provider_event"),
+        # Scoped by workspace: two tenants' Unipile workspaces may reuse event
+        # ids.  tenant_id stays NULL for legacy / unattributed deliveries, so
+        # NULLS NOT DISTINCT keeps those deduped too.  (Deliberately no
+        # TenantMixin / RLS: the dedup insert runs before tenant resolution.)
+        UniqueConstraint(
+            "provider", "tenant_id", "event_id",
+            name="uq_webhook_events_provider_event",
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True,
+    )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     event_id: Mapped[str] = mapped_column(Text, nullable=False)
     received_at: Mapped[datetime] = mapped_column(

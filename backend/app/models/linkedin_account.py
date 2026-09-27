@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.tenancy.mixin import TenantMixin
 
 if TYPE_CHECKING:
     from app.models.campaign import Campaign
@@ -23,7 +24,7 @@ class LinkedInAccountStatus(str, enum.Enum):
     RESTRICTED = "restricted"  # account is in LinkedIn's penalty box; stop all actions
 
 
-class LinkedInAccount(Base):
+class LinkedInAccount(TenantMixin, Base):
     """A user-connected LinkedIn account.
 
     All accounts are Unipile-managed: Unipile owns the LinkedIn session

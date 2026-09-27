@@ -72,7 +72,7 @@ async def _emit(session: AsyncSession, org: Org, provider: str, job: dict, now: 
                                                   for k, v in job.items()}},
             dedupe_key=f"ats:{provider}:{job['id']}:{org.id}",
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_nothing(index_elements=["tenant_id", "dedupe_key"])
     )
     result = await session.execute(stmt)
     return "new" if result.rowcount else "deduped"

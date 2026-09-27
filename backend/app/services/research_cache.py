@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,7 +70,7 @@ async def lookup(session: AsyncSession, email: str) -> dict[str, Any] | None:
     e = _canon(email)
     if not e:
         return None
-    row = await session.get(ResearchCache, e)
+    row = await session.scalar(select(ResearchCache).where(ResearchCache.email == e))
     if row is None:
         return None
     age = datetime.now(timezone.utc) - row.refreshed_at
@@ -89,7 +90,7 @@ async def upsert(session: AsyncSession, email: str, research_data: dict[str, Any
         research_data=research_data,
         refreshed_at=datetime.now(timezone.utc),
     ).on_conflict_do_update(
-        index_elements=["email"],
+        index_elements=["tenant_id", "email"],
         set_={
             "research_data": research_data,
             "refreshed_at": datetime.now(timezone.utc),

@@ -340,3 +340,11 @@ async def test_cross_origin_state_change_blocked(client):
 async def test_auth_config_is_public(anon_client, path):
     resp = await anon_client.get(path)
     assert resp.status_code == 200 and "allow_signup" in resp.json()
+
+
+async def test_login_rate_limited(anon_client):
+    for _ in range(10):
+        r = await anon_client.post("/auth/login", json={"email": "x@y.co", "password": "wrong-pass"})
+        assert r.status_code == 401
+    r = await anon_client.post("/auth/login", json={"email": "x@y.co", "password": "wrong-pass"})
+    assert r.status_code == 429
