@@ -47,3 +47,5 @@ backend/_linkedin_profiles/
 _linkedin_profiles/
 celerybeat-schedule
 backend/celerybeat-schedule
+backups/
+secrets/

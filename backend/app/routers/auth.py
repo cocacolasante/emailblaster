@@ -28,6 +28,7 @@ from app.auth.deps import (
     hash_token,
     load_live_session,
     new_token,
+    require_session,
     set_session_cookie,
 )
 from app.config import settings
@@ -332,7 +333,7 @@ async def me(
 @router.patch("/me", response_model=MeResponse)
 async def update_me(
     body: UpdateMeRequest,
-    identity: Identity = Depends(get_identity),
+    identity: Identity = Depends(require_session),
     db: AsyncSession = Depends(get_public_db),
 ) -> MeResponse:
     user = await db.get(User, identity.user_id)
@@ -366,7 +367,7 @@ async def update_me(
 @router.post("/switch-workspace", response_model=MeResponse)
 async def switch_workspace(
     body: SwitchWorkspaceRequest,
-    identity: Identity = Depends(get_identity),
+    identity: Identity = Depends(require_session),
     db: AsyncSession = Depends(get_public_db),
 ) -> MeResponse:
     row = (

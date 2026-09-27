@@ -46,6 +46,7 @@ services:
       # DATABASE_URL above stays the OWNER role for Alembic + bootstrap_db.
       APP_DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-eb_app}:${APP_DB_PASSWORD:-eb_app_dev_password}@postgres:5432/${POSTGRES_DB:-emailblaster}
       ENCRYPTION_KEY_OLD: ${ENCRYPTION_KEY_OLD:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       # --- Multi-tenancy / auth ---
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
@@ -168,6 +169,7 @@ services:
       # DATABASE_URL above stays the OWNER role for Alembic + bootstrap_db.
       APP_DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-eb_app}:${APP_DB_PASSWORD:-eb_app_dev_password}@postgres:5432/${POSTGRES_DB:-emailblaster}
       ENCRYPTION_KEY_OLD: ${ENCRYPTION_KEY_OLD:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       ANTHROPIC_RESEARCH_MODEL: ${ANTHROPIC_RESEARCH_MODEL:-claude-haiku-4-5-20251001}
@@ -249,6 +251,7 @@ services:
       # DATABASE_URL above stays the OWNER role for Alembic + bootstrap_db.
       APP_DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-eb_app}:${APP_DB_PASSWORD:-eb_app_dev_password}@postgres:5432/${POSTGRES_DB:-emailblaster}
       ENCRYPTION_KEY_OLD: ${ENCRYPTION_KEY_OLD:-}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       REDIS_URL: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       IMAP_POLL_INTERVAL_MINUTES: ${IMAP_POLL_INTERVAL_MINUTES:-20}

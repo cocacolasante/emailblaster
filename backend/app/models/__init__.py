@@ -40,6 +40,7 @@ from app.models.crm import (
     Pipeline,
     PipelineStage,
 )
+from app.models.api_key import ApiKey
 from app.models.report import ReportDefinition
 from app.models.tenant_keys import TenantProviderKey
 from app.models.email_event import EmailEvent, EmailEventType
@@ -103,6 +104,7 @@ from app.models.suppression import Suppression, SuppressionReason, canonical_ema
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
+    "ApiKey",
     "TenantProviderKey",
     "AuthToken",
     "AuthTokenPurpose",
@@ -210,3 +212,8 @@ _install_owner_fk_ddl(_Base.metadata)
 from app.tenancy.worker import install_tenant_of_ddl as _install_tenant_of_ddl  # noqa: E402
 
 _install_tenant_of_ddl(_Base.metadata)
+
+# API-key verifier (SECURITY DEFINER), for create_all.
+from app.tenancy.api_key_sql import install_api_key_ddl as _install_api_key_ddl  # noqa: E402
+
+_install_api_key_ddl(_Base.metadata)

@@ -285,6 +285,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-change-me"
     FRONTEND_URL: str = "http://localhost:5173"
     WEBHOOK_BASE_URL: str = "http://localhost:8000"
+    # Public HTTPS origin (named Cloudflare tunnel) that agents like Muse
+    # reach — the MCP endpoint is {PUBLIC_ORIGIN}/mcp.  Empty ⇒ fall back to
+    # WEBHOOK_BASE_URL.
+    PUBLIC_ORIGIN: str = ""
 
     # --- Multi-tenancy / auth ---
     # Runtime DB URL for the NON-OWNER role that Postgres RLS applies to.

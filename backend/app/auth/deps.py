@@ -45,6 +45,9 @@ class Identity:
     tenant: Tenant
     membership: Membership
     session_id: uuid.UUID | None = None
+    # "session" (browser cookie) or "api_key" (agent bearer key).
+    via: str = "session"
+    api_key_id: uuid.UUID | None = None
 
     @property
     def user_id(self) -> uuid.UUID:
@@ -133,11 +136,53 @@ async def load_live_session(db: AsyncSession, raw_token: str) -> tuple[UserSessi
     return (row[0], row[1]) if row else None
 
 
+def bearer_api_key(request: Request) -> str | None:
+    """An ``Authorization: Bearer eb_…`` workspace API key, if presented."""
+    from app.services.api_keys import parse_bearer
+
+    return parse_bearer(request.headers.get("authorization"))
+
+
+async def authenticate_api_key(
+    token: str, request: Request, factory: async_sessionmaker[AsyncSession],
+) -> Identity:
+    """Resolve an agent's bearer key.  The key acts as the member who
+    created it, in that member's workspace."""
+    from app.services.api_keys import verify
+
+    async with factory() as db:
+        found = await verify(db, token)
+        if found is None:
+            raise HTTPException(
+                status_code=401, detail="invalid or revoked API key",
+                headers={"WWW-Authenticate": 'Bearer realm="emailblaster"'},
+            )
+        key_id, tenant_id, user_id = found
+        user = await db.get(User, user_id)
+        tenant = await db.get(Tenant, tenant_id)
+        membership = (
+            await db.execute(
+                select(Membership).where(
+                    Membership.tenant_id == tenant_id, Membership.user_id == user_id,
+                )
+            )
+        ).scalar_one()
+        await db.commit()  # persists last_used_at stamped by the verifier
+    identity = Identity(user=user, tenant=tenant, membership=membership,
+                        via="api_key", api_key_id=key_id)
+    request.state.identity = identity
+    return identity
+
+
 async def authenticate_request(
     request: Request, factory: async_sessionmaker[AsyncSession],
 ) -> Identity:
-    """Resolve the session cookie to an Identity.  401 without a live
-    session / membership; 403 when the workspace is suspended."""
+    """Resolve the session cookie (or an agent's bearer API key) to an
+    Identity.  401 without a live session / membership / key; 403 when the
+    workspace is suspended."""
+    token = bearer_api_key(request)
+    if token is not None:
+        return await authenticate_api_key(token, request, factory)
     raw = request.cookies.get(SESSION_COOKIE_NAME)
     if not raw:
         raise HTTPException(status_code=401, detail="not authenticated")
@@ -193,8 +238,18 @@ async def bind_identity(
                 pass
 
 
+def require_session(identity: Identity = Depends(get_identity)) -> Identity:
+    """A signed-in person, not an agent key.  Guards anything that manages
+    credentials, the team, or the workspace itself."""
+    if identity.via != "session":
+        raise HTTPException(status_code=403, detail="this action needs a signed-in person, not an API key")
+    return identity
+
+
 def require_manager(identity: Identity = Depends(get_identity)) -> Identity:
     """Owner or admin of the active workspace."""
+    if identity.via != "session":
+        raise HTTPException(status_code=403, detail="this action needs a signed-in person, not an API key")
     if not identity.is_manager:
         raise HTTPException(status_code=403, detail="owner or admin role required")
     return identity
@@ -212,6 +267,7 @@ __all__ = [
     "load_live_session",
     "new_token",
     "require_manager",
+    "require_session",
     "session_expiry",
     "set_session_cookie",
 ]

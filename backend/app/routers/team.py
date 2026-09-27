@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.deps import Identity, get_identity, hash_token, new_token, require_manager
+from app.auth.deps import Identity, get_identity, hash_token, new_token, require_manager, require_session
 from app.config import settings
 from app.database import get_db
 from app.models.identity import (
@@ -153,7 +153,7 @@ async def update_member_role(
 async def remove_member(
     user_id: uuid.UUID,
     reassign_to: uuid.UUID | None = Query(default=None),
-    identity: Identity = Depends(get_identity),
+    identity: Identity = Depends(require_session),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Remove a member (managers), or leave the workspace (self).

@@ -65,7 +65,7 @@ def test_every_route_is_authenticated_or_allowlisted():
     from app.database import get_db, get_identity, get_tenant_context
     from app.main import app
 
-    public_prefixes = ("/auth/", "/webhooks/", "/unsubscribe/", "/health", "/docs", "/openapi", "/redoc")
+    public_prefixes = ("/auth/", "/webhooks/", "/unsubscribe/", "/health", "/docs", "/openapi", "/redoc", "/mcp")
 
     def deps(dependant):
         for d in dependant.dependencies:

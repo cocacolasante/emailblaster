@@ -1,0 +1,21 @@
+# A stable public HTTPS origin on a domain we own — for Muse (MCP), provider
+# webhooks, and unsubscribe links.
+#
+#   ./scripts/named-tunnel-setup.sh          # once, after `cloudflared tunnel login`
+#   docker compose -f docker-compose.yml -f docker-compose.named-tunnel.yml up -d
+#
+# The tunnel only forwards /mcp, /webhooks/*, /unsubscribe/* and /health
+# (see secrets/cloudflared/config.yml); everything else 404s at the edge.
+# Unlike ngrok/quick tunnels the hostname never changes, so the MCP endpoint
+# registered in Muse and the Unipile webhook URLs stay valid across restarts.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:2025.8.1
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      # Written by scripts/named-tunnel-setup.sh.  Gitignored: credentials.json
+      # is the tunnel's private key.
+      - ./secrets/cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - backend
+    restart: unless-stopped

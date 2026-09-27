@@ -11,6 +11,8 @@ from app.services.credentials import MissingCredential
 from app.services.ownership import NotAMember
 from app.routers import (
     agent,
+    api_keys,
+    mcp,
     auth,
     owners,
     team,
@@ -187,8 +189,11 @@ async def health() -> dict:
 # auth (login/signup/invite) and webhooks/unsubscribe are public.
 _AUTHED = [Depends(get_tenant_context)]
 app.include_router(auth.router)
+# MCP authenticates its own bearer API key (agents have no session cookie).
+app.include_router(mcp.router)
 app.include_router(team.router, dependencies=_AUTHED)
 app.include_router(owners.router, dependencies=_AUTHED)
+app.include_router(api_keys.router, dependencies=_AUTHED)
 app.include_router(campaigns.router, dependencies=_AUTHED)
 app.include_router(leads.router, dependencies=_AUTHED)
 app.include_router(preview.router, dependencies=_AUTHED)
