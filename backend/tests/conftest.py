@@ -23,6 +23,10 @@ ADMIN_DATABASE_URL = os.environ.get(
 TEST_DB_NAME = "emailblaster_test"
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+# NEVER inherit the compose runtime-role URL: it points at the real DB.
+# Tests run on the owner role (app-level scoping); RLS is exercised by
+# test_rls_isolation.py against its own database + role.
+os.environ["APP_DATABASE_URL"] = ""
 _force_env("REDIS_URL", "redis://localhost:6379/15")
 _force_env("ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ["SECRET_KEY"] = "test-secret"

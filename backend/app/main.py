@@ -151,6 +151,33 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.on_event("startup")
+async def _warn_if_rls_bypassed() -> None:
+    """Row-level security only binds non-owner roles.  Shout if the runtime
+    connection is the table owner / superuser / BYPASSRLS — tenant
+    isolation then rests on app-level scoping alone."""
+    from sqlalchemy import text
+
+    from app.database import engine
+
+    try:
+        async with engine.connect() as conn:
+            row = (await conn.execute(text(
+                "SELECT r.rolsuper OR r.rolbypassrls, "
+                "       COALESCE((SELECT tableowner FROM pg_tables WHERE tablename = 'leads'), '') "
+                "       = current_user "
+                "FROM pg_roles r WHERE r.rolname = current_user"
+            ))).first()
+    except Exception as exc:  # noqa: BLE001 — never block boot on the check
+        logger.warning("RLS role check skipped: %s", exc)
+        return
+    if row and (row[0] or row[1]):
+        logger.warning(
+            "Runtime DB role bypasses row-level security (owner/superuser/BYPASSRLS). "
+            "Set APP_DATABASE_URL to the non-owner role created by app.scripts.bootstrap_db."
+        )
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": app.version}

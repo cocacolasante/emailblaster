@@ -35,10 +35,26 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # bootstrap_db creates/refreshes the non-owner runtime role (idempotent)
+    # before the API starts.  Run migrations with:
+    #   docker compose run --rm backend alembic upgrade head
+    command: sh -c "python -m app.scripts.bootstrap_db && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      # Non-owner runtime role (Postgres row-level security applies to it).
+      # DATABASE_URL above stays the OWNER role for Alembic + bootstrap_db.
+      APP_DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-eb_app}:${APP_DB_PASSWORD:-eb_app_dev_password}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      ENCRYPTION_KEY_OLD: ${ENCRYPTION_KEY_OLD:-}
+      # --- Multi-tenancy / auth ---
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      PLATFORM_BREVO_API_KEY: ${PLATFORM_BREVO_API_KEY:-}
+      PLATFORM_SENDER_EMAIL: ${PLATFORM_SENDER_EMAIL:-}
+      PLATFORM_SENDER_NAME: ${PLATFORM_SENDER_NAME:-Email Blaster}
+      BOOTSTRAP_OWNER_EMAIL: ${BOOTSTRAP_OWNER_EMAIL:-}
+      BOOTSTRAP_TENANT_NAME: ${BOOTSTRAP_TENANT_NAME:-}
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
@@ -145,6 +161,10 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      # Non-owner runtime role (Postgres row-level security applies to it).
+      # DATABASE_URL above stays the OWNER role for Alembic + bootstrap_db.
+      APP_DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-eb_app}:${APP_DB_PASSWORD:-eb_app_dev_password}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      ENCRYPTION_KEY_OLD: ${ENCRYPTION_KEY_OLD:-}
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
@@ -236,6 +256,10 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-emailblaster}:${POSTGRES_PASSWORD:-emailblaster}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      # Non-owner runtime role (Postgres row-level security applies to it).
+      # DATABASE_URL above stays the OWNER role for Alembic + bootstrap_db.
+      APP_DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-eb_app}:${APP_DB_PASSWORD:-eb_app_dev_password}@postgres:5432/${POSTGRES_DB:-emailblaster}
+      ENCRYPTION_KEY_OLD: ${ENCRYPTION_KEY_OLD:-}
       REDIS_URL: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       IMAP_POLL_INTERVAL_MINUTES: ${IMAP_POLL_INTERVAL_MINUTES:-20}

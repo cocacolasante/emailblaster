@@ -140,7 +140,10 @@ def upgrade() -> None:
     if owner_email:
         user_id = bind.execute(
             sa.text("INSERT INTO users (email, name) VALUES (:e, :n) RETURNING id"),
-            {"e": owner_email, "n": os.environ.get("OWNER_NOTIFY_NAME") or None},
+            # "Operator" was the old placeholder default — not a real name.
+            {"e": owner_email,
+             "n": (os.environ.get("OWNER_NOTIFY_NAME") or "").strip() not in ("", "Operator")
+                  and os.environ["OWNER_NOTIFY_NAME"].strip() or None},
         ).scalar()
         bind.execute(
             sa.text(
