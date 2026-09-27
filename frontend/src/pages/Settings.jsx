@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   listAccounts,
@@ -24,6 +25,8 @@ import ConnectLinkedInModal from '../components/ConnectLinkedInModal.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { Tabs } from '../components/ui.jsx';
 import IntentTab from './IntentSettings.jsx';
+import WorkspaceTab from './WorkspaceSettings.jsx';
+import ProfileTab from './ProfileSettings.jsx';
 
 const STATUS_LABEL = {
   untested: 'Untested',
@@ -776,8 +779,40 @@ function DiscoveryTab() {
 }
 
 
+const SETTINGS_TABS = [
+  { key: 'workspace', label: 'Workspace' },
+  { key: 'profile', label: 'Profile' },
+  { key: 'inboxes', label: 'Connected inboxes' },
+  { key: 'linkedin', label: 'LinkedIn accounts' },
+  { key: 'agent', label: 'Agent' },
+  { key: 'discovery', label: 'Discovery' },
+  { key: 'intent', label: 'Intent engine' },
+  { key: 'api', label: 'API status' },
+];
+
+const DEFAULT_TAB = 'inboxes';
+
+// Deep-link aliases for ?tab= (e.g. the "integration not configured" toast
+// links to ?tab=integrations — provider status lives on the API status tab).
+const TAB_ALIASES = { integrations: 'api' };
+
+export function resolveSettingsTab(raw) {
+  const key = TAB_ALIASES[raw] || raw;
+  return SETTINGS_TABS.some((t) => t.key === key) ? key : DEFAULT_TAB;
+}
+
 export default function Settings() {
-  const [tab, setTab] = useState('inboxes');
+  // The active tab lives in the URL (?tab=workspace) so other surfaces (the
+  // user menu, toasts) can deep-link straight to a tab.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = resolveSettingsTab(searchParams.get('tab'));
+  const setTab = (key) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', key);
+      return next;
+    }, { replace: true });
+  };
 
   return (
     <div className="p-8 max-w-[900px] mx-auto">
@@ -787,15 +822,10 @@ export default function Settings() {
         className="mb-6"
         active={tab}
         onChange={setTab}
-        tabs={[
-          { key: 'inboxes', label: 'Connected inboxes' },
-          { key: 'linkedin', label: 'LinkedIn accounts' },
-          { key: 'agent', label: 'Agent' },
-          { key: 'discovery', label: 'Discovery' },
-          { key: 'intent', label: 'Intent engine' },
-          { key: 'api', label: 'API status' },
-        ]}
+        tabs={SETTINGS_TABS}
       />
+      {tab === 'workspace' && <WorkspaceTab />}
+      {tab === 'profile' && <ProfileTab />}
       {tab === 'inboxes' && <ConnectedInboxesTab />}
       {tab === 'linkedin' && <LinkedInAccountsTab />}
       {tab === 'agent' && <AgentTab />}

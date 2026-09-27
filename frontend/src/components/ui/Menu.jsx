@@ -13,8 +13,13 @@ import { popVariants } from '../../utils/motion.js';
  *   `props` (onClick + aria) onto your button.  Or pass `label` for a default.
  * @param items   [{ label, onSelect, danger, disabled, icon }]
  * @param align   'left' | 'right'
+ * @param placement 'bottom' (default) | 'top' — open above the trigger (e.g.
+ *   a menu pinned to the bottom of the sidebar).
+ * @param className extra classes for the root wrapper (e.g. `w-full`).
  */
-export function Menu({ trigger, label, items = [], align = 'left', testId = 'menu' }) {
+export function Menu({
+  trigger, label, items = [], align = 'left', placement = 'bottom', className = '', testId = 'menu',
+}) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const rootRef = useRef(null);
@@ -62,7 +67,7 @@ export function Menu({ trigger, label, items = [], align = 'left', testId = 'men
   };
 
   return (
-    <div className="relative inline-flex" ref={rootRef}>
+    <div className={`relative inline-flex ${className}`} ref={rootRef}>
       {trigger ? trigger({ open, props: triggerProps }) : (
         <button
           type="button" {...triggerProps}
@@ -79,8 +84,8 @@ export function Menu({ trigger, label, items = [], align = 'left', testId = 'men
             variants={popVariants}
             initial="hidden" animate="visible" exit="exit"
             onKeyDown={onMenuKey}
-            className={`absolute z-50 mt-1 min-w-[10rem] rounded-card border border-slate-200 bg-white shadow-overlay py-1
-              ${align === 'right' ? 'right-0' : 'left-0'} top-full`}
+            className={`absolute z-50 min-w-[10rem] rounded-card border border-slate-200 bg-white shadow-overlay py-1
+              ${align === 'right' ? 'right-0' : 'left-0'} ${placement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
           >
             {items.map((it, i) => (
               <button

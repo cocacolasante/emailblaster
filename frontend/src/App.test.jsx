@@ -82,19 +82,19 @@ function renderAt(path) {
 }
 
 describe('Phase 1 routing', () => {
-  it('renders nav on every route', () => {
+  it('renders nav on every route', async () => {
     renderAt('/');
-    expect(screen.getByTestId('nav')).toBeInTheDocument();
+    expect(await screen.findByTestId('nav')).toBeInTheDocument();
   });
 
-  it('renders Campaigns page at /', () => {
+  it('renders Campaigns page at /', async () => {
     renderAt('/');
-    expect(screen.getByRole('heading', { name: /campaigns/i, level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /campaigns/i, level: 1 })).toBeInTheDocument();
   });
 
-  it('renders CampaignCreate at /campaigns/new', () => {
+  it('renders CampaignCreate at /campaigns/new', async () => {
     renderAt('/campaigns/new');
-    expect(screen.getByRole('heading', { name: /new campaign/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /new campaign/i })).toBeInTheDocument();
   });
 
   it('renders CampaignDetail with id param', async () => {
@@ -114,8 +114,8 @@ describe('Phase 1 routing', () => {
     expect(await screen.findByRole('heading', { name: /^analytics$/i })).toBeInTheDocument();
   });
 
-  it('renders Settings at /settings', () => {
+  it('renders Settings at /settings', async () => {
     renderAt('/settings');
-    expect(screen.getByRole('heading', { name: /settings/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /settings/i })).toBeInTheDocument();
   });
 });

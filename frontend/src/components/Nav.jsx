@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { Menu } from './ui.jsx';
+import { useAuth } from '../hooks/useAuth.js';
+import { useToast } from './Toast.jsx';
 
 const ITEMS = [
   {
@@ -141,6 +144,97 @@ function ChevronIcon({ collapsed }) {
 }
 
 
+export function initialsFor(user) {
+  const source = (user?.display_name || user?.name || user?.email || '').trim();
+  if (!source) return '?';
+  const base = source.includes('@') ? source.split('@')[0] : source;
+  const parts = base.split(/[\s._-]+/).filter(Boolean);
+  const letters = parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : base.slice(0, 2);
+  return letters.toUpperCase();
+}
+
+function CheckIcon() {
+  return (
+    <svg className="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+/**
+ * Current user + workspace, pinned to the bottom of the sidebar.  Opens a
+ * menu (upwards) with the workspace switcher (only when the user belongs to
+ * more than one), a link to Profile & workspace settings, and Log out.
+ */
+function UserMenu({ collapsed }) {
+  const { user, workspace, memberships, logout, switchWorkspace } = useAuth();
+  const navigate = useNavigate();
+  const toast = useToast();
+  if (!user) return null;
+
+  const displayName = user.display_name || user.name || user.email;
+  const initials = initialsFor(user);
+
+  const items = [];
+  if (memberships.length > 1) {
+    memberships.forEach((m) => {
+      const current = m.tenant_id === workspace?.id;
+      items.push({
+        label: m.tenant_name,
+        icon: current ? <CheckIcon /> : <span className="w-4 h-4" aria-hidden="true" />,
+        disabled: current,
+        onSelect: async () => {
+          try {
+            await switchWorkspace(m.tenant_id);
+          } catch {
+            toast.error(`Couldn't switch to ${m.tenant_name}.`);
+          }
+        },
+      });
+    });
+  }
+  items.push({ label: 'Profile & workspace', onSelect: () => navigate('/settings?tab=workspace') });
+  items.push({ label: 'Log out', danger: true, onSelect: () => logout() });
+
+  return (
+    <div className={`border-t border-slate-800 ${collapsed ? 'px-2 py-3' : 'px-3 py-3'}`}>
+      <Menu
+        testId="user-menu"
+        placement="top"
+        className="w-full"
+        items={items}
+        trigger={({ props }) => (
+          <button
+            type="button"
+            {...props}
+            aria-label={`Account menu for ${displayName}`}
+            title={collapsed ? `${displayName} · ${workspace?.name || ''}` : undefined}
+            className={`w-full flex items-center ${collapsed ? 'justify-center' : 'gap-3'} rounded-lg p-1.5 text-left
+              hover:bg-slate-800 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`}
+          >
+            <span
+              data-testid="user-avatar"
+              className="w-8 h-8 shrink-0 rounded-full bg-brand-600 text-white text-xs font-semibold flex items-center justify-center"
+              aria-hidden="true"
+            >
+              {initials}
+            </span>
+            {!collapsed && (
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-white truncate">{displayName}</span>
+                <span className="block text-xs text-slate-400 truncate" data-testid="user-workspace">
+                  {workspace?.name}
+                </span>
+              </span>
+            )}
+          </button>
+        )}
+      />
+    </div>
+  );
+}
+
+
 export default function Nav() {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -205,6 +299,7 @@ export default function Nav() {
           ))}
         </ul>
       </div>
+      <UserMenu collapsed={collapsed} />
     </nav>
   );
 }
