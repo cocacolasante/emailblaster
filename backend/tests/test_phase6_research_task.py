@@ -108,8 +108,8 @@ async def test_fast_mode_runs_merged_research_and_hunter_only(db_session):
     assert rd["email_deliverable"] is True
 
 
-async def test_deep_mode_invokes_apollo_when_key_set(db_session, monkeypatch):
-    monkeypatch.setattr("app.workers.research.settings.APOLLO_API_KEY", "set-key")
+async def test_deep_mode_invokes_apollo_when_key_set(set_creds, db_session, monkeypatch):
+    set_creds("apollo", api_key="set-key")
     campaign = await _make_campaign(db_session, mode=ResearchMode.DEEP)
     lead = await _make_lead(db_session, campaign)
 
@@ -140,8 +140,8 @@ async def test_deep_mode_invokes_apollo_when_key_set(db_session, monkeypatch):
     assert rd["quality"] == "partial"
 
 
-async def test_deep_mode_skips_apollo_when_no_key(db_session, monkeypatch):
-    monkeypatch.setattr("app.workers.research.settings.APOLLO_API_KEY", "")
+async def test_deep_mode_skips_apollo_when_no_key(set_creds, db_session, monkeypatch):
+    set_creds("apollo", api_key="")
     campaign = await _make_campaign(db_session, mode=ResearchMode.DEEP)
     lead = await _make_lead(db_session, campaign)
 

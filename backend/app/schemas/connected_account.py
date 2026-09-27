@@ -32,7 +32,7 @@ class ConnectedAccountUpdate(BaseModel):
     # Setting True flips this account to the workspace default sender —
     # the router clears the flag on every other row in the same
     # transaction.  Setting False just clears it on this one (the
-    # workspace falls back to settings.BREVO_SENDER_EMAIL).
+    # workspace falls back to the workspace Brevo sender).
     is_default_sender: bool | None = None
     # Signature edits are allowed at any time; empty string or null
     # clears the signature so no append happens on subsequent sends.

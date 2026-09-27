@@ -31,9 +31,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import redis.asyncio as aioredis
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.services import brevo
 from app.services.brevo_events import process_event
 from app.workers.celery_app import celery_app
@@ -73,7 +74,7 @@ def _parse_event_date(raw: Any) -> datetime | None:
 async def _poll_async() -> dict[str, int]:
     counts = {"fetched": 0, "processed": 0, "deduped_or_unmatched": 0}
     redis_client = _new_redis()
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         now = _now()
         floor = now - timedelta(hours=LOOKBACK_FLOOR_HOURS)

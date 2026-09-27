@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import credentials
 from app.database import get_db
 from app.models import (
     Campaign, CampaignStatus, IcpIntentProfile, Lead, Org, OrgIntentScore,
@@ -203,7 +204,7 @@ async def status(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
                 Lead.campaign_id == draft.id, Lead.send_status == SendStatus.PENDING)
         ) or 0
     return {
-        "adzuna_configured": bool(settings.ADZUNA_APP_ID and settings.ADZUNA_APP_KEY),
+        "adzuna_configured": credentials.is_configured("adzuna"),
         "active_profile_id": active.id if active else None,
         "orgs_total": orgs_total,
         "signals_by_type": {t.value: c for t, c in by_type},

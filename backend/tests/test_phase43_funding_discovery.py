@@ -602,14 +602,14 @@ async def test_signals_list_exposes_source_and_filters(client, db_session):
 # ---------------------------------------------------------------------------
 
 
-async def test_funding_sources_list_seeds_from_env(client, db_session, monkeypatch):
+async def test_funding_sources_list_seeds_from_env(set_creds, client, db_session, monkeypatch):
     monkeypatch.setattr(funding_signals.settings, "USASPENDING_ENABLED", True)
     monkeypatch.setattr(funding_signals.settings, "USASPENDING_LOOKBACK_DAYS", 7)
     monkeypatch.setattr(funding_signals.settings, "IRS_BMF_ENABLED", True)
     monkeypatch.setattr(funding_signals.settings, "IRS_BMF_STATES", ["PA", "NJ"])
     # router reads settings.HUNTER_API_KEY for the hunter_configured flag
     from app.routers import signals as signals_router
-    monkeypatch.setattr(signals_router.settings, "HUNTER_API_KEY", "")
+    set_creds("hunter", api_key="")
 
     resp = await client.get("/signals/funding/sources")
     assert resp.status_code == 200, resp.text
@@ -766,10 +766,10 @@ async def test_signal_draft_409_without_contact(client, db_session):
     assert "nothing to email" in resp.json()["detail"]
 
 
-async def test_signal_send_logs_activity_and_actions_signal(client, db_session, monkeypatch):
+async def test_signal_send_logs_activity_and_actions_signal(set_creds, client, db_session, monkeypatch):
     signal, lead = await _signal_with_staged_lead(db_session)
     # No real Brevo call — stub the shared send core's brevo.send_email.
-    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    set_creds("brevo", api_key="k")
     monkeypatch.setattr(
         "app.services.outreach.brevo.send_email",
         AsyncMock(return_value="msg-sig-1"),
@@ -803,7 +803,7 @@ async def test_signal_send_logs_activity_and_actions_signal(client, db_session, 
     assert signal.status.value == "actioned"
 
 
-async def test_signal_send_passes_chosen_sender(client, db_session, monkeypatch):
+async def test_signal_send_passes_chosen_sender(set_creds, client, db_session, monkeypatch):
     from app.models import ConnectedAccount
     from app.services import encryption
 
@@ -817,7 +817,7 @@ async def test_signal_send_passes_chosen_sender(client, db_session, monkeypatch)
     db_session.add(acc)
     await db_session.commit()
 
-    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    set_creds("brevo", api_key="k")
     send_mock = AsyncMock(return_value="msg-sig-2")
     monkeypatch.setattr("app.services.outreach.brevo.send_email", send_mock)
 
@@ -833,7 +833,7 @@ async def test_signal_send_passes_chosen_sender(client, db_session, monkeypatch)
     assert "CSuite" in kwargs["html_body"]
 
 
-async def test_signal_send_signature_override(client, db_session, monkeypatch):
+async def test_signal_send_signature_override(set_creds, client, db_session, monkeypatch):
     """A per-send signature override replaces the account's signature."""
     from app.models import ConnectedAccount
     from app.services import encryption
@@ -848,7 +848,7 @@ async def test_signal_send_signature_override(client, db_session, monkeypatch):
     db_session.add(acc)
     await db_session.commit()
 
-    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    set_creds("brevo", api_key="k")
     send_mock = AsyncMock(return_value="msg-ovr")
     monkeypatch.setattr("app.services.outreach.brevo.send_email", send_mock)
 
@@ -864,11 +864,11 @@ async def test_signal_send_signature_override(client, db_session, monkeypatch):
     assert "Account Default Sig" not in html        # override wins
 
 
-async def test_signal_send_brevo_failure_502(client, db_session, monkeypatch):
+async def test_signal_send_brevo_failure_502(set_creds, client, db_session, monkeypatch):
     import httpx as _httpx
 
     signal, lead = await _signal_with_staged_lead(db_session, email="ed3@hh.org")
-    monkeypatch.setattr("app.services.outreach.settings.BREVO_API_KEY", "k")
+    set_creds("brevo", api_key="k")
 
     def _raise(*a, **k):
         raise _httpx.HTTPError("boom")

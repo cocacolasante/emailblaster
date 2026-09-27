@@ -26,9 +26,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     AgentActionStatus,
     AgentActionType,
@@ -122,7 +123,7 @@ async def sweep_reminders_session(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _sweep_reminders_async() -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             counts = await sweep_reminders_session(session)
@@ -142,7 +143,7 @@ def sweep_reminders() -> dict[str, Any]:
 async def _sweep_stale_opps_async() -> dict[str, Any]:
     if not settings.AGENT_ENABLED:
         return {"skipped": "agent_disabled"}
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             result = await agent_core.flag_stale_opportunities(session)

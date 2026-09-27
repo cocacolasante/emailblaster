@@ -6,7 +6,8 @@ from typing import Any
 
 import httpx
 
-from app.config import settings
+from app.services import credentials
+from app.services.credentials import BrevoCreds
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,13 @@ _BLOCKED_PAGE_LIMIT = 100  # Brevo caps blockedContacts at 100 per page
 # doing < 500 emails/day this always fits in one page; the worker still
 # paginates in case of a backlog catch-up after worker downtime.
 _EVENTS_PAGE_LIMIT = 5000
+
+
+def _creds(creds: BrevoCreds | None) -> BrevoCreds:
+    """Explicit creds (platform mail) or the current workspace's."""
+    if creds is not None:
+        return creds
+    return credentials.require("brevo")  # type: ignore[return-value]
 
 
 def _wrap_message_id(message_id: str | None) -> str | None:
@@ -53,6 +61,7 @@ async def send_email(
     campaign_id: str,
     lead_id: str,
     in_reply_to: str | None = None,
+    creds: BrevoCreds | None = None,
 ) -> str:
     """Send a transactional email via Brevo. Returns the Brevo messageId.
 
@@ -61,11 +70,11 @@ async def send_email(
     mail client threads this message as a reply to that email rather than
     showing it as a new thread.
 
-    Raises httpx.HTTPStatusError on non-2xx response, or RuntimeError when
-    BREVO_API_KEY is not configured.
+    Raises httpx.HTTPStatusError on non-2xx response, or
+    ``credentials.MissingCredential`` (a RuntimeError) when the workspace
+    has no Brevo key.
     """
-    if not settings.BREVO_API_KEY:
-        raise RuntimeError("BREVO_API_KEY is not configured")
+    api_key = _creds(creds).api_key
 
     recipient: dict[str, Any] = {"email": to_email}
     if to_name:
@@ -102,7 +111,7 @@ async def send_email(
             BREVO_URL,
             json=payload,
             headers={
-                "api-key": settings.BREVO_API_KEY,
+                "api-key": api_key,
                 "accept": "application/json",
                 "content-type": "application/json",
             },
@@ -120,6 +129,7 @@ async def fetch_events(
     start_date: str,
     end_date: str,
     limit: int = _EVENTS_PAGE_LIMIT,
+    creds: BrevoCreds | None = None,
 ) -> list[dict[str, Any]]:
     """Pull transactional events from Brevo's statistics endpoint.
 
@@ -130,13 +140,11 @@ async def fetch_events(
 
     Paginates via ``offset`` until the response is short of ``limit``.
     """
-    if not settings.BREVO_API_KEY:
-        raise RuntimeError("BREVO_API_KEY is not configured")
-
+    api_key = _creds(creds).api_key
     out: list[dict[str, Any]] = []
     offset = 0
     headers = {
-        "api-key": settings.BREVO_API_KEY,
+        "api-key": api_key,
         "accept": "application/json",
     }
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
@@ -165,6 +173,7 @@ async def fetch_blocked_contacts(
     *,
     start_date: str | None = None,
     limit: int = _BLOCKED_PAGE_LIMIT,
+    creds: BrevoCreds | None = None,
 ) -> list[dict[str, Any]]:
     """Pull Brevo's blocked-contacts list (hard bounces / unsubscribes / spam /
     admin-blocked).  Each entry: ``{email, senderEmail, reason: {message,
@@ -174,12 +183,10 @@ async def fetch_blocked_contacts(
     day — used for incremental syncs so we don't re-scan the whole history
     every run.
     """
-    if not settings.BREVO_API_KEY:
-        raise RuntimeError("BREVO_API_KEY is not configured")
-
+    api_key = _creds(creds).api_key
     out: list[dict[str, Any]] = []
     offset = 0
-    headers = {"api-key": settings.BREVO_API_KEY, "accept": "application/json"}
+    headers = {"api-key": api_key, "accept": "application/json"}
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
         while True:
             params: dict[str, Any] = {"limit": limit, "offset": offset}

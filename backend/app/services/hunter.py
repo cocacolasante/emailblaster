@@ -11,8 +11,15 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services import credentials
 
 logger = logging.getLogger(__name__)
+
+
+def _api_key() -> str:
+    """The current workspace's Hunter key ('' when not configured)."""
+    c = credentials.get("hunter")
+    return c.api_key if c else ""  # type: ignore[union-attr]
 
 HUNTER_URL = "https://api.hunter.io/v2/email-verifier"
 HUNTER_FINDER_URL = "https://api.hunter.io/v2/email-finder"
@@ -21,14 +28,14 @@ _DELIVERABLE_STATUSES = {"valid", "accept_all", "webmail"}
 
 
 async def verify_email_hunter(email: str) -> dict[str, Any]:
-    if not settings.HUNTER_API_KEY:
+    if not _api_key():
         return {"deliverable": True, "score": 100}
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 HUNTER_URL,
-                params={"email": email, "api_key": settings.HUNTER_API_KEY},
+                params={"email": email, "api_key": _api_key()},
             )
             resp.raise_for_status()
             payload = (resp.json() or {}).get("data") or {}
@@ -52,14 +59,14 @@ async def domain_search(domain: str) -> list[dict[str, Any]]:
     when no key is set / no domain / the API hard-fails (permissive — an
     outage must never crash the feed).
     """
-    if not settings.HUNTER_API_KEY or not domain:
+    if not _api_key() or not domain:
         return []
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             # The free Hunter plan rejects limit > 10 with a 400, so this is
             # capped (configurable for paid plans via HUNTER_DOMAIN_SEARCH_LIMIT).
             resp = await client.get(HUNTER_DOMAIN_URL, params={
-                "domain": domain, "api_key": settings.HUNTER_API_KEY,
+                "domain": domain, "api_key": _api_key(),
                 "limit": settings.HUNTER_DOMAIN_SEARCH_LIMIT,
             })
             resp.raise_for_status()
@@ -97,7 +104,7 @@ async def find_email_hunter(
     is opt-in: without ``HUNTER_API_KEY`` this returns None, so the
     discovery worker falls back to the notification-only path.
     """
-    if not settings.HUNTER_API_KEY or not domain:
+    if not _api_key() or not domain:
         return None
 
     try:
@@ -105,7 +112,7 @@ async def find_email_hunter(
             if full_name:
                 resp = await client.get(HUNTER_FINDER_URL, params={
                     "domain": domain, "full_name": full_name,
-                    "api_key": settings.HUNTER_API_KEY,
+                    "api_key": _api_key(),
                 })
                 resp.raise_for_status()
                 d = (resp.json() or {}).get("data") or {}
@@ -124,7 +131,7 @@ async def find_email_hunter(
             # The free Hunter plan rejects limit > 10 with a 400, so this is
             # capped (configurable for paid plans via HUNTER_DOMAIN_SEARCH_LIMIT).
             resp = await client.get(HUNTER_DOMAIN_URL, params={
-                "domain": domain, "api_key": settings.HUNTER_API_KEY,
+                "domain": domain, "api_key": _api_key(),
                 "limit": settings.HUNTER_DOMAIN_SEARCH_LIMIT,
             })
             resp.raise_for_status()

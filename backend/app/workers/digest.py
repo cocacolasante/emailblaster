@@ -20,9 +20,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     AgentActionStatus,
     AgentActionType,
@@ -204,7 +205,7 @@ async def send_daily_session(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _send_daily_async() -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             result = await send_daily_session(session)

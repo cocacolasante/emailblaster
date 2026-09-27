@@ -13,7 +13,7 @@ session.
 
 SECURITY: this module never touches ``encryption.decrypt`` — there is no
 LinkedIn password to decrypt.  The Unipile API key is read from
-``settings.UNIPILE_API_KEY`` and sent in an ``X-API-KEY`` header.
+the workspace's Unipile creds (``credentials.get("unipile")``) and sent in an ``X-API-KEY`` header.
 
 API SHAPE NOTES:
 Unipile's REST surface uses ``/api/v1/...`` paths and is rooted at
@@ -90,10 +90,16 @@ class UnipileLinkedInProvider(LinkedInProvider):
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        # `None` ⇒ fall back to settings; `""` ⇒ explicitly empty (tests use
-        # this to assert the "no DSN configured" error path).
-        self._dsn = dsn if dsn is not None else settings.UNIPILE_DSN
-        self._api_key = api_key if api_key is not None else settings.UNIPILE_API_KEY
+        # `None` ⇒ the current workspace's Unipile creds (resolved now, at
+        # construction, inside the tenant scope); `""` ⇒ explicitly empty
+        # (tests use this to assert the "no DSN configured" error path).
+        from app.services import credentials
+
+        ws = credentials.get("unipile")
+        self._dsn = dsn if dsn is not None else (ws.dsn if ws else "")  # type: ignore[union-attr]
+        self._api_key = (
+            api_key if api_key is not None else (ws.api_key if ws else "")  # type: ignore[union-attr]
+        )
         # Tests inject httpx.MockTransport here.
         self._transport = transport
 

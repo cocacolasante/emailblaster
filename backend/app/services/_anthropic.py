@@ -4,8 +4,8 @@ Kept tiny on purpose — it just bundles the lazy-init client, the text
 extractor, and two JSON parsers (object + array) so the three social-
 listening services don't each carry their own copy.
 
-``services/web_research.py`` and ``services/research_client.py`` still
-have their own inline copies; this module is opt-in for new services.
+This is the ONLY module that constructs ``AsyncAnthropic`` (enforced by
+a hardening test) — the key always comes from the workspace creds.
 """
 from __future__ import annotations
 
@@ -16,19 +16,36 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
-from app.config import settings
+from app.services import credentials
 
 logger = logging.getLogger(__name__)
 
-_client: AsyncAnthropic | None = None
+# One client per API key.  Keys are per-workspace, so a process-wide
+# singleton would send every tenant's calls on whichever key built it
+# first.  Keyed by the key string itself, never by tenant id.
+_clients: dict[str, AsyncAnthropic] = {}
+_client = None  # legacy attribute; some tests still reset it
+
+
+def client_for(creds: credentials.AnthropicCreds) -> AsyncAnthropic:
+    client = _clients.get(creds.api_key)
+    if client is None:
+        client = AsyncAnthropic(api_key=creds.api_key)
+        _clients[creds.api_key] = client
+    return client
 
 
 def get_client() -> AsyncAnthropic:
-    """Lazy-singleton AsyncAnthropic client."""
-    global _client
-    if _client is None:
-        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    return _client
+    """AsyncAnthropic client for the current workspace.
+
+    Raises ``credentials.MissingCredential`` when the workspace has no
+    Anthropic key.
+    """
+    return client_for(credentials.require("anthropic"))  # type: ignore[arg-type]
+
+
+def is_configured() -> bool:
+    return credentials.is_configured("anthropic")
 
 
 def extract_text(message: Any) -> str:

@@ -13,9 +13,10 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     IcpProfileStatus,
     LookalikeCandidate,
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _refresh_profile_async() -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             profile = await icp_builder.build_icp_from_won(session)
@@ -92,7 +93,7 @@ async def discover_session(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _discover_async() -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             result = await discover_session(session)

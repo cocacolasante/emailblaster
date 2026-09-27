@@ -28,11 +28,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import redis.asyncio as aioredis
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
     CampaignStatus,
@@ -814,7 +815,7 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
 
     lid = uuid.UUID(str(lead_id))
     nid = uuid.UUID(str(node_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     redis_client = _send_mod._new_redis()
     result: dict[str, Any] = {}
 
@@ -1013,7 +1014,7 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
     """
     lid = uuid.UUID(str(lead_id))
     nid = uuid.UUID(str(node_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             lead = await session.get(Lead, lid)
@@ -1404,7 +1405,7 @@ async def _record_execution_and_advance(
     node-visit we give up and advance like a normal skip; that prevents a
     permanently-broken account from holding a lead forever.
     """
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             status = result.get("status", "failed")
@@ -1632,7 +1633,7 @@ async def _advance_sequences_async() -> dict[str, int]:
     """Pull ready state rows and either advance them (wait/already-sent entry)
     or dispatch the appropriate channel task.
     """
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     counts = {
         "advanced_wait": 0,
         "advanced_entry_done": 0,

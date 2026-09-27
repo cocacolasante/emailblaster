@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
 
 from app.config import settings
+from app.services import credentials
 from app.database import get_db
 from app.models import (
     Campaign,
@@ -622,7 +623,7 @@ async def draft_signal_email(
             contact_first_name=lead.first_name,
             goal=payload.goal,
             tone=payload.tone,
-            sender_name=settings.BREVO_SENDER_NAME,
+            sender_name=credentials.default_sender()[0],
         )
     except signal_outreach.SignalComposeError as exc:
         raise HTTPException(status_code=502, detail=f"couldn't draft: {exc}") from exc
@@ -648,7 +649,7 @@ async def send_signal_email(
     signal, lead = await _signal_with_lead(db, signal_id)
     to_email = (payload.to_email or lead.email).strip().lower()
     to_name = " ".join(x for x in [lead.first_name, lead.last_name] if x) or None
-    sender_name = payload.sender_name or settings.BREVO_SENDER_NAME
+    sender_name = payload.sender_name or credentials.default_sender()[0]
 
     try:
         result = await outreach.send_and_track(
@@ -738,7 +739,7 @@ async def list_funding_sources(db: AsyncSession = Depends(get_db)) -> dict[str, 
     await db.commit()  # persist any first-time seeding
     return {
         "sources": out,
-        "hunter_configured": bool(settings.HUNTER_API_KEY),
+        "hunter_configured": credentials.is_configured("hunter"),
     }
 
 

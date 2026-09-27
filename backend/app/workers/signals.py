@@ -22,9 +22,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     CrmActivity,
     CrmActivityType,
@@ -178,7 +179,7 @@ async def run_watch_session(session: AsyncSession, watch_id: uuid.UUID) -> dict[
 
 
 async def _run_watch_async(watch_id: str) -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:
@@ -205,7 +206,7 @@ def run_watch(watch_id: str) -> dict[str, Any]:
 
 async def _scheduled_runner_async() -> dict[str, Any]:
     dispatched: list[str] = []
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             due = (await session.execute(

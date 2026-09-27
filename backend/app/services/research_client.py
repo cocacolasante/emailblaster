@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 from anthropic import AsyncAnthropic
 
 from app.config import settings
+from app.services import credentials
 from app.services.web_research import _extract_text, _parse_json
 
 logger = logging.getLogger(__name__)
@@ -50,14 +51,14 @@ _DEFAULT_RESEARCH: dict[str, Any] = {
 }
 
 
-_client: AsyncAnthropic | None = None
+_client = None  # legacy attribute; some tests still reset it
 
 
 def _get_client() -> AsyncAnthropic:
-    global _client
-    if _client is None:
-        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    return _client
+    """Workspace-scoped client (see ``services/_anthropic.get_client``)."""
+    from app.services import _anthropic
+
+    return _anthropic.get_client()
 
 
 def parse_linkedin_url(url: str) -> tuple[str, str]:
@@ -123,7 +124,7 @@ async def research_from_linkedin_url(
     if not slug:
         return {**_DEFAULT_RESEARCH, "error": "url_not_recognised_as_linkedin_profile"}
 
-    if not settings.ANTHROPIC_API_KEY:
+    if not credentials.is_configured("anthropic"):
         return {**_DEFAULT_RESEARCH, "first_name": name_guess.split(" ")[0]}
 
     is_deep = (mode or "").lower() == "deep"

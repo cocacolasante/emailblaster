@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings, validate_required_settings
+from app.services.credentials import MissingCredential
 from app.routers import (
     agent,
     icp,
@@ -78,6 +79,20 @@ async def log_requests(request: Request, call_next):
             request.method, request.url.path, duration_ms,
         )
         raise
+
+
+@app.exception_handler(MissingCredential)
+async def missing_credential_handler(request: Request, exc: MissingCredential):
+    """A feature needed a provider the workspace hasn't connected.  409 with
+    a machine-readable code so the frontend can deep-link to Integrations."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": "integration_not_configured",
+            "provider": exc.provider,
+            "detail": str(exc),
+        },
+    )
 
 
 @app.exception_handler(Exception)

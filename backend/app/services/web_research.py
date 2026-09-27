@@ -13,6 +13,7 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from app.config import settings
+from app.services import credentials
 from app.services.research_cache import company_fields
 
 logger = logging.getLogger(__name__)
@@ -27,14 +28,14 @@ _DEFAULT: dict[str, Any] = {
     "found": False,
 }
 
-_client: AsyncAnthropic | None = None
+_client = None  # legacy attribute; some tests still reset it
 
 
 def _get_client() -> AsyncAnthropic:
-    global _client
-    if _client is None:
-        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    return _client
+    """Workspace-scoped client (see ``services/_anthropic.get_client``)."""
+    from app.services import _anthropic
+
+    return _anthropic.get_client()
 
 
 def _extract_text(message: Any) -> str:
@@ -71,7 +72,7 @@ async def research_person_web(
     company_website: str = "",
     cached_company: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not settings.ANTHROPIC_API_KEY:
+    if not credentials.is_configured("anthropic"):
         return dict(_DEFAULT)
 
     website_line = (

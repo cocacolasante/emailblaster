@@ -220,8 +220,8 @@ async def test_apply_blocked_contacts_suppresses_each(db_session):
     assert b.reason is SuppressionReason.UNSUBSCRIBED
 
 
-async def test_sync_blocklist_endpoint(client, db_session, monkeypatch):
-    monkeypatch.setattr("app.routers.settings.settings.BREVO_API_KEY", "test-key")
+async def test_sync_blocklist_endpoint(set_creds, client, db_session, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     campaign = await _campaign(db_session)
     await _lead_with_active_state(db_session, campaign, "endpoint@x.com")
     await db_session.commit()

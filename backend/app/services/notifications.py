@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import AgentSettings, Notification, NotificationKind
-from app.services import brevo
+from app.services import brevo, credentials
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +116,9 @@ async def send_notification_email(notification: Notification) -> bool:
     # Agent alerts send from their own configured sender, falling back to
     # the campaign Brevo sender when unset.  (Must be a verified Brevo
     # sender either way.)
-    from_email = settings.OWNER_NOTIFY_FROM_EMAIL or settings.BREVO_SENDER_EMAIL
-    from_name = settings.OWNER_NOTIFY_FROM_NAME or settings.BREVO_SENDER_NAME
+    ws_name, ws_email = credentials.default_sender()
+    from_email = settings.OWNER_NOTIFY_FROM_EMAIL or ws_email
+    from_name = settings.OWNER_NOTIFY_FROM_NAME or ws_name
     try:
         await brevo.send_email(
             to_email=settings.OWNER_NOTIFY_EMAIL,

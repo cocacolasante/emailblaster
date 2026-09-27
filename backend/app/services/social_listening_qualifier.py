@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
+from app.services import credentials
 from app.models import SocialOpportunityAction, SocialOpportunityCategory
 from app.services._anthropic import extract_text, get_client, parse_json_array, parse_json_object
 from app.services.compose_client import _truncate_at_sentence
@@ -262,7 +263,7 @@ async def qualify_posts(
     results."""
     if not posts:
         return []
-    if not settings.ANTHROPIC_API_KEY:
+    if not credentials.is_configured("anthropic"):
         return [None] * len(posts)
 
     # Filter out entries with no text — keep alignment by tracking
@@ -323,7 +324,7 @@ async def qualify_post(
     """Run the LLM qualifier.  Returns ``None`` on Anthropic failure or
     malformed JSON — caller skips writing an opportunity row in that case
     so the post can be re-qualified later."""
-    if not settings.ANTHROPIC_API_KEY:
+    if not credentials.is_configured("anthropic"):
         return None
     if not (post_text or "").strip():
         return None

@@ -16,21 +16,18 @@ from app.services.linkedin.base import (
 )
 from app.services.linkedin.unipile_impl import UnipileLinkedInProvider
 
-_provider: LinkedInProvider | None = None
-
-
 def get_provider() -> LinkedInProvider:
-    """Return the configured LinkedIn provider singleton."""
-    global _provider
-    if _provider is None:
-        _provider = UnipileLinkedInProvider()
-    return _provider
+    """A LinkedIn provider bound to the CURRENT workspace's Unipile creds.
+
+    Deliberately not a singleton: each workspace has its own Unipile
+    DSN + key, so a cached instance would send one tenant's actions
+    through another's workspace.  Construction is cheap (no I/O).
+    """
+    return UnipileLinkedInProvider()
 
 
 def _reset_provider_for_tests() -> None:
-    """Reset the singleton.  Test-only; never call from app code."""
-    global _provider
-    _provider = None
+    """No-op (kept for tests written against the old singleton)."""
 
 
 __all__ = [

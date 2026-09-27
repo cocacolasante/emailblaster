@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.services.intent import (
     collect_ats, collect_careers, collect_dev_roles, collect_grants_gov,
     collect_propublica, collect_usaspending, enrich, orgs, promote, scoring,
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _backfill_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await orgs.backfill_orgs_from_existing(session)
@@ -43,7 +44,7 @@ def backfill_orgs() -> dict[str, int]:
 
 
 async def _propublica_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await collect_propublica.collect_propublica_rev_delta(session)
@@ -57,7 +58,7 @@ def collect_propublica_rev_delta() -> dict[str, int]:
 
 
 async def _recompute_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await scoring.recompute_all_intent(session)
@@ -87,7 +88,7 @@ def _rfp_keywords(profile) -> list[str]:
 
 
 async def _collect_grants_gov_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             profile = await scoring.get_active_profile(session)
@@ -111,7 +112,7 @@ def collect_grants_gov_task() -> dict[str, int]:
 
 
 async def _collect_dev_roles_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             profile = await scoring.get_active_profile(session)
@@ -130,7 +131,7 @@ def collect_dev_roles_task() -> dict[str, int]:
 
 
 async def _collect_careers_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await collect_careers.collect_careers_dev_roles(session)
@@ -144,7 +145,7 @@ def collect_careers_dev_roles_task() -> dict[str, int]:
 
 
 async def _collect_ats_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await collect_ats.collect_ats_dev_roles(session)
@@ -158,7 +159,7 @@ def collect_ats_dev_roles_task() -> dict[str, int]:
 
 
 async def _collect_usaspending_peer_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             profile = await scoring.get_active_profile(session)
@@ -178,7 +179,7 @@ def collect_usaspending_peer_task() -> dict[str, int]:
 
 
 async def _promote_async() -> dict[str, int]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await promote.promote_eligible(session)
@@ -193,7 +194,7 @@ def promote_eligible() -> dict[str, int]:
 
 
 async def _enrich_draft_async(lead_id: str) -> dict:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             return await enrich.enrich_draft_lead(session, lead_id)

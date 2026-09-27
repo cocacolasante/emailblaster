@@ -17,19 +17,20 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services import brevo_blocklist
+from app.tenancy.worker_db import worker_engine
+from app.services import brevo_blocklist, credentials
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 
 async def _sync_async() -> dict[str, int]:
-    if not settings.BREVO_API_KEY:
+    if not credentials.is_configured("brevo"):
         return {"skipped": "no_brevo_api_key"}
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:

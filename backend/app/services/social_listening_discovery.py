@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.config import settings
+from app.services import credentials
 from app.services._anthropic import extract_text, get_client, parse_json_object
 from app.services._anthropic_cost import message_cost_usd
 
@@ -462,7 +463,7 @@ async def _discover_via_anthropic(
 
     Returns an empty ``DiscoveryResult`` on any failure — callers treat
     empty as soft-fail and move on."""
-    if not settings.ANTHROPIC_API_KEY:
+    if not credentials.is_configured("anthropic"):
         return DiscoveryResult()
     prompt_template = _PROMPT_BY_SOURCE.get(source)
     if prompt_template is None:

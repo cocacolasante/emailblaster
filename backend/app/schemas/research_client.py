@@ -72,7 +72,7 @@ class SendClientEmailRequest(BaseModel):
     subject: str = Field(min_length=1, max_length=998)  # RFC 5322 line cap
     body: str = Field(min_length=1, max_length=50_000)
     sender_name: str = Field(min_length=1, max_length=120)
-    # Optional override; defaults to settings.BREVO_SENDER_EMAIL on the
+    # Optional override; defaults to the workspace Brevo sender on the
     # server.  The frontend leaves this blank in v1.
     sender_email: str | None = None
 

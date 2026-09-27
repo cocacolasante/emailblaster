@@ -22,9 +22,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
     Lead,
@@ -148,7 +149,7 @@ async def _poll_all_async() -> dict[str, int]:
         "accounts": 0, "skipped_no_work": 0,
         "messages_matched": 0, "messages_total": 0, "connections": 0,
     }
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             accounts = (await session.execute(

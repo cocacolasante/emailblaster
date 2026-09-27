@@ -20,9 +20,10 @@ from typing import Any
 import pytz
 import redis.asyncio as aioredis
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
     CampaignStatus,
@@ -350,7 +351,7 @@ async def increment_rate_counters(
 
 
 async def _mark_send_failed(lead_id: str) -> None:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine) as session:
             lead = await session.get(Lead, uuid.UUID(lead_id))
@@ -420,7 +421,7 @@ async def check_send_gates(
 
 async def send_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     redis_client = _new_redis()
 
     try:
@@ -591,7 +592,7 @@ async def _pace_first_emails_async() -> dict[str, int]:
     composed body (non-email entry node) or on the suppression list are
     excluded so a gate slot is never spent on a lead that can't send.
     """
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     redis_client = _new_redis()
     counts = {"campaigns": 0, "dispatched": 0}
     try:

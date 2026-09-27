@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from app.config import settings
+from app.services import credentials
 from app.services._anthropic import extract_text, get_client, parse_json_array
 
 logger = logging.getLogger(__name__)
@@ -174,7 +175,7 @@ async def expand_topic(
     include_keywords = include_keywords or []
     exclude_keywords = exclude_keywords or []
 
-    if not settings.ANTHROPIC_API_KEY:
+    if not credentials.is_configured("anthropic"):
         # No key configured — fall back to include_keywords only so the
         # feature isn't broken in dev without an API key.
         return _filter([], include_keywords, exclude_keywords, max_queries)

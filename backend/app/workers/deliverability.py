@@ -12,9 +12,10 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import Campaign, CampaignStatus
 from app.services import deliverability
 from app.workers.celery_app import celery_app
@@ -26,7 +27,7 @@ async def _sweep_health_async() -> dict[str, Any]:
     if not settings.CIRCUIT_BREAKER_ENABLED:
         return {"skipped": "breaker_disabled"}
     tripped: list[str] = []
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             running_ids = (await session.execute(

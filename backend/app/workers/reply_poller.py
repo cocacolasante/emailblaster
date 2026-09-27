@@ -21,9 +21,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     AgentActionStatus,
     AgentActionType,
@@ -168,7 +169,7 @@ async def poll_account_for_replies(
 
 
 async def poll_all_replies_async() -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     total_replies = 0
     per_account: list[dict[str, Any]] = []
 

@@ -134,3 +134,51 @@ async def client(_engine):
             yield c
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------
+# Workspace credentials
+# --------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+_CRED_DEFAULTS = {
+    "brevo": {"sender_email": "sender@test.local", "sender_name": "Test Sender"},
+    "unipile": {"dsn": "api.test.unipile.local:443"},
+}
+
+
+@pytest.fixture
+def set_creds(monkeypatch):
+    """Override the current workspace's provider credentials for one test.
+
+        set_creds("brevo", api_key="k")      # merge fields (defaults fill
+                                             #  sender_email / dsn)
+        set_creds("hunter", api_key="")      # → provider reads as missing
+        set_creds("anthropic", None)         # → explicitly missing
+
+    Patches ``credentials.get`` so every consumer (require / is_configured
+    / default_sender / get_client / get_provider) sees the override.
+    """
+    from app.services import credentials
+
+    raw: dict[str, dict | None] = {}
+    real_get = credentials.get
+
+    def fake_get(provider):
+        if provider in raw:
+            data = raw[provider]
+            return credentials.build_creds(provider, data) if data else None
+        return real_get(provider)
+
+    monkeypatch.setattr(credentials, "get", fake_get)
+
+    def _set(provider, _missing=..., **fields):
+        if _missing is None:
+            raw[provider] = None
+            return
+        cur = raw.get(provider) or dict(_CRED_DEFAULTS.get(provider, {}))
+        cur.update(fields)
+        raw[provider] = cur
+
+    return _set

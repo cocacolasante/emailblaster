@@ -12,8 +12,15 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services import credentials
 
 logger = logging.getLogger(__name__)
+
+
+def _api_key() -> str:
+    """The current workspace's Apollo key ('' when not configured)."""
+    c = credentials.get("apollo")
+    return c.api_key if c else ""  # type: ignore[union-attr]
 
 APOLLO_URL = "https://api.apollo.io/v1/people/match"
 _MAX_ATTEMPTS = 3
@@ -26,11 +33,11 @@ async def enrich_lead_apollo(
     last_name: str,
     company: str,
 ) -> dict[str, Any]:
-    if not settings.APOLLO_API_KEY:
+    if not _api_key():
         return {}
 
     payload = {
-        "api_key": settings.APOLLO_API_KEY,
+        "api_key": _api_key(),
         "email": email,
         "first_name": first_name or None,
         "last_name": last_name or None,
@@ -103,9 +110,9 @@ async def _apollo_search(url: str, payload: dict[str, Any]) -> dict[str, Any] | 
     """Shared search POST with the same retry/backoff posture as
     ``enrich_lead_apollo``.  Returns None when the key is missing, the
     plan lacks search access (401/403), or the API hard-fails."""
-    if not settings.APOLLO_API_KEY:
+    if not _api_key():
         return None
-    body = {"api_key": settings.APOLLO_API_KEY, **payload}
+    body = {"api_key": _api_key(), **payload}
     async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
         for attempt in range(_MAX_ATTEMPTS):
             try:

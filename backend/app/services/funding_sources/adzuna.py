@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services import credentials
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +68,13 @@ async def search_jobs(
     """Postings whose text matches the exact phrase ``what_phrase`` within the
     last ``max_days_old`` days.  Returns normalized job dicts (deduped by id).
     Returns [] when no API key is configured.  Never raises."""
-    if not (settings.ADZUNA_APP_ID and settings.ADZUNA_APP_KEY):
+    creds = credentials.get("adzuna")
+    if creds is None:
         return []
     country = country or settings.ADZUNA_COUNTRY
     params = {
-        "app_id": settings.ADZUNA_APP_ID,
-        "app_key": settings.ADZUNA_APP_KEY,
+        "app_id": creds.app_id,  # type: ignore[union-attr]
+        "app_key": creds.app_key,  # type: ignore[union-attr]
         "what_phrase": what_phrase,
         "max_days_old": max_days_old,
         "results_per_page": results_per_page,

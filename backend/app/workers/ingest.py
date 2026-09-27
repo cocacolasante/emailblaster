@@ -11,9 +11,10 @@ import logging
 import uuid
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import Lead, ResearchStatus
 from app.workers.celery_app import celery_app
 from app.workers.research import research_lead
@@ -30,7 +31,7 @@ async def run_campaign_research_async(campaign_id: str | uuid.UUID) -> dict[str,
     """
     cid = uuid.UUID(str(campaign_id))
 
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             sample_ids = list((await session.execute(

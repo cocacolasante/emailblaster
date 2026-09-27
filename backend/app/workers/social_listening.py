@@ -20,9 +20,10 @@ from typing import Any
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     LinkedInAccount,
     LinkedInAccountStatus,
@@ -83,7 +84,7 @@ def _next_run_at(frequency: SocialSearchFrequency) -> datetime | None:
 
 async def _expand_social_topic_async(search_id: str) -> dict[str, Any]:
     sid = uuid.UUID(str(search_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             search = await session.get(SocialListeningSearch, sid)
@@ -431,7 +432,7 @@ async def _upsert_post(
 
 async def _run_social_search_async(search_id: str) -> dict[str, Any]:
     sid = uuid.UUID(str(search_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     qualify_task = None
     try:
         # ---- Load + mark running -----------------------------------------
@@ -739,7 +740,7 @@ async def _run_social_search_async(search_id: str) -> dict[str, Any]:
 
 async def _mark_search_failed(search_id: str, error: str) -> None:
     sid = uuid.UUID(str(search_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             row = await session.get(SocialListeningSearch, sid)
@@ -771,7 +772,7 @@ def run_social_search(self, search_id: str) -> dict[str, Any]:  # noqa: D401
 async def _qualify_social_post_async(post_id: str, search_id: str) -> dict[str, Any]:
     pid = uuid.UUID(str(post_id))
     sid = uuid.UUID(str(search_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         # Load post + search settings.
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -890,7 +891,7 @@ async def _qualify_social_posts_batch_async(
         return {"status": "skipped", "reason": "no_post_ids"}
     sid = uuid.UUID(str(search_id))
     pids = [uuid.UUID(str(p)) for p in post_ids]
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             search = await session.get(SocialListeningSearch, sid)
@@ -965,7 +966,7 @@ def qualify_social_post(self, post_id: str, search_id: str) -> dict[str, Any]:  
 async def _scheduled_runner_async() -> dict[str, Any]:
     """Select active+non-manual searches whose next_run_at is due, enqueue
     a run for each.  Mirrors the sequencer.advance_sequences pattern."""
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     enqueued: list[str] = []
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:

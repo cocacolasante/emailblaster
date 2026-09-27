@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import credentials
 from app.database import get_db
 from app.models import LinkedInAccount, LinkedInAccountStatus
 from app.schemas.linkedin_account import (
@@ -56,7 +57,7 @@ async def connect_via_unipile(
     The placeholder row carries no ``linkedin_email`` until Unipile reports
     back — we pull it from the webhook payload and persist it then.
     """
-    if not settings.UNIPILE_API_KEY or not settings.UNIPILE_DSN:
+    if not credentials.is_configured("unipile"):
         raise HTTPException(
             status_code=503,
             detail="Unipile not configured — set UNIPILE_DSN + UNIPILE_API_KEY.",
@@ -195,7 +196,7 @@ async def list_discoverable_unipile_accounts(
     (instead of our portal's "Connect via Unipile" hosted flow). They
     can then bind one of these via ``POST /import-from-unipile``.
     """
-    if not settings.UNIPILE_API_KEY or not settings.UNIPILE_DSN:
+    if not credentials.is_configured("unipile"):
         raise HTTPException(
             status_code=503,
             detail="Unipile not configured — set UNIPILE_DSN + UNIPILE_API_KEY.",
@@ -252,7 +253,7 @@ async def import_from_unipile(
     Idempotency: if a row already exists with this ``unipile_account_id``
     we return 409.  The DB-level unique index also defends against races.
     """
-    if not settings.UNIPILE_API_KEY or not settings.UNIPILE_DSN:
+    if not credentials.is_configured("unipile"):
         raise HTTPException(
             status_code=503,
             detail="Unipile not configured — set UNIPILE_DSN + UNIPILE_API_KEY.",

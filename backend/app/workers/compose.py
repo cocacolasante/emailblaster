@@ -20,9 +20,10 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     Campaign,
     CampaignStatus,
@@ -47,14 +48,14 @@ except Exception:  # noqa: BLE001
 
 logger = logging.getLogger(__name__)
 
-_client: AsyncAnthropic | None = None
+_client = None  # legacy attribute; some tests still reset it
 
 
 def _get_client() -> AsyncAnthropic:
-    global _client
-    if _client is None:
-        _client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    return _client
+    """Workspace-scoped client (see ``services/_anthropic.get_client``)."""
+    from app.services import _anthropic
+
+    return _anthropic.get_client()
 
 
 # --------------------------------------------------------------------------
@@ -438,7 +439,7 @@ async def generate_linkedin_dm_text(
 
 
 async def _mark_compose_failed(lead_id: str) -> None:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine) as session:
             lead = await session.get(Lead, uuid.UUID(lead_id))
@@ -451,7 +452,7 @@ async def _mark_compose_failed(lead_id: str) -> None:
 
 async def compose_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
 
     try:
         # Load lead, campaign, style corrections.  Snapshot the strings we

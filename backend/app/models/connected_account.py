@@ -58,7 +58,7 @@ class ConnectedAccount(Base):
     # address.  A partial unique index on this column enforces "at most
     # one default at a time" at the DB layer; the PATCH handler also
     # clears the flag on every other row in the same transaction.  None /
-    # all-False means "fall back to settings.BREVO_SENDER_EMAIL".
+    # all-False means "fall back to the workspace Brevo sender".
     is_default_sender: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false",
     )

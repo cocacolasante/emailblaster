@@ -674,17 +674,12 @@ async def test_compose_failure_returns_502(client):
 
 # ---- POST /research-client/send ------------------------------------------
 
-async def test_send_endpoint_dispatches_to_brevo(client, monkeypatch):
+async def test_send_endpoint_dispatches_to_brevo(set_creds, client, monkeypatch):
     """Happy path: payload validates, the synthesised HTML/text bodies
     reach Brevo via send_email, and the endpoint returns the message_id
     + sent_at + to_email contract."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_SENDER_EMAIL",
-        "outreach@example.com",
-    )
+    set_creds("brevo", api_key="test-key")
+    set_creds("brevo", sender_email="outreach@example.com")
 
     send_mock = AsyncMock(return_value="brevo-msg-001")
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
@@ -718,16 +713,11 @@ async def test_send_endpoint_dispatches_to_brevo(client, monkeypatch):
     assert kwargs["lead_id"] and kwargs["lead_id"] != "research-client"
 
 
-async def test_send_endpoint_uses_explicit_sender_email_when_supplied(client, monkeypatch):
+async def test_send_endpoint_uses_explicit_sender_email_when_supplied(set_creds, client, monkeypatch):
     """When the request carries an explicit ``sender_email``, it wins
     over the BREVO_SENDER_EMAIL fallback."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_SENDER_EMAIL",
-        "default@example.com",
-    )
+    set_creds("brevo", api_key="test-key")
+    set_creds("brevo", sender_email="default@example.com")
 
     send_mock = AsyncMock(return_value="msg-x")
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
@@ -741,12 +731,10 @@ async def test_send_endpoint_uses_explicit_sender_email_when_supplied(client, mo
     assert send_mock.await_args.kwargs["sender_email"] == "anthony@me.com"
 
 
-async def test_send_endpoint_rejects_invalid_email(client, monkeypatch):
+async def test_send_endpoint_rejects_invalid_email(set_creds, client, monkeypatch):
     """Pydantic ``EmailStr`` catches obvious garbage at the route layer
     without burning a Brevo call."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     send_mock = AsyncMock()
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
         resp = await client.post("/research-client/send", json={
@@ -757,12 +745,10 @@ async def test_send_endpoint_rejects_invalid_email(client, monkeypatch):
     send_mock.assert_not_called()
 
 
-async def test_send_endpoint_502_when_brevo_api_key_missing(client, monkeypatch):
+async def test_send_endpoint_502_when_brevo_api_key_missing(set_creds, client, monkeypatch):
     """Missing BREVO_API_KEY → 502 with an actionable message.  Caught
     BEFORE the Brevo call attempt so no spurious network hit."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "",
-    )
+    set_creds("brevo", api_key="")
     send_mock = AsyncMock()
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
         resp = await client.post("/research-client/send", json={
@@ -770,18 +756,16 @@ async def test_send_endpoint_502_when_brevo_api_key_missing(client, monkeypatch)
             "subject": "s", "body": "b", "sender_name": "A",
         })
     assert resp.status_code == 502
-    assert "brevo_api_key" in resp.json()["detail"].lower()
+    assert "brevo" in resp.json()["detail"].lower()
     send_mock.assert_not_called()
 
 
-async def test_send_endpoint_502_on_brevo_http_error(client, monkeypatch):
+async def test_send_endpoint_502_on_brevo_http_error(set_creds, client, monkeypatch):
     """A Brevo 4xx/5xx rejection (bad key, unverified sender, etc.)
     surfaces as a 502 with Brevo's status + a hint, not a generic 500."""
     import httpx
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
 
     fake_response = httpx.Response(
         status_code=401,
@@ -802,20 +786,15 @@ async def test_send_endpoint_502_on_brevo_http_error(client, monkeypatch):
     assert "brevo" in detail
 
 
-async def test_send_endpoint_uses_db_default_sender_when_no_override(client, monkeypatch, db_session):
+async def test_send_endpoint_uses_db_default_sender_when_no_override(set_creds, client, monkeypatch, db_session):
     """When the request omits sender_email AND a ConnectedAccount is
     marked is_default_sender=True, that account's email wins over
     settings.BREVO_SENDER_EMAIL.  This is the "I set a default in
     Settings, every one-off now uses it" path."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_SENDER_EMAIL",
-        "env-default@example.com",
-    )
+    set_creds("brevo", api_key="test-key")
+    set_creds("brevo", sender_email="env-default@example.com")
 
     db_session.add(ConnectedAccount(
         label="My brand",
@@ -837,18 +816,13 @@ async def test_send_endpoint_uses_db_default_sender_when_no_override(client, mon
     assert send_mock.await_args.kwargs["sender_email"] == "brand@me.com"
 
 
-async def test_send_endpoint_explicit_override_beats_db_default(client, monkeypatch, db_session):
+async def test_send_endpoint_explicit_override_beats_db_default(set_creds, client, monkeypatch, db_session):
     """Request-level sender_email override wins over BOTH the DB default
     sender and the env var.  Order of precedence is locked here."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_SENDER_EMAIL",
-        "env-default@example.com",
-    )
+    set_creds("brevo", api_key="test-key")
+    set_creds("brevo", sender_email="env-default@example.com")
     db_session.add(ConnectedAccount(
         label="Brand", email_address="brand@me.com",
         imap_host="imap.x", imap_port=993, imap_use_ssl=True,
@@ -868,15 +842,13 @@ async def test_send_endpoint_explicit_override_beats_db_default(client, monkeypa
     assert send_mock.await_args.kwargs["sender_email"] == "explicit@override.com"
 
 
-async def test_send_endpoint_appends_signature_from_picked_connected_account(client, monkeypatch, db_session):
+async def test_send_endpoint_appends_signature_from_picked_connected_account(set_creds, client, monkeypatch, db_session):
     """When the request sender_email matches a ConnectedAccount and that
     account has a signature, the Brevo bodies (html + text) carry the
     signature appended below the AI-composed body."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     db_session.add(ConnectedAccount(
         label="Brand", email_address="brand@me.com",
         imap_host="imap.x", imap_port=993, imap_use_ssl=True,
@@ -906,16 +878,14 @@ async def test_send_endpoint_appends_signature_from_picked_connected_account(cli
     assert "quick thought after your raise" in kwargs["text_body"]
 
 
-async def test_send_endpoint_html_signature_renders_as_real_html(client, monkeypatch, db_session):
+async def test_send_endpoint_html_signature_renders_as_real_html(set_creds, client, monkeypatch, db_session):
     """A signature containing <a>/<img> tags must reach the recipient as
     real clickable links and rendered images.  Anti-regression: before
     this change, the signature went through ``render_html`` which would
     HTML-escape the tags into ``&lt;a&gt;`` etc."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     sig_html = (
         'Best,\n<strong>Anthony</strong>\n'
         '<a href="https://csuitecode.com">csuitecode.com</a>\n'
@@ -975,15 +945,13 @@ async def test_send_endpoint_html_signature_renders_as_real_html(client, monkeyp
     assert "<strong>" not in text
 
 
-async def test_send_endpoint_plain_text_signature_still_works(client, monkeypatch, db_session):
+async def test_send_endpoint_plain_text_signature_still_works(set_creds, client, monkeypatch, db_session):
     """Backward compat: a plain-text signature (no HTML tags) must keep
     working — newlines become <br> in the HTML body, identical newlines
     survive in the text body."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     db_session.add(ConnectedAccount(
         label="Brand", email_address="brand@me.com",
         imap_host="imap.x", imap_port=993, imap_use_ssl=True,
@@ -1010,14 +978,12 @@ async def test_send_endpoint_plain_text_signature_still_works(client, monkeypatc
     assert "Best,\nAnthony\ncsuitecode.com" in kwargs["text_body"]
 
 
-async def test_send_endpoint_signature_replaces_ai_signoff(client, monkeypatch, db_session):
+async def test_send_endpoint_signature_replaces_ai_signoff(set_creds, client, monkeypatch, db_session):
     """When the composed body ends with the AI's own sign-off ("Best,\\nName"),
     apply_signature swaps from there to the end — no duplicated sign-off."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     db_session.add(ConnectedAccount(
         label="Brand", email_address="brand@me.com",
         imap_host="imap.x", imap_port=993, imap_use_ssl=True,
@@ -1047,13 +1013,11 @@ async def test_send_endpoint_signature_replaces_ai_signoff(client, monkeypatch, 
     assert "csuitecode.com" in text
 
 
-async def test_send_endpoint_no_signature_when_account_has_none(client, monkeypatch, db_session):
+async def test_send_endpoint_no_signature_when_account_has_none(set_creds, client, monkeypatch, db_session):
     """Empty/null signature on the resolved account → body sent verbatim."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     db_session.add(ConnectedAccount(
         label="Plain", email_address="plain@me.com",
         imap_host="imap.x", imap_port=993, imap_use_ssl=True,
@@ -1079,13 +1043,11 @@ async def test_send_endpoint_no_signature_when_account_has_none(client, monkeypa
     assert "ping me when you can" in text
 
 
-async def test_send_endpoint_unknown_sender_email_skips_signature(client, monkeypatch):
+async def test_send_endpoint_unknown_sender_email_skips_signature(set_creds, client, monkeypatch):
     """When the request's sender_email doesn't match ANY ConnectedAccount,
     there's no signature to look up — the body goes out as-is.  Prevents
     accidentally pulling the wrong account's signature."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     send_mock = AsyncMock(return_value="msg-unknown")
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
         await client.post("/research-client/send", json={
@@ -1100,14 +1062,12 @@ async def test_send_endpoint_unknown_sender_email_skips_signature(client, monkey
     assert "Body without a signature anywhere" in text
 
 
-async def test_send_endpoint_default_sender_signature_applies(client, monkeypatch, db_session):
+async def test_send_endpoint_default_sender_signature_applies(set_creds, client, monkeypatch, db_session):
     """When the request omits sender_email AND the workspace default
     sender has a signature, the default sender's signature applies."""
     from app.models import ConnectedAccount
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     db_session.add(ConnectedAccount(
         label="Default", email_address="default@me.com",
         imap_host="imap.x", imap_port=993, imap_use_ssl=True,
@@ -1130,15 +1090,10 @@ async def test_send_endpoint_default_sender_signature_applies(client, monkeypatc
     assert "default sender" in text
 
 
-async def test_send_endpoint_falls_back_to_env_when_no_db_default(client, monkeypatch):
+async def test_send_endpoint_falls_back_to_env_when_no_db_default(set_creds, client, monkeypatch):
     """No DB default-sender row + no request override → env var wins."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_SENDER_EMAIL",
-        "env-default@example.com",
-    )
+    set_creds("brevo", api_key="test-key")
+    set_creds("brevo", sender_email="env-default@example.com")
     send_mock = AsyncMock(return_value="msg-z")
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
         resp = await client.post("/research-client/send", json={
@@ -1149,14 +1104,12 @@ async def test_send_endpoint_falls_back_to_env_when_no_db_default(client, monkey
     assert send_mock.await_args.kwargs["sender_email"] == "env-default@example.com"
 
 
-async def test_send_endpoint_502_on_network_error(client, monkeypatch):
+async def test_send_endpoint_502_on_network_error(set_creds, client, monkeypatch):
     """A transport-level failure (DNS, connection refused, etc.) also
     becomes a 502 — never bleeds into a 500."""
     import httpx
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     send_mock = AsyncMock(side_effect=httpx.ConnectError("dns failure"))
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
         resp = await client.post("/research-client/send", json={
@@ -1169,16 +1122,14 @@ async def test_send_endpoint_502_on_network_error(client, monkeypatch):
 
 # ---- CRM auto-tracking on send --------------------------------------------
 
-async def test_send_creates_crm_lead_and_logs_email_activity(client, monkeypatch, db_session):
+async def test_send_creates_crm_lead_and_logs_email_activity(set_creds, client, monkeypatch, db_session):
     """Sending to an email with NO existing lead creates a campaign-less
     CRM lead (name split from to_name) and logs an outbound email
     activity against it."""
     from sqlalchemy import func as _f, select as _select
     from app.models import CrmActivity, Lead
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     send_mock = AsyncMock(return_value="msg-crm-1")
     with patch("app.routers.research_client.brevo.send_email", new=send_mock):
         resp = await client.post("/research-client/send", json={
@@ -1214,15 +1165,13 @@ async def test_send_creates_crm_lead_and_logs_email_activity(client, monkeypatch
     assert "worth a chat" in act.body
 
 
-async def test_send_reuses_existing_lead_no_duplicate(client, monkeypatch, db_session):
+async def test_send_reuses_existing_lead_no_duplicate(set_creds, client, monkeypatch, db_session):
     """An email that already has a lead row gets the activity logged on
     the existing record — no second lead created."""
     from sqlalchemy import func as _f, select as _select
     from app.models import CrmActivity, Lead
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     existing = Lead(campaign_id=None, email="known@x.com", first_name="K")
     db_session.add(existing)
     await db_session.commit()
@@ -1253,15 +1202,13 @@ async def test_send_reuses_existing_lead_no_duplicate(client, monkeypatch, db_se
     assert act.subject == "Hello again"
 
 
-async def test_send_attaches_activity_to_matching_opportunity(client, monkeypatch, db_session):
+async def test_send_attaches_activity_to_matching_opportunity(set_creds, client, monkeypatch, db_session):
     """When an opportunity carries the same email, the logged activity
     spans BOTH parents so the deal timeline captures the touch."""
     from sqlalchemy import select as _select
     from app.models import CrmActivity, Opportunity
 
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     opp = Opportunity(name="Deal", email="deal@x.com")
     db_session.add(opp)
     await db_session.commit()
@@ -1283,12 +1230,10 @@ async def test_send_attaches_activity_to_matching_opportunity(client, monkeypatc
     assert act.lead_id is not None  # also attached to the (new) lead
 
 
-async def test_send_succeeds_even_when_crm_tracking_fails(client, monkeypatch):
+async def test_send_succeeds_even_when_crm_tracking_fails(set_creds, client, monkeypatch):
     """CRM tracking is best-effort: a failure there must not fail the
     send response (the email already went out via Brevo)."""
-    monkeypatch.setattr(
-        "app.routers.research_client.settings.BREVO_API_KEY", "test-key",
-    )
+    set_creds("brevo", api_key="test-key")
     send_mock = AsyncMock(return_value="msg-crm-4")
 
     def _explode(*a, **k):

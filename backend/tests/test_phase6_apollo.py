@@ -27,14 +27,14 @@ def _response(status_code: int, body: dict | None = None) -> MagicMock:
     return r
 
 
-async def test_returns_empty_when_key_missing(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "")
+async def test_returns_empty_when_key_missing(set_creds, monkeypatch):
+    set_creds("apollo", api_key="")
     result = await apollo.enrich_lead_apollo("a@b.com", "A", "B", "Co")
     assert result == {}
 
 
-async def test_extracts_person_and_org_fields(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "test-key")
+async def test_extracts_person_and_org_fields(set_creds, monkeypatch):
+    set_creds("apollo", api_key="test-key")
     body = {
         "person": {
             "linkedin_url": "https://linkedin.com/in/jdoe",
@@ -69,24 +69,24 @@ async def test_extracts_person_and_org_fields(monkeypatch):
     assert sent_payload["email"] == "a@b.com"
 
 
-async def test_returns_empty_when_no_person_in_response(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "test-key")
+async def test_returns_empty_when_no_person_in_response(set_creds, monkeypatch):
+    set_creds("apollo", api_key="test-key")
     cls, _ = _mock_client_returning(_response(200, {"person": None}))
     with patch.object(apollo.httpx, "AsyncClient", cls):
         result = await apollo.enrich_lead_apollo("a@b.com", "J", "D", "Acme")
     assert result == {}
 
 
-async def test_returns_empty_on_404(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "test-key")
+async def test_returns_empty_on_404(set_creds, monkeypatch):
+    set_creds("apollo", api_key="test-key")
     cls, _ = _mock_client_returning(_response(404))
     with patch.object(apollo.httpx, "AsyncClient", cls):
         result = await apollo.enrich_lead_apollo("a@b.com", "J", "D", "Acme")
     assert result == {}
 
 
-async def test_retries_on_429_then_succeeds(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "test-key")
+async def test_retries_on_429_then_succeeds(set_creds, monkeypatch):
+    set_creds("apollo", api_key="test-key")
     body = {"person": {"linkedin_url": "x", "title": "CEO"}}
     cls, post = _mock_client_returning(
         _response(429), _response(429), _response(200, body)
@@ -99,8 +99,8 @@ async def test_retries_on_429_then_succeeds(monkeypatch):
     assert result["linkedin_url"] == "x"
 
 
-async def test_gives_up_after_max_429_attempts(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "test-key")
+async def test_gives_up_after_max_429_attempts(set_creds, monkeypatch):
+    set_creds("apollo", api_key="test-key")
     cls, post = _mock_client_returning(_response(429), _response(429), _response(429))
     with patch.object(apollo.httpx, "AsyncClient", cls), \
          patch.object(apollo.asyncio, "sleep", AsyncMock()):
@@ -109,8 +109,8 @@ async def test_gives_up_after_max_429_attempts(monkeypatch):
     assert post.call_count == 3
 
 
-async def test_network_error_returns_empty(monkeypatch):
-    monkeypatch.setattr(apollo.settings, "APOLLO_API_KEY", "test-key")
+async def test_network_error_returns_empty(set_creds, monkeypatch):
+    set_creds("apollo", api_key="test-key")
     client_instance = MagicMock()
     client_instance.post = AsyncMock(side_effect=httpx.ConnectError("down"))
     client_instance.__aenter__ = AsyncMock(return_value=client_instance)

@@ -25,6 +25,7 @@ from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services import credentials
 from app.models import (
     ConnectedAccount,
     CrmActivity,
@@ -76,14 +77,11 @@ async def send_and_track(
     signature for this one send (``""`` = send no signature; ``None`` =
     fall back to the account's).  Raises ``OutreachSendError`` on send
     failure; CRM tracking failures are swallowed (logged + rolled back)."""
-    if not settings.BREVO_API_KEY:
-        raise OutreachSendError(
-            "BREVO_API_KEY is not configured.  Add it to .env and "
-            "recreate the backend container."
-        )
+    if not credentials.is_configured("brevo"):
+        raise OutreachSendError(str(credentials.MissingCredential("brevo")))
 
     # From-address priority: explicit override > workspace default sender
-    # > BREVO_SENDER_EMAIL.  We load the full ConnectedAccount so we can
+    # > the workspace's Brevo sender.  We load the full ConnectedAccount so we can
     # apply its signature too (an unmatched override = no signature).
     sender_account: ConnectedAccount | None = None
     if sender_email:
@@ -100,7 +98,7 @@ async def send_and_track(
         )
         sender_email = (
             sender_account.email_address if sender_account is not None
-            else settings.BREVO_SENDER_EMAIL
+            else credentials.default_sender()[1]
         )
 
     # Explicit per-send signature override wins (incl. "" = no signature);

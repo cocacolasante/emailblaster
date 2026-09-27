@@ -21,9 +21,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import ComposeStatus, Lead, ResearchStatus
 from app.workers.celery_app import celery_app
 
@@ -42,7 +43,7 @@ def _now() -> datetime:
 async def _sweep_async() -> dict[str, int]:
     counts = {"compose_revived": 0, "research_revived": 0}
     cutoff = _now() - timedelta(minutes=STALE_AFTER_MINUTES)
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
 
     # Late imports to dodge circulars; these workers import Lead/Campaign
     # which imports back.

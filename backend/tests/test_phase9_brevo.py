@@ -34,9 +34,9 @@ def _response(status_code: int, body: dict | None = None) -> MagicMock:
     return r
 
 
-async def test_raises_when_api_key_missing(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "")
-    with pytest.raises(RuntimeError, match="BREVO_API_KEY"):
+async def test_raises_when_api_key_missing(set_creds, monkeypatch):
+    set_creds("brevo", api_key="")
+    with pytest.raises(RuntimeError, match="Brevo"):
         await brevo.send_email(
             to_email="a@b.com", to_name=None, subject="s",
             html_body="<p>x</p>", text_body="x",
@@ -45,8 +45,8 @@ async def test_raises_when_api_key_missing(monkeypatch):
         )
 
 
-async def test_posts_with_expected_payload_and_headers(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+async def test_posts_with_expected_payload_and_headers(set_creds, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     cls, post = _client(_response(200, {"messageId": "msg-123"}))
     with patch.object(brevo.httpx, "AsyncClient", cls):
         msg_id = await brevo.send_email(
@@ -73,8 +73,8 @@ async def test_posts_with_expected_payload_and_headers(monkeypatch):
     assert "headers" not in payload
 
 
-async def test_omits_recipient_name_when_none(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+async def test_omits_recipient_name_when_none(set_creds, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     cls, post = _client(_response(200, {"messageId": "m"}))
     with patch.object(brevo.httpx, "AsyncClient", cls):
         await brevo.send_email(
@@ -88,8 +88,8 @@ async def test_omits_recipient_name_when_none(monkeypatch):
     assert "name" not in payload["to"][0]
 
 
-async def test_raises_on_non_2xx(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+async def test_raises_on_non_2xx(set_creds, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     cls, _ = _client(_response(500, {"message": "internal"}))
     with patch.object(brevo.httpx, "AsyncClient", cls):
         with pytest.raises(httpx.HTTPStatusError):
@@ -101,8 +101,8 @@ async def test_raises_on_non_2xx(monkeypatch):
             )
 
 
-async def test_raises_when_response_missing_message_id(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+async def test_raises_when_response_missing_message_id(set_creds, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     cls, _ = _client(_response(200, {}))
     with patch.object(brevo.httpx, "AsyncClient", cls):
         with pytest.raises(RuntimeError, match="messageId"):
@@ -122,8 +122,8 @@ def test_wrap_message_id_normalises_brackets():
     assert brevo._wrap_message_id(None) is None
 
 
-async def test_in_reply_to_sets_threading_headers(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+async def test_in_reply_to_sets_threading_headers(set_creds, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     cls, post = _client(_response(200, {"messageId": "msg-9"}))
     with patch.object(brevo.httpx, "AsyncClient", cls):
         await brevo.send_email(
@@ -137,8 +137,8 @@ async def test_in_reply_to_sets_threading_headers(monkeypatch):
     assert headers["References"] == "<orig-id@host>"
 
 
-async def test_no_threading_headers_without_in_reply_to(monkeypatch):
-    monkeypatch.setattr(brevo.settings, "BREVO_API_KEY", "test-key")
+async def test_no_threading_headers_without_in_reply_to(set_creds, monkeypatch):
+    set_creds("brevo", api_key="test-key")
     cls, post = _client(_response(200, {"messageId": "m"}))
     with patch.object(brevo.httpx, "AsyncClient", cls):
         await brevo.send_email(

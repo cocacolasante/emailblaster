@@ -20,9 +20,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import (
     CrmActivity,
     CrmActivityType,
@@ -459,7 +460,7 @@ async def _poll_usaspending_async() -> dict[str, Any]:
     # pre-aborted.  (A redelivered copy can't pre-clear someone else's stop:
     # acks_late=False on the task means there are no redelivered copies.)
     _clear_stop(USASPENDING_SOURCE)
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:
@@ -548,7 +549,7 @@ def poll_usaspending() -> dict[str, Any]:
 
 async def _poll_irs_bmf_async() -> dict[str, Any]:
     _clear_stop(IRS_BMF_SOURCE)
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             try:
@@ -704,7 +705,7 @@ async def _retry_one(session: AsyncSession, row: FundingEnrichmentQueue) -> str:
 
 
 async def _retry_enrichment_async() -> dict[str, Any]:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     counts = {"processed": 0, "resolved": 0, "exhausted": 0, "mailed": 0, "pending": 0}
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:

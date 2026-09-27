@@ -13,9 +13,10 @@ import logging
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
 from app.models import CampaignCopyInsights, ReplyOutcome
 from app.services import copy_insights
 from app.workers.celery_app import celery_app
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 async def _refresh_all_async() -> dict[str, Any]:
     refreshed: list[str] = []
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             # Campaigns with any outcomes at all, with their totals.

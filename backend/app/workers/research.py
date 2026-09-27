@@ -14,9 +14,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.tenancy.worker_db import worker_engine
+from app.services import credentials
 from app.models import (
     Campaign,
     ComposeStatus,
@@ -102,7 +104,7 @@ def _safe(result: Any, default: Any) -> Any:
 
 async def research_lead_async(lead_id: str) -> dict[str, Any]:
     lid = uuid.UUID(str(lead_id))
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     enqueued = False
 
     try:
@@ -207,7 +209,7 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
                 ),
                 asyncio.ensure_future(hunter.verify_email_hunter(email)),
             ]
-            run_apollo = mode == ResearchMode.DEEP and bool(settings.APOLLO_API_KEY)
+            run_apollo = mode == ResearchMode.DEEP and credentials.is_configured("apollo")
             if run_apollo:
                 tasks.append(
                     asyncio.ensure_future(
@@ -273,7 +275,7 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
 
 
 async def _mark_lead_failed(lead_id: str) -> None:
-    engine = create_async_engine(settings.DATABASE_URL)
+    engine = worker_engine()
     try:
         async with AsyncSession(engine) as session:
             lead = await session.get(Lead, uuid.UUID(lead_id))
