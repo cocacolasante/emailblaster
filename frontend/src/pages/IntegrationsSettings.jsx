@@ -47,7 +47,7 @@ function StatusPill({ integration }) {
   return <Badge variant="success" data-testid="integration-status" data-status="ok">Connected ✓</Badge>;
 }
 
-function CopyButton({ value, label = 'Copy', testId }) {
+export function CopyButton({ value, label = 'Copy', testId }) {
   const toast = useToast();
   async function copy() {
     try {

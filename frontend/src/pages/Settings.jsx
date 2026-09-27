@@ -27,6 +27,7 @@ import IntentTab from './IntentSettings.jsx';
 import WorkspaceTab from './WorkspaceSettings.jsx';
 import ProfileTab from './ProfileSettings.jsx';
 import IntegrationsTab from './IntegrationsSettings.jsx';
+import AgentAccessTab from './AgentAccessSettings.jsx';
 import { IntegrationHint, IntegrationsLink } from '../components/IntegrationHint.jsx';
 import { useIntegrations } from '../hooks/useIntegrations.js';
 
@@ -739,6 +740,7 @@ const SETTINGS_TABS = [
   { key: 'workspace', label: 'Workspace' },
   { key: 'profile', label: 'Profile' },
   { key: 'integrations', label: 'Integrations' },
+  { key: 'agent-access', label: 'Agent access' },
   { key: 'inboxes', label: 'Connected inboxes' },
   { key: 'linkedin', label: 'LinkedIn accounts' },
   { key: 'agent', label: 'Agent' },
@@ -783,6 +785,7 @@ export default function Settings() {
       {tab === 'workspace' && <WorkspaceTab />}
       {tab === 'profile' && <ProfileTab />}
       {tab === 'integrations' && <IntegrationsTab />}
+      {tab === 'agent-access' && <AgentAccessTab />}
       {tab === 'inboxes' && <ConnectedInboxesTab />}
       {tab === 'linkedin' && <LinkedInAccountsTab />}
       {tab === 'agent' && <AgentTab />}

@@ -71,7 +71,15 @@ export function integrationsWithMissing(...missing) {
   ));
 }
 
+/** Agent access (Muse over MCP) defaults: a public endpoint, no keys. */
+export const TEST_MCP_CONNECTION = {
+  mcp_url: 'https://outreach.example.com/mcp',
+  public: true,
+};
+
 export const defaultHandlers = [
+  http.get(api('/api-keys/connection'), () => HttpResponse.json(TEST_MCP_CONNECTION)),
+  http.get(api('/api-keys'), () => HttpResponse.json([])),
   http.get(api('/settings/integrations'), () => HttpResponse.json(TEST_INTEGRATIONS)),
   http.get(api('/auth/me'), () => HttpResponse.json(TEST_ME)),
   http.get(api('/team/members'), () => HttpResponse.json(TEST_MEMBERS)),

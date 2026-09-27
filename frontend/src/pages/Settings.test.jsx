@@ -130,6 +130,15 @@ describe('Settings page tabs', () => {
     expect(labels.indexOf('Integrations')).toBe(labels.indexOf('Profile') + 1);
   });
 
+  it('places Agent access right after Integrations and renders it', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    const labels = screen.getAllByRole('tab').map((t) => t.textContent);
+    expect(labels.indexOf('Agent access')).toBe(labels.indexOf('Integrations') + 1);
+    await user.click(screen.getByRole('tab', { name: 'Agent access' }));
+    expect(await screen.findByTestId('agent-access-tab')).toBeInTheDocument();
+  });
+
   it('switches to the Integrations tab and renders provider cards', async () => {
     const user = userEvent.setup();
     renderSettings();
