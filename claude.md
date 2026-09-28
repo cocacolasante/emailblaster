@@ -56,8 +56,8 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     empty + isolated; invite → teammate sees data; assign → "My leads").
   - Applied to the dev DB 2026-09-27 (backup in `backups/`); counts
     verified identical before/after.
-  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 30
-    pinned tools (incl. human-gated research→draft→confirm→send via
+  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 39
+    pinned tools (incl. reports + report builder, human-gated research→draft→confirm→send via
     `outreach_drafts`, 0051), named tunnel `outreach.blueprintautomation.tech`; see
     [`docs/muse-mcp.md`](docs/muse-mcp.md).
 
@@ -674,7 +674,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1378 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
+_Backend tests: **1379 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

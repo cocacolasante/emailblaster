@@ -351,6 +351,115 @@ async def ignore_lead(ctx: ToolContext, args: dict) -> Any:
     return {"email": lead["email"], **res}
 
 
+# --- reports -----------------------------------------------------------------
+
+MAX_REPORT_ROWS = 200  # rows handed to the agent (the query itself caps at 5000)
+DATA_SOURCES = ["leads", "opportunities", "activities", "contacts", "accounts"]
+
+
+async def _member_names(ctx: ToolContext) -> dict[str, str]:
+    members = await ctx.call("GET", "/team/members")
+    return {m["user_id"]: m["display_name"] for m in members}
+
+
+async def _report_result(ctx: ToolContext, res: dict, limit: int) -> dict:
+    """Trim rows for the agent and show owners as names, not ids."""
+    rows = res.get("rows") or []
+    owner_cols = [c["key"] for c in res.get("columns", []) if c.get("type") == "owner"]
+    if owner_cols and rows:
+        names = await _member_names(ctx)
+        for row in rows:
+            for key in owner_cols:
+                if row.get(key):
+                    row[key] = names.get(str(row[key]), "former member")
+                elif key in row:
+                    row[key] = "unassigned"
+    return {
+        "columns": res.get("columns"),
+        "rows": rows[:limit],
+        "row_count": res.get("row_count"),
+        "rows_shown": min(len(rows), limit),
+        "grouped": res.get("grouped"),
+        "truncated": res.get("truncated") or len(rows) > limit,
+    }
+
+
+async def report_fields(ctx: ToolContext, args: dict) -> Any:
+    meta = await ctx.call("GET", "/reports/metadata")
+    wanted = args.get("data_source")
+    objects = [o for o in meta["objects"] if not wanted or o["key"] == wanted]
+    return {
+        "objects": [
+            {"key": o["key"], "label": o["label"], "default_columns": o["default_columns"],
+             "fields": [{k: f[k] for k in ("key", "label", "type", "operators", "aggregates", "enum_values")
+                         if f.get(k)} for f in o["fields"]]}
+            for o in objects
+        ],
+        "relative_ranges": meta.get("relative_ranges"),
+        "definition_format": {
+            "columns": ["field keys (ungrouped reports)"],
+            "filters": [{"field": "key", "op": "operator", "value": "…  ('me' works for owner)"}],
+            "group_by": ["field keys"],
+            "aggregates": [{"fn": "count|sum|avg|min|max", "field": "key (omit for count)"}],
+            "sort": [{"field": "key or aggregate alias like amount_sum", "dir": "asc|desc"}],
+            "limit": "max rows (≤5000)",
+        },
+    }
+
+
+def _definition(args: dict) -> dict:
+    return {k: args[k] for k in ("columns", "filters", "group_by", "aggregates", "sort", "limit") if k in args}
+
+
+async def run_report(ctx: ToolContext, args: dict) -> Any:
+    res = await ctx.call("POST", "/reports/run", body={
+        "data_source": args["data_source"], "definition": _definition(args),
+    })
+    return await _report_result(ctx, res, min(int(args.get("limit") or 50), MAX_REPORT_ROWS))
+
+
+async def list_saved_reports(ctx: ToolContext, args: dict) -> Any:
+    rows = await ctx.call("GET", "/reports")
+    return [_pick(r, "id", "name", "description", "data_source", "definition", "owner_id", "updated_at")
+            for r in rows]
+
+
+async def run_saved_report(ctx: ToolContext, args: dict) -> Any:
+    res = await ctx.call("POST", f"/reports/{args['report_id']}/run")
+    return await _report_result(ctx, res, min(int(args.get("limit") or 50), MAX_REPORT_ROWS))
+
+
+async def save_report(ctx: ToolContext, args: dict) -> Any:
+    return await ctx.call("POST", "/reports", body={
+        "name": args["name"], "description": args.get("description"),
+        "data_source": args["data_source"], "definition": _definition(args),
+    })
+
+
+async def update_report(ctx: ToolContext, args: dict) -> Any:
+    body = {k: args[k] for k in ("name", "description") if k in args}
+    definition = _definition(args)
+    if definition:
+        body["definition"] = definition
+    if "data_source" in args:
+        body["data_source"] = args["data_source"]
+    if not body:
+        raise ToolError("nothing to update")
+    return await ctx.call("PATCH", f"/reports/{args['report_id']}", body=body)
+
+
+async def crm_overview(ctx: ToolContext, args: dict) -> Any:
+    return await ctx.call("GET", "/crm/reports/overview", params=_pick(args, "start", "end"))
+
+
+async def deals_report(ctx: ToolContext, args: dict) -> Any:
+    return await ctx.call("GET", "/crm/reports/deals", params=_pick(args, "outcome", "start", "end"))
+
+
+async def activities_report(ctx: ToolContext, args: dict) -> Any:
+    return await ctx.call("GET", "/crm/reports/activities", params=_pick(args, "start", "end", "activity_type"))
+
+
 # --- research-a-lead outreach (human-approved send) ---------------------------
 
 def _draft_view(d: dict) -> dict:
@@ -540,6 +649,63 @@ TOOLS: list[Tool] = [
          "in, so no further outreach reaches them (same as Ignore in the dashboard). Use when "
          "someone asks not to be contacted. Undoing it is done in the dashboard.",
          _obj({"lead_id": UUID_S}, ["lead_id"]), ignore_lead, mutates=True),
+    Tool("crm_overview", "CRM overview report",
+         "Headline CRM numbers for a date range: pipeline value, win rate, deals opened/closed, "
+         "lead funnel and activity volume (the Reports tab's overview).",
+         _obj({"start": DATE_S, "end": DATE_S}), crm_overview),
+    Tool("deals_report", "Deals report",
+         "Won, lost, open or all deals in a date range, with totals.",
+         _obj({"outcome": {"type": "string", "enum": ["won", "lost", "open", "all"]},
+               "start": DATE_S, "end": DATE_S}), deals_report),
+    Tool("activities_report", "Activities report",
+         "Calls, emails, meetings, notes and tasks logged in a date range, with breakdowns.",
+         _obj({"start": DATE_S, "end": DATE_S,
+               "activity_type": {"type": "string", "enum": ["call", "email", "meeting", "note", "task"]}}),
+         activities_report),
+    Tool("report_fields", "Report builder fields",
+         "What the report builder can query: data sources, their fields, allowed filter operators "
+         "and aggregates, and the definition format. Call this before building a custom report.",
+         _obj({"data_source": {"type": "string", "enum": DATA_SOURCES}}), report_fields),
+    Tool("run_report", "Run a custom report",
+         "Build and run a report without saving it. Ungrouped: pick `columns`. Summary: use "
+         "`group_by` + `aggregates` (e.g. deals by stage with amount sum). Filters use the "
+         "operators from report_fields; owner filters accept 'me'.",
+         _obj({"data_source": {"type": "string", "enum": DATA_SOURCES},
+               "columns": {"type": "array", "items": {"type": "string"}},
+               "filters": {"type": "array", "items": {"type": "object"}},
+               "group_by": {"type": "array", "items": {"type": "string"}},
+               "aggregates": {"type": "array", "items": {"type": "object"}},
+               "sort": {"type": "array", "items": {"type": "object"}},
+               "limit": {"type": "integer", "minimum": 1, "maximum": 5000}}, ["data_source"]),
+         run_report),
+    Tool("list_saved_reports", "Saved reports",
+         "Reports saved in the report builder, with their definitions.", _obj({}), list_saved_reports),
+    Tool("run_saved_report", "Run a saved report", "Run one saved report and return its rows.",
+         _obj({"report_id": UUID_S, "limit": {"type": "integer", "minimum": 1, "maximum": 200}},
+              ["report_id"]), run_saved_report),
+    Tool("save_report", "Save a report",
+         "Save a report definition to the report builder (shows up in the Reports page).",
+         _obj({"name": {"type": "string"}, "description": {"type": "string"},
+               "data_source": {"type": "string", "enum": DATA_SOURCES},
+               "columns": {"type": "array", "items": {"type": "string"}},
+               "filters": {"type": "array", "items": {"type": "object"}},
+               "group_by": {"type": "array", "items": {"type": "string"}},
+               "aggregates": {"type": "array", "items": {"type": "object"}},
+               "sort": {"type": "array", "items": {"type": "object"}},
+               "limit": {"type": "integer", "minimum": 1, "maximum": 5000}},
+              ["name", "data_source"]), save_report, mutates=True),
+    Tool("update_report", "Update a saved report",
+         "Rename a saved report or change its definition (replaces the whole definition when any "
+         "definition field is given).",
+         _obj({"report_id": UUID_S, "name": {"type": "string"}, "description": {"type": "string"},
+               "data_source": {"type": "string", "enum": DATA_SOURCES},
+               "columns": {"type": "array", "items": {"type": "string"}},
+               "filters": {"type": "array", "items": {"type": "object"}},
+               "group_by": {"type": "array", "items": {"type": "string"}},
+               "aggregates": {"type": "array", "items": {"type": "object"}},
+               "sort": {"type": "array", "items": {"type": "object"}},
+               "limit": {"type": "integer", "minimum": 1, "maximum": 5000}}, ["report_id"]),
+         update_report, mutates=True),
     Tool("research_prospect", "Research a lead and draft outreach",
          "Research someone from their LinkedIn profile URL and draft a personalised email, "
          "LinkedIn message (1st-degree connections) or LinkedIn connection request with a note "

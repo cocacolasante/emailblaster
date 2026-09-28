@@ -241,6 +241,8 @@ PINNED = {
     "list_lead_activities", "ignore_lead",
     "research_prospect", "redraft_outreach", "edit_outreach_draft", "confirm_outreach",
     "send_outreach", "discard_outreach",
+    "crm_overview", "deals_report", "activities_report", "report_fields", "run_report",
+    "list_saved_reports", "run_saved_report", "save_report", "update_report",
 }
 
 
@@ -274,7 +276,10 @@ def test_research_prospect_never_sends():
 
 def test_read_tools_are_flagged_read_only():
     reads = {t.name for t in TOOLS if not t.mutates}
-    assert reads == {n for n in PINNED if n.startswith(("daily_", "list_", "get_", "search_"))}
+    assert reads == {n for n in PINNED if n.startswith(("daily_", "list_", "get_", "search_"))} | {
+        "crm_overview", "deals_report", "activities_report", "report_fields", "run_report",
+        "run_saved_report",
+    }
 
 
 def test_log_activity_cannot_create_tasks_or_send():
@@ -391,3 +396,48 @@ async def test_muse_outreach_flow_end_to_end(client, anon_client, set_creds, mon
                               {"draft_id": draft["id"], "confirmation_code": code, "user_approved": True})
     assert sent["status"] == "sent"
     send.assert_awaited_once()
+
+
+
+async def test_reports_via_muse(client, anon_client, db_session):
+    db_session.add_all([
+        Opportunity(name="A", stage=OpportunityStage.PROPOSAL, amount=1000),
+        Opportunity(name="B", stage=OpportunityStage.PROPOSAL, amount=500),
+        Opportunity(name="C", stage=OpportunityStage.CLOSED_WON, amount=2000),
+    ])
+    await db_session.commit()
+    token = await _mint(client)
+    _, fields = await _call(anon_client, token, "report_fields", {"data_source": "opportunities"})
+    keys = {f["key"] for f in fields["objects"][0]["fields"]}
+    assert {"stage", "amount", "owner"} <= keys and "definition_format" in fields
+    _, by_stage = await _call(anon_client, token, "run_report", {
+        "data_source": "opportunities", "group_by": ["stage"],
+        "aggregates": [{"fn": "sum", "field": "amount"}, {"fn": "count"}],
+        "sort": [{"field": "amount_sum", "dir": "desc"}],
+    })
+    totals = {r["stage"]: r["amount_sum"] for r in by_stage["rows"]}
+    assert totals == {"closed_won": 2000, "proposal": 1500}
+    _, mine = await _call(anon_client, token, "run_report", {
+        "data_source": "opportunities", "columns": ["name", "owner"],
+        "filters": [{"field": "owner", "op": "equals", "value": "me"}],
+    })
+    assert mine["row_count"] == 3 and mine["rows"][0]["owner"] == "Test Owner"  # names, not ids
+    result, msg = await _call(anon_client, token, "run_report",
+                              {"data_source": "opportunities", "columns": ["nope"]})
+    assert result["isError"] and "nope" in msg
+    _, saved = await _call(anon_client, token, "save_report", {
+        "name": "Pipeline by stage", "data_source": "opportunities", "group_by": ["stage"],
+        "aggregates": [{"fn": "sum", "field": "amount"}],
+    })
+    _, listed = await _call(anon_client, token, "list_saved_reports")
+    assert [r["name"] for r in listed] == ["Pipeline by stage"]
+    _, ran = await _call(anon_client, token, "run_saved_report", {"report_id": saved["id"]})
+    assert ran["grouped"] is True and len(ran["rows"]) == 2
+    _, renamed = await _call(anon_client, token, "update_report", {"report_id": saved["id"], "name": "Stages"})
+    assert renamed["name"] == "Stages" and renamed["definition"]["group_by"] == ["stage"]
+    _, overview = await _call(anon_client, token, "crm_overview")
+    assert isinstance(overview, dict)
+    _, won = await _call(anon_client, token, "deals_report", {"outcome": "won"})
+    assert isinstance(won, dict)
+    _, acts = await _call(anon_client, token, "activities_report")
+    assert isinstance(acts, dict)

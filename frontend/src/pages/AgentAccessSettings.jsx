@@ -81,6 +81,7 @@ function CapabilitiesCard() {
       <ul className="mt-2 mb-0 pl-5 list-disc text-sm text-slate-700 flex flex-col gap-1">
         <li>Search leads (by name, company or email) and deals; read campaigns, replies, tasks, notes and activity logs</li>
         <li>Update the CRM — leads, notes, tasks, deals and owners</li>
+        <li>Run CRM reports and the report builder — overview, deals, activities, custom and saved reports (can save and edit reports, not delete them)</li>
         <li>Add a lead to the ignore list (stops all outreach to them)</li>
         <li>Research a lead from a LinkedIn URL and draft an email or LinkedIn message — it only sends after you confirm the recipient and sender and explicitly approve</li>
         <li>Pause and resume campaigns</li>

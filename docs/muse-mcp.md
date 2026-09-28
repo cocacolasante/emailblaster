@@ -27,6 +27,7 @@ suspended.
 | Daily brief, campaigns + stats, lead search (name / company / exact email), lead detail + notes + activity log, inbound replies, deal search + activity, tasks, team, notifications | Send anything without your approval (see below) |
 | Create/update CRM leads, log calls/meetings/notes, create/complete tasks, convert leads, create/move deals, assign owners | Launch or approve a campaign |
 | Pause a campaign; resume a paused one | Resume a circuit-breaker pause (human only) |
+| Reports: CRM overview, deals, activities; report builder — list fields, run custom reports, run/save/edit saved reports (owner ids shown as names) | Delete a saved report |
 | Add a lead to the ignore list (suppress + halt everywhere) | Un-ignore a lead (dashboard only) |
 | Research a lead from a LinkedIn URL, draft an email / LinkedIn DM / connection note, redraft, and send **after your approval** | Send without the confirm step + your explicit approval |
 | | Delete anything; manage team, integrations or API keys |
