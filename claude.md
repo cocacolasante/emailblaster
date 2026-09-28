@@ -56,7 +56,7 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     empty + isolated; invite → teammate sees data; assign → "My leads").
   - Applied to the dev DB 2026-09-27 (backup in `backups/`); counts
     verified identical before/after.
-  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 22
+  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 24
     pinned tools, named tunnel `outreach.blueprintautomation.tech`; see
     [`docs/muse-mcp.md`](docs/muse-mcp.md).
 

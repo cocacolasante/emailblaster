@@ -79,8 +79,9 @@ function CapabilitiesCard() {
     <Card className="p-5" data-testid="mcp-capabilities">
       <h3 className="text-base font-semibold text-slate-900 m-0">What Muse can do</h3>
       <ul className="mt-2 mb-0 pl-5 list-disc text-sm text-slate-700 flex flex-col gap-1">
-        <li>Read campaigns, leads, replies, deals and tasks</li>
+        <li>Search leads (by name, company or email) and deals; read campaigns, replies, tasks, notes and activity logs</li>
         <li>Update the CRM — leads, notes, tasks, deals and owners</li>
+        <li>Add a lead to the ignore list (stops all outreach to them)</li>
         <li>Pause and resume campaigns</li>
       </ul>
       <p className="text-sm text-slate-600 mt-3 mb-0">

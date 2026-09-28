@@ -174,11 +174,20 @@ async def get_campaign(ctx: ToolContext, args: dict) -> Any:
 
 
 async def search_leads(ctx: ToolContext, args: dict) -> Any:
+    email = (args.get("email") or "").strip().lower()
     page = await ctx.call("GET", "/leads", params={
-        "search": args.get("query"), "campaign_id": args.get("campaign_id"),
+        "search": email or args.get("query"), "campaign_id": args.get("campaign_id"),
         "owner": args.get("owner"), "page_size": min(int(args.get("limit") or 20), 50),
     })
-    return {"total": page["total"], "leads": [_lead_summary(i) for i in page["items"]]}
+    leads = [_lead_summary(i) for i in page["items"]]
+    if email:
+        # Exact address wins; the same person can be a lead in several
+        # campaigns, so every exact match is returned.
+        exact = [l for l in leads if (l.get("email") or "").lower() == email]
+        return {"total": len(exact), "match": "exact", "leads": exact} if exact else {
+            "total": page["total"], "match": "partial", "leads": leads,
+        }
+    return {"total": page["total"], "leads": leads}
 
 
 async def get_lead(ctx: ToolContext, args: dict) -> Any:
@@ -199,7 +208,7 @@ async def list_replies(ctx: ToolContext, args: dict) -> Any:
 
 async def list_opportunities(ctx: ToolContext, args: dict) -> Any:
     page = await ctx.call("GET", "/crm/opportunities", params={
-        "stage": args.get("stage"), "owner": args.get("owner"),
+        "search": args.get("query"), "stage": args.get("stage"), "owner": args.get("owner"),
         "open_only": "true" if args.get("open_only") else None, "page_size": 100,
     })
     return {"total": page["total"], "opportunities": [_opp_summary(o) for o in page["items"]]}
@@ -210,6 +219,14 @@ async def get_opportunity(ctx: ToolContext, args: dict) -> Any:
     opp = await ctx.call("GET", f"/crm/opportunities/{oid}")
     acts = await ctx.call("GET", "/crm/activities", params={"opportunity_id": oid, "page_size": 30})
     return {**opp, "activities": [_task_summary(a) for a in acts.get("items", [])]}
+
+
+async def list_lead_activities(ctx: ToolContext, args: dict) -> Any:
+    page = await ctx.call("GET", "/crm/activities", params={
+        "lead_id": args["lead_id"], "activity_type": args.get("activity_type"),
+        "page_size": min(int(args.get("limit") or 50), 200),
+    })
+    return {"total": page["total"], "activities": [_task_summary(a) for a in page["items"]]}
 
 
 async def list_tasks(ctx: ToolContext, args: dict) -> Any:
@@ -322,6 +339,14 @@ async def assign_owner(ctx: ToolContext, args: dict) -> Any:
     })
 
 
+async def ignore_lead(ctx: ToolContext, args: dict) -> Any:
+    lead = await ctx.call("GET", f"/leads/{args['lead_id']}")
+    if not lead.get("email"):
+        raise ToolError("this lead has no email address to ignore")
+    res = await ctx.call("POST", f"/leads/{args['lead_id']}/ignore")
+    return {"email": lead["email"], **res}
+
+
 # --- campaign control --------------------------------------------------------
 
 async def pause_campaign(ctx: ToolContext, args: dict) -> Any:
@@ -357,8 +382,12 @@ TOOLS: list[Tool] = [
          "One campaign's goal, schedule and full stats.",
          _obj({"campaign_id": UUID_S}, ["campaign_id"]), get_campaign),
     Tool("search_leads", "Search leads",
-         "Search leads across all campaigns by name, email or company; filter by campaign or owner.",
-         _obj({"query": {"type": "string"}, "campaign_id": UUID_S, "owner": OWNER_S,
+         "Search leads across all campaigns. Use `email` to look someone up by email address "
+         "(exact matches first — the same person may be a lead in several campaigns), or "
+         "`query` for name / company / partial email. Filter by campaign or owner.",
+         _obj({"email": {"type": "string", "description": "An email address, e.g. jane@acme.com"},
+               "query": {"type": "string", "description": "Name, company, or part of an email"},
+               "campaign_id": UUID_S, "owner": OWNER_S,
                "limit": {"type": "integer", "minimum": 1, "maximum": 50}}), search_leads),
     Tool("get_lead", "Lead details",
          "A lead's contact info, CRM status, research summary and recent email/LinkedIn history.",
@@ -368,13 +397,22 @@ TOOLS: list[Tool] = [
          _obj({"sentiment": {"type": "string", "enum": ["positive", "neutral", "negative",
                                                          "out_of_office", "unsubscribe"]},
                "limit": {"type": "integer", "minimum": 1, "maximum": 50}}), list_replies),
-    Tool("list_opportunities", "List deals",
-         "Opportunities in the pipeline; filter by stage, owner, or open only.",
-         _obj({"stage": {"type": "string", "enum": STAGES}, "owner": OWNER_S,
+    Tool("list_opportunities", "Search deals",
+         "Opportunities in the pipeline. `query` searches deal name, company and contact email; "
+         "filter by stage, owner, or open only.",
+         _obj({"query": {"type": "string"}, "stage": {"type": "string", "enum": STAGES},
+               "owner": OWNER_S,
                "open_only": {"type": "boolean"}}), list_opportunities),
     Tool("get_opportunity", "Deal details",
          "One opportunity plus its activity timeline and tasks.",
          _obj({"opportunity_id": UUID_S}, ["opportunity_id"]), get_opportunity),
+    Tool("list_lead_activities", "Lead activity log",
+         "Calls, meetings, notes, emails and tasks logged on a lead, newest first "
+         "(get_lead has the lead's notes field and its email/LinkedIn sequence history).",
+         _obj({"lead_id": UUID_S,
+               "activity_type": {"type": "string", "enum": ["call", "email", "meeting", "note", "task"]},
+               "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, ["lead_id"]),
+         list_lead_activities),
     Tool("list_tasks", "Open tasks",
          "Incomplete tasks ordered by due date (defaults to mine).",
          _obj({"owner": OWNER_S}), list_tasks),
@@ -449,6 +487,11 @@ TOOLS: list[Tool] = [
                "ids": {"type": "array", "items": UUID_S, "minItems": 1, "maxItems": 500},
                "owner_id": OWNER_ID_S}, ["record_type", "ids", "owner_id"]),
          assign_owner, mutates=True),
+    Tool("ignore_lead", "Add a lead to the ignore list",
+         "Suppress this lead's email for the whole workspace and halt it in every campaign it's "
+         "in, so no further outreach reaches them (same as Ignore in the dashboard). Use when "
+         "someone asks not to be contacted. Undoing it is done in the dashboard.",
+         _obj({"lead_id": UUID_S}, ["lead_id"]), ignore_lead, mutates=True),
     Tool("pause_campaign", "Pause a campaign",
          "Stop a running campaign's sends immediately (resume later from here or the dashboard).",
          _obj({"campaign_id": UUID_S}, ["campaign_id"]), pause_campaign, mutates=True),

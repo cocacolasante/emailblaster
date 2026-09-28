@@ -24,9 +24,10 @@ suspended.
 
 | Can | Can't |
 |---|---|
-| Daily brief, campaigns + stats, lead search/detail, inbound replies, deals, tasks, team, notifications | Send email or LinkedIn messages |
+| Daily brief, campaigns + stats, lead search (name / company / exact email), lead detail + notes + activity log, inbound replies, deal search + activity, tasks, team, notifications | Send email or LinkedIn messages |
 | Create/update CRM leads, log calls/meetings/notes, create/complete tasks, convert leads, create/move deals, assign owners | Launch or approve a campaign |
 | Pause a campaign; resume a paused one | Resume a circuit-breaker pause (human only) |
+| Add a lead to the ignore list (suppress + halt everywhere) | Un-ignore a lead (dashboard only) |
 | | Delete anything; manage team, integrations or API keys |
 
 The tool list is pinned by `tests/test_mcp.py` — widening it is a

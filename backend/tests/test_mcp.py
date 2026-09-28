@@ -238,6 +238,7 @@ PINNED = {
     "list_opportunities", "get_opportunity", "list_tasks", "list_team_members", "list_notifications",
     "create_lead", "update_lead", "log_activity", "create_task", "complete_task", "convert_lead",
     "create_opportunity", "update_opportunity", "assign_owner", "pause_campaign", "resume_campaign",
+    "list_lead_activities", "ignore_lead",
 }
 
 
@@ -246,7 +247,7 @@ def test_tool_surface_is_pinned():
     assert {t.name for t in TOOLS} == PINNED
 
 
-@pytest.mark.parametrize("word", ["send", "approve", "launch", "delete", "remove", "invite",
+@pytest.mark.parametrize("word", ["send", "approve", "launch", "delete", "remove", "invite", "unignore",
                                   "linkedin", "integration", "api_key", "key"])
 def test_no_outbound_or_admin_tools(word):
     for t in TOOLS:
@@ -261,3 +262,77 @@ def test_read_tools_are_flagged_read_only():
 def test_log_activity_cannot_create_tasks_or_send():
     schema = next(t for t in TOOLS if t.name == "log_activity").input_schema
     assert "task" not in schema["properties"]["activity_type"]["enum"]
+
+
+# --- search, activity log, ignore -------------------------------------------
+
+
+async def test_search_leads_by_email(client, anon_client, db_session):
+    camp_a = await _campaign(db_session, name="A")
+    camp_b = await _campaign(db_session, name="B")
+    db_session.add_all([
+        Lead(campaign_id=camp_a.id, email="jane@acme.com", first_name="Jane"),
+        Lead(campaign_id=camp_b.id, email="jane@acme.com", first_name="Jane"),
+        Lead(email="jane.doe@acme.com", first_name="Other Jane"),
+    ])
+    await db_session.commit()
+    token = await _mint(client)
+    _, exact = await _call(anon_client, token, "search_leads", {"email": "JANE@acme.com"})
+    assert exact["match"] == "exact" and exact["total"] == 2
+    assert {l["email"] for l in exact["leads"]} == {"jane@acme.com"}
+    _, partial = await _call(anon_client, token, "search_leads", {"email": "acme.com"})
+    assert partial["match"] == "partial" and partial["total"] == 3
+
+
+async def test_search_opportunities_by_text(client, anon_client, db_session):
+    db_session.add_all([
+        Opportunity(name="Acme renewal", stage=OpportunityStage.PROPOSAL, email="cfo@acme.com"),
+        Opportunity(name="Globex pilot", stage=OpportunityStage.PROSPECTING),
+    ])
+    await db_session.commit()
+    token = await _mint(client)
+    _, by_name = await _call(anon_client, token, "list_opportunities", {"query": "acme"})
+    assert [o["name"] for o in by_name["opportunities"]] == ["Acme renewal"]
+    _, by_email = await _call(anon_client, token, "list_opportunities", {"query": "cfo@acme.com"})
+    assert by_email["total"] == 1
+
+
+async def test_lead_activity_log(client, anon_client, db_session):
+    token = await _mint(client)
+    _, lead = await _call(anon_client, token, "create_lead", {"email": "log@acme.com"})
+    await _call(anon_client, token, "log_activity",
+                {"lead_id": lead["id"], "activity_type": "call", "subject": "Discovery call"})
+    await _call(anon_client, token, "log_activity",
+                {"lead_id": lead["id"], "activity_type": "note", "subject": "Prefers email",
+                 "body": "Budget in Q1"})
+    _, log = await _call(anon_client, token, "list_lead_activities", {"lead_id": lead["id"]})
+    assert log["total"] == 2
+    assert {a["subject"] for a in log["activities"]} == {"Discovery call", "Prefers email"}
+    _, notes = await _call(anon_client, token, "list_lead_activities",
+                           {"lead_id": lead["id"], "activity_type": "note"})
+    assert [a["body"] for a in notes["activities"]] == ["Budget in Q1"]
+
+
+async def test_ignore_lead_suppresses_and_halts(client, anon_client, db_session):
+    from app.models import Suppression
+
+    camp = await _campaign(db_session, status=CampaignStatus.RUNNING)
+    lead = Lead(campaign_id=camp.id, email="stop@acme.com")
+    db_session.add(lead)
+    await db_session.commit()
+    token = await _mint(client)
+    _, res = await _call(anon_client, token, "ignore_lead", {"lead_id": str(lead.id)})
+    assert res["email"] == "stop@acme.com" and res["suppressed"] is True
+    sup = (await db_session.execute(select(Suppression).where(Suppression.email == "stop@acme.com"))).first()
+    assert sup is not None
+    _, again = await _call(anon_client, token, "ignore_lead", {"lead_id": str(lead.id)})
+    assert again["already_suppressed"] is True
+
+
+async def test_ignore_lead_without_email_refused(client, anon_client, db_session):
+    lead = Lead(email=None, first_name="LinkedIn only", linkedin_url="https://linkedin.com/in/x")
+    db_session.add(lead)
+    await db_session.commit()
+    token = await _mint(client)
+    result, msg = await _call(anon_client, token, "ignore_lead", {"lead_id": str(lead.id)})
+    assert result["isError"] and "no email" in msg
