@@ -41,6 +41,7 @@ from app.models.crm import (
     PipelineStage,
 )
 from app.models.api_key import ApiKey
+from app.models.outreach_draft import OutreachChannel, OutreachDraft, OutreachDraftStatus
 from app.models.report import ReportDefinition
 from app.models.tenant_keys import TenantProviderKey
 from app.models.email_event import EmailEvent, EmailEventType
@@ -104,6 +105,9 @@ from app.models.suppression import Suppression, SuppressionReason, canonical_ema
 from app.models.webhook_event import WebhookEvent
 
 __all__ = [
+    "OutreachChannel",
+    "OutreachDraft",
+    "OutreachDraftStatus",
     "ApiKey",
     "TenantProviderKey",
     "AuthToken",

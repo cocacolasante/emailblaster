@@ -56,8 +56,9 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     empty + isolated; invite → teammate sees data; assign → "My leads").
   - Applied to the dev DB 2026-09-27 (backup in `backups/`); counts
     verified identical before/after.
-  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 24
-    pinned tools, named tunnel `outreach.blueprintautomation.tech`; see
+  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 30
+    pinned tools (incl. human-gated research→draft→confirm→send via
+    `outreach_drafts`, 0051), named tunnel `outreach.blueprintautomation.tech`; see
     [`docs/muse-mcp.md`](docs/muse-mcp.md).
 
 - **Recent highlights** (full task-by-task history is archived in
@@ -240,8 +241,10 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   verified via SECURITY DEFINER `api_key_verify()`); a key acts as its
   creator.  Tools in `app/mcp/tools.py` MUST go through the existing API
   routes (in-process), never straight to the DB, and the pinned list in
-  `tests/test_mcp.py` must be edited deliberately — nothing that sends,
-  launches, deletes, or manages team/keys/integrations.  New endpoints
+  `tests/test_mcp.py` must be edited deliberately — nothing that
+  launches, deletes, or manages team/keys/integrations.  The ONLY send
+  path is `send_outreach`, gated server-side by `/outreach-drafts/{id}/
+  confirm` (one-time code bound to the draft version) + `user_approved`.  New endpoints
   that manage credentials/team use `require_session`/`require_manager`
   (they refuse API keys).
 - **Public origin = named Cloudflare tunnel** `outreach.blueprintautomation.tech`
@@ -671,7 +674,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1358 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
+_Backend tests: **1378 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

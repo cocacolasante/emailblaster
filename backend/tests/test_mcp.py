@@ -239,6 +239,8 @@ PINNED = {
     "create_lead", "update_lead", "log_activity", "create_task", "complete_task", "convert_lead",
     "create_opportunity", "update_opportunity", "assign_owner", "pause_campaign", "resume_campaign",
     "list_lead_activities", "ignore_lead",
+    "research_prospect", "redraft_outreach", "edit_outreach_draft", "confirm_outreach",
+    "send_outreach", "discard_outreach",
 }
 
 
@@ -247,11 +249,27 @@ def test_tool_surface_is_pinned():
     assert {t.name for t in TOOLS} == PINNED
 
 
-@pytest.mark.parametrize("word", ["send", "approve", "launch", "delete", "remove", "invite", "unignore",
-                                  "linkedin", "integration", "api_key", "key"])
+@pytest.mark.parametrize("word", ["approve", "launch", "delete", "remove", "invite", "unignore",
+                                  "linkedin", "integration", "api_key", "key", "campaign_send"])
 def test_no_outbound_or_admin_tools(word):
     for t in TOOLS:
         assert word not in t.name, f"{t.name} looks like it crosses the agent boundary"
+
+
+def test_only_human_gated_send_exists():
+    """send_outreach is the single tool that reaches a prospect, and it can't
+    run without the confirm step's code and an explicit approval flag."""
+    senders = [t for t in TOOLS if "send" in t.name]
+    assert [t.name for t in senders] == ["send_outreach"]
+    schema = senders[0].input_schema
+    assert set(schema["required"]) == {"draft_id", "confirmation_code", "user_approved"}
+    ann = senders[0].listing()["annotations"]
+    assert ann["destructiveHint"] is True and ann["openWorldHint"] is True
+
+
+def test_research_prospect_never_sends():
+    tool = next(t for t in TOOLS if t.name == "research_prospect")
+    assert "SENDS NOTHING" in tool.description
 
 
 def test_read_tools_are_flagged_read_only():
@@ -336,3 +354,40 @@ async def test_ignore_lead_without_email_refused(client, anon_client, db_session
     token = await _mint(client)
     result, msg = await _call(anon_client, token, "ignore_lead", {"lead_id": str(lead.id)})
     assert result["isError"] and "no email" in msg
+
+
+
+async def test_muse_outreach_flow_end_to_end(client, anon_client, set_creds, monkeypatch):
+    from unittest.mock import AsyncMock, patch
+
+    from app.routers import outreach_drafts
+
+    set_creds("anthropic", api_key="k")
+    set_creds("brevo", api_key="k", sender_email="me@myco.com")
+
+    async def fake(db, **kw):
+        research = kw.get("research") or {"found": True, "first_name": "Jane", "last_name": "Doe",
+                                          "company": "Acme"}
+        return research, {"subject": "Hello Acme", "body": "Hi Jane" + (" (short)" if "shorter" in kw["goal"] else "")}
+
+    monkeypatch.setattr(outreach_drafts, "research_and_compose", fake)
+    token = await _mint(client)
+    _, draft = await _call(anon_client, token, "research_prospect",
+                           {"linkedin_url": "https://www.linkedin.com/in/jane-doe/", "goal": "demo"})
+    assert draft["status"] == "draft" and "Do NOT send" in draft["next_step"]
+    _, redrafted = await _call(anon_client, token, "redraft_outreach",
+                               {"draft_id": draft["id"], "feedback": "shorter"})
+    assert redrafted["body"] == "Hi Jane (short)"
+    result, msg = await _call(anon_client, token, "send_outreach",
+                              {"draft_id": draft["id"], "confirmation_code": "X" * 6, "user_approved": False})
+    assert result["isError"] and "approve" in msg
+    _, confirmed = await _call(anon_client, token, "confirm_outreach",
+                               {"draft_id": draft["id"], "to_email": "jane@acme.com"})
+    code = confirmed["confirmation"]["confirmation_code"]
+    assert confirmed["confirmation"]["to"] == "jane@acme.com"
+    send = AsyncMock(return_value="<m@brevo>")
+    with patch("app.services.outreach.brevo.send_email", new=send):
+        _, sent = await _call(anon_client, token, "send_outreach",
+                              {"draft_id": draft["id"], "confirmation_code": code, "user_approved": True})
+    assert sent["status"] == "sent"
+    send.assert_awaited_once()

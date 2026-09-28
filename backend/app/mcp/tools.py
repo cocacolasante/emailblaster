@@ -5,12 +5,15 @@ carrying the caller's key.  That's deliberate: ownership validation,
 notifications, stage-change audit rows, tenant scoping and RLS all live
 in those routes, and a second implementation would drift from the first.
 
-WHAT IS ABSENT MATTERS AS MUCH AS WHAT IS HERE.  No tool sends an email
-or a LinkedIn message, launches or approves a campaign, deletes anything,
-or touches the team, integrations or API keys.  Anything that reaches a
-prospect stays a deliberate act in the dashboard.  ``resume_campaign``
-only resumes a campaign a person already launched.  A guardrail test pins
-this list, so widening it is a decision, not an accident.
+WHAT IS ABSENT MATTERS AS MUCH AS WHAT IS HERE.  No tool launches or
+approves a campaign, deletes anything, or touches the team, integrations
+or API keys.  The ONE path that reaches a prospect is the research-a-lead
+outreach flow, and it is human-gated server-side: research_prospect only
+drafts; confirm_outreach pins recipient + sender + exact text and issues a
+one-time code; send_outreach needs that code, user_approved=true and an
+unchanged draft, and sends at most once.  ``resume_campaign`` only resumes
+a campaign a person already launched.  A guardrail test pins this list,
+so widening it is a decision, not an accident.
 """
 from __future__ import annotations
 
@@ -74,6 +77,7 @@ class Tool:
                 "destructiveHint": False,
                 "idempotentHint": not self.mutates,
                 "openWorldHint": False,
+                **self.extra,
             },
         }
 
@@ -347,6 +351,50 @@ async def ignore_lead(ctx: ToolContext, args: dict) -> Any:
     return {"email": lead["email"], **res}
 
 
+# --- research-a-lead outreach (human-approved send) ---------------------------
+
+def _draft_view(d: dict) -> dict:
+    keep = ("id", "status", "channel", "version", "linkedin_url", "profile", "research_highlights",
+            "subject", "body", "char_count", "to_email", "to_name", "sender_email", "sender_name",
+            "linkedin_account_id", "recipient_suggestions", "sender_options", "confirmation",
+            "sent_at", "send_error", "crm_lead_id", "next_step")
+    return {k: d.get(k) for k in keep if d.get(k) not in (None, [], {})}
+
+
+async def research_prospect(ctx: ToolContext, args: dict) -> Any:
+    body = {k: args[k] for k in ("linkedin_url", "goal", "channel", "tone", "research_mode",
+                                 "char_limit", "sender_name") if k in args}
+    return _draft_view(await ctx.call("POST", "/outreach-drafts", body=body))
+
+
+async def redraft_outreach(ctx: ToolContext, args: dict) -> Any:
+    body = {k: args[k] for k in ("feedback", "goal", "tone", "channel", "char_limit") if k in args}
+    return _draft_view(await ctx.call("POST", f"/outreach-drafts/{args['draft_id']}/redraft", body=body))
+
+
+async def edit_outreach_draft(ctx: ToolContext, args: dict) -> Any:
+    body = {k: args[k] for k in ("subject", "body", "to_email", "to_name", "sender_email",
+                                 "sender_name", "linkedin_account_id") if k in args}
+    return _draft_view(await ctx.call("PATCH", f"/outreach-drafts/{args['draft_id']}", body=body))
+
+
+async def confirm_outreach(ctx: ToolContext, args: dict) -> Any:
+    body = {k: args[k] for k in ("to_email", "to_name", "sender_email", "linkedin_account_id") if k in args}
+    return _draft_view(await ctx.call("POST", f"/outreach-drafts/{args['draft_id']}/confirm", body=body))
+
+
+async def send_outreach(ctx: ToolContext, args: dict) -> Any:
+    if args.get("user_approved") is not True:
+        raise ToolError("not sent — ask the user to approve the confirmation summary first")
+    return _draft_view(await ctx.call("POST", f"/outreach-drafts/{args['draft_id']}/send", body={
+        "confirmation_code": args["confirmation_code"], "user_approved": True,
+    }))
+
+
+async def discard_outreach(ctx: ToolContext, args: dict) -> Any:
+    return _draft_view(await ctx.call("POST", f"/outreach-drafts/{args['draft_id']}/discard"))
+
+
 # --- campaign control --------------------------------------------------------
 
 async def pause_campaign(ctx: ToolContext, args: dict) -> Any:
@@ -492,6 +540,57 @@ TOOLS: list[Tool] = [
          "in, so no further outreach reaches them (same as Ignore in the dashboard). Use when "
          "someone asks not to be contacted. Undoing it is done in the dashboard.",
          _obj({"lead_id": UUID_S}, ["lead_id"]), ignore_lead, mutates=True),
+    Tool("research_prospect", "Research a lead and draft outreach",
+         "Research someone from their LinkedIn profile URL and draft a personalised email, "
+         "LinkedIn message (1st-degree connections) or LinkedIn connection request with a note "
+         "(≤200 chars, for people you're not connected to). SENDS NOTHING. Returns the draft, "
+         "suggested recipient email(s) and sender options. Next: show the user the draft plus "
+         "recipient and sender, and ask them to approve, edit or redraft.",
+         _obj({"linkedin_url": {"type": "string", "description": "https://www.linkedin.com/in/<slug>"},
+               "goal": {"type": "string", "description": "What the outreach should achieve"},
+               "channel": {"type": "string", "enum": ["email", "linkedin_dm", "linkedin_connect"]},
+               "tone": {"type": "string"},
+               "research_mode": {"type": "string", "enum": ["fast", "deep"]},
+               "char_limit": {"type": "integer", "minimum": 50, "maximum": 5000},
+               "sender_name": {"type": "string", "description": "Signs the message; defaults to you"}},
+              ["linkedin_url", "goal"]),
+         research_prospect, mutates=True),
+    Tool("redraft_outreach", "Redraft outreach",
+         "Rewrite a draft from the same research (no new research cost), e.g. with feedback like "
+         "'shorter, mention their podcast', or switch channel. Voids any prior confirmation.",
+         _obj({"draft_id": UUID_S, "feedback": {"type": "string"}, "goal": {"type": "string"},
+               "tone": {"type": "string"},
+               "channel": {"type": "string", "enum": ["email", "linkedin_dm", "linkedin_connect"]},
+               "char_limit": {"type": "integer", "minimum": 50, "maximum": 5000}}, ["draft_id"]),
+         redraft_outreach, mutates=True),
+    Tool("edit_outreach_draft", "Edit outreach draft",
+         "Apply the user's exact edits (subject, body, recipient, sender, LinkedIn account). "
+         "Voids any prior confirmation.",
+         _obj({"draft_id": UUID_S, "subject": {"type": "string"}, "body": {"type": "string"},
+               "to_email": {"type": "string"}, "to_name": {"type": "string"},
+               "sender_email": {"type": "string"}, "sender_name": {"type": "string"},
+               "linkedin_account_id": UUID_S}, ["draft_id"]),
+         edit_outreach_draft, mutates=True),
+    Tool("confirm_outreach", "Confirm recipient and sender",
+         "Lock in the recipient, sender and the exact message after the user has reviewed the "
+         "draft. Validates the recipient (not on the ignore list) and sender, and returns a final "
+         "summary plus a one-time confirmation_code. SENDS NOTHING. Show the summary and ask the "
+         "user explicitly whether to send.",
+         _obj({"draft_id": UUID_S, "to_email": {"type": "string"}, "to_name": {"type": "string"},
+               "sender_email": {"type": "string"}, "linkedin_account_id": UUID_S}, ["draft_id"]),
+         confirm_outreach, mutates=True),
+    Tool("send_outreach", "Send approved outreach",
+         "Send a confirmed draft — ONLY after the user has explicitly said to send it in response "
+         "to the confirmation summary. Requires the confirmation_code from confirm_outreach and "
+         "user_approved=true. Fails if the draft changed since it was confirmed. Sends once.",
+         _obj({"draft_id": UUID_S, "confirmation_code": {"type": "string"},
+               "user_approved": {"type": "boolean",
+                                 "description": "true only if the user explicitly approved this send"}},
+              ["draft_id", "confirmation_code", "user_approved"]),
+         send_outreach, mutates=True,
+         extra={"destructiveHint": True, "openWorldHint": True}),
+    Tool("discard_outreach", "Discard outreach draft", "Throw a draft away without sending.",
+         _obj({"draft_id": UUID_S}, ["draft_id"]), discard_outreach, mutates=True),
     Tool("pause_campaign", "Pause a campaign",
          "Stop a running campaign's sends immediately (resume later from here or the dashboard).",
          _obj({"campaign_id": UUID_S}, ["campaign_id"]), pause_campaign, mutates=True),

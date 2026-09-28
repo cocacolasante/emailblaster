@@ -649,7 +649,7 @@ async def test_anthropic_auth_failure_returns_502_with_actionable_detail(client)
     # Actionable: tell the user what to do, not just "auth failed".
     assert "anthropic" in detail
     assert "key" in detail
-    assert ".env" in detail
+    assert "integrations" in detail
 
 
 async def test_compose_failure_returns_502(client):

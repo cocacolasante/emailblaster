@@ -13,6 +13,7 @@ from app.routers import (
     agent,
     api_keys,
     mcp,
+    outreach_drafts,
     auth,
     owners,
     team,
@@ -194,6 +195,7 @@ app.include_router(mcp.router)
 app.include_router(team.router, dependencies=_AUTHED)
 app.include_router(owners.router, dependencies=_AUTHED)
 app.include_router(api_keys.router, dependencies=_AUTHED)
+app.include_router(outreach_drafts.router, dependencies=_AUTHED)
 app.include_router(campaigns.router, dependencies=_AUTHED)
 app.include_router(leads.router, dependencies=_AUTHED)
 app.include_router(preview.router, dependencies=_AUTHED)

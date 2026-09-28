@@ -82,10 +82,11 @@ function CapabilitiesCard() {
         <li>Search leads (by name, company or email) and deals; read campaigns, replies, tasks, notes and activity logs</li>
         <li>Update the CRM — leads, notes, tasks, deals and owners</li>
         <li>Add a lead to the ignore list (stops all outreach to them)</li>
+        <li>Research a lead from a LinkedIn URL and draft an email or LinkedIn message — it only sends after you confirm the recipient and sender and explicitly approve</li>
         <li>Pause and resume campaigns</li>
       </ul>
       <p className="text-sm text-slate-600 mt-3 mb-0">
-        It cannot send emails or LinkedIn messages, launch campaigns, delete anything, or
+        It cannot send anything without your explicit approval, launch campaigns, delete anything, or
         manage your team, integrations or keys.
       </p>
       <p className="text-xs text-slate-500 mt-2 mb-0">

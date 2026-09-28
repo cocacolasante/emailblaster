@@ -200,7 +200,7 @@ async def _engine():
             "webhook_events, research_cache, "
             "social_listening_opportunities, social_listening_posts, "
             "social_listening_searches, "
-            "tenant_provider_keys, api_keys, "
+            "tenant_provider_keys, api_keys, outreach_drafts, "
             "invitations, auth_tokens, user_sessions, memberships, users, tenants "
             "RESTART IDENTITY CASCADE"
         ))

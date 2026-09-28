@@ -40,10 +40,12 @@ INSTRUCTIONS = (
     "Email Blaster runs this workspace's cold-outreach: campaigns send personalised email "
     "sequences (plus LinkedIn steps), replies land in an inbox with AI sentiment, and a CRM "
     "tracks leads, deals, tasks and owners. Start with daily_brief. You can read everything, "
-    "update the CRM (leads, notes, tasks, deals, owners) and pause or resume campaigns. You "
-    "cannot send email or LinkedIn messages, launch campaigns, or delete anything — tell the "
-    "user to do those in the Email Blaster dashboard. 'me' in owner fields means the person "
-    "whose API key this is."
+    "update the CRM (leads, notes, tasks, deals, owners) and pause or resume campaigns. "
+    "One-off outreach: research_prospect drafts from a LinkedIn URL (it never sends). Always "
+    "show the user the draft, recipient and sender and let them approve, edit or redraft; "
+    "then confirm_outreach and show the final summary; call send_outreach ONLY after the user "
+    "explicitly says to send. Never send on your own initiative. You cannot launch campaigns "
+    "or delete anything. 'me' in owner fields means the person whose API key this is."
 )
 
 

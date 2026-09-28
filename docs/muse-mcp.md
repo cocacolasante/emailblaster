@@ -24,10 +24,11 @@ suspended.
 
 | Can | Can't |
 |---|---|
-| Daily brief, campaigns + stats, lead search (name / company / exact email), lead detail + notes + activity log, inbound replies, deal search + activity, tasks, team, notifications | Send email or LinkedIn messages |
+| Daily brief, campaigns + stats, lead search (name / company / exact email), lead detail + notes + activity log, inbound replies, deal search + activity, tasks, team, notifications | Send anything without your approval (see below) |
 | Create/update CRM leads, log calls/meetings/notes, create/complete tasks, convert leads, create/move deals, assign owners | Launch or approve a campaign |
 | Pause a campaign; resume a paused one | Resume a circuit-breaker pause (human only) |
 | Add a lead to the ignore list (suppress + halt everywhere) | Un-ignore a lead (dashboard only) |
+| Research a lead from a LinkedIn URL, draft an email / LinkedIn DM / connection note, redraft, and send **after your approval** | Send without the confirm step + your explicit approval |
 | | Delete anything; manage team, integrations or API keys |
 
 The tool list is pinned by `tests/test_mcp.py` — widening it is a
@@ -66,3 +67,32 @@ Always include `docker-compose.named-tunnel.yml` when bringing the stack
 up, or the `cloudflared` container isn't started. The hostname never
 changes, so the Muse connector, Unipile webhook URLs and unsubscribe
 links stay valid across restarts (unlike ngrok).
+
+## Research a lead → draft → approve → send
+
+Same research + compose as the GUI's "Research a client" page
+(`routers/research_client.research_and_compose`), stored as an
+`outreach_drafts` row (migration 0051, RLS) so nothing lives only in the
+chat:
+
+1. `research_prospect(linkedin_url, goal, channel)` — channel `email`,
+   `linkedin_dm` (1st-degree connections) or `linkedin_connect`
+   (connection request with a ≤200-char note). **Sends nothing.**
+   Pre-fills the recipient from an existing CRM lead or Hunter, and the
+   sender from your default inbox / LinkedIn account.
+2. `redraft_outreach(feedback)` (reuses the research — no new cost) /
+   `edit_outreach_draft` — both void any earlier confirmation.
+3. `confirm_outreach` — pins recipient + sender + the exact text; refuses
+   ignore-listed recipients and unknown senders; returns a summary and a
+   one-time `confirmation_code`. **Sends nothing.**
+4. `send_outreach(confirmation_code, user_approved=true)` — only after you
+   say "send it". Fails if the draft changed after confirming; sends at
+   most once; logs the email / LinkedIn touch to the CRM lead (creating
+   one if needed). Marked destructive/open-world so MCP clients that
+   honour annotations also ask you before it runs.
+
+Honest limit: the server can require the two steps and the approval flag,
+but it can't see your chat — the "ask before sending" behaviour relies on
+Muse following the tool instructions (and on Muse's own confirm prompt for
+destructive tools). LinkedIn sends need a working Unipile connection and
+share the campaigns' daily LinkedIn caps.
