@@ -52,7 +52,7 @@ describe('Agent access tab', () => {
     expect(await screen.findByTestId('mcp-url')).toHaveTextContent('https://outreach.example.com/mcp');
     expect(screen.getByText(/add a custom connector/i)).toBeInTheDocument();
     expect(screen.queryByTestId('mcp-not-public')).toBeNull();
-    expect(screen.getByText(/cannot send emails or linkedin messages/i)).toBeInTheDocument();
+    expect(screen.getByText(/cannot send anything without your explicit approval/i)).toBeInTheDocument();
     expect(screen.getByText(/a key acts as you/i)).toBeInTheDocument();
 
     await user.click(screen.getByTestId('copy-mcp-url'));
