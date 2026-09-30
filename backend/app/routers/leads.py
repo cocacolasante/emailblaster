@@ -343,6 +343,7 @@ async def get_lead_detail(
         campaign_name=campaign_name,
         crm_status=lead.crm_status,
         converted_opportunity_id=lead.converted_opportunity_id,
+        owner_id=lead.owner_id,
         raw_csv_row=lead.raw_csv_row,
         research_data=lead.research_data,
         composed_subject=lead.composed_subject,

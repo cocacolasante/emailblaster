@@ -3,8 +3,9 @@
  *
  *  - <OwnerPicker>  — pick the accountable member for a record (value is a
  *    user id or null).  Native <select> for free keyboard + screen-reader
- *    support; options are "Unassigned", an optional "Me" shortcut, then every
- *    workspace member ("Name — email").
+ *    support; options are "Unassigned", then every workspace member
+ *    ("Name — email"), yourself first and marked "(you)" — one entry per
+ *    person, so you never appear twice.
  *  - <OwnerFilter>  — list filter: All / Mine / Unassigned / a member.  Value
  *    is the wire format of the `?owner=` query param ('' | 'me' |
  *    'unassigned' | <user id>).
@@ -15,8 +16,12 @@ import { useId } from 'react';
 import { Select } from './ui.jsx';
 import { memberName, useOwnerLookup } from './OwnerAvatar.jsx';
 
-const ME_SENTINEL = '__me__';
 const UNASSIGNED_SENTINEL = '';
+
+/** Members with the signed-in user first. */
+function meFirst(members, myId) {
+  return [...members].sort((a, b) => (b.user_id === myId) - (a.user_id === myId));
+}
 
 function memberOptionLabel(m) {
   const name = memberName(m);
@@ -27,7 +32,7 @@ function memberOptionLabel(m) {
  * @param value            user id | null
  * @param onChange         (userId | null) => void
  * @param allowUnassigned  include the "Unassigned" option (default true)
- * @param showMe           include the "Me" shortcut at the top (default true)
+ * @param showMe           deprecated (kept for callers); you're always listed once as "(you)"
  * @param label            accessible label (visually hidden unless `showLabel`)
  */
 export function OwnerPicker({
@@ -35,7 +40,7 @@ export function OwnerPicker({
   onChange,
   disabled = false,
   allowUnassigned = true,
-  showMe = true,
+  showMe: _showMe = true, // eslint-disable-line no-unused-vars
   label = 'Owner',
   showLabel = false,
   size = 'md',
@@ -52,9 +57,7 @@ export function OwnerPicker({
   const orphan = value && !members.some((m) => m.user_id === value) ? resolve(value) : null;
 
   function handleChange(e) {
-    const v = e.target.value;
-    if (v === ME_SENTINEL) onChange?.(myId);
-    else onChange?.(v || null);
+    onChange?.(e.target.value || null);
   }
 
   const sizeCls = size === 'sm' ? '!py-1 !text-xs' : '';
@@ -74,9 +77,8 @@ export function OwnerPicker({
       >
         {allowUnassigned && <option value={UNASSIGNED_SENTINEL}>Unassigned</option>}
         {!allowUnassigned && !value && <option value="" disabled>Choose a member…</option>}
-        {showMe && myId && value !== myId && <option value={ME_SENTINEL}>Me</option>}
         {orphan && <option value={value}>{orphan.label}</option>}
-        {members.map((m) => (
+        {meFirst(members, myId).map((m) => (
           <option key={m.user_id} value={m.user_id}>
             {memberOptionLabel(m)}{m.user_id === myId ? ' (you)' : ''}
           </option>
@@ -104,7 +106,8 @@ export function OwnerFilter({
   const { members, myId } = useOwnerLookup();
   return (
     <select
-      value={value || ''}
+      // Your own id is shown as "Me" (you're not listed twice).
+      value={value && value === myId ? 'me' : (value || '')}
       onChange={(e) => onChange?.(e.target.value)}
       aria-label={label}
       data-testid={testId}
@@ -114,9 +117,10 @@ export function OwnerFilter({
       {allLabel != null ? <option value="">{allLabel}</option> : <option value="">—</option>}
       <option value="me">Me</option>
       {includeUnassigned && <option value="unassigned">Unassigned</option>}
-      {members.map((m) => (
+      {/* "Me" already covers you — list only the other members. */}
+      {members.filter((m) => m.user_id !== myId).map((m) => (
         <option key={m.user_id} value={m.user_id}>
-          {memberName(m)}{m.user_id === myId ? ' (you)' : ''}
+          {memberName(m)}
         </option>
       ))}
     </select>

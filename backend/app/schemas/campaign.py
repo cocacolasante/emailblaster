@@ -318,6 +318,7 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
     """Extract the campaign's own columns (without computed/nested fields)."""
     return {
         "id": c.id,
+        "owner_id": c.owner_id,
         "name": c.name,
         "goal": c.goal,
         "tone": c.tone,

@@ -23,26 +23,30 @@ beforeEach(() => {
 });
 
 describe('OwnerPicker', () => {
-  it('lists Unassigned, a Me shortcut, and every member with email', async () => {
+  it('lists Unassigned, then you first (once, marked "(you)"), then the other members', async () => {
     renderWithClient(<OwnerPicker value={null} onChange={() => {}} />);
     const select = screen.getByTestId('owner-picker');
     await within(select).findByRole('option', { name: /Grace Hopper — grace@example.com/ });
     const labels = within(select).getAllByRole('option').map((o) => o.textContent);
-    expect(labels[0]).toBe('Unassigned');
-    expect(labels[1]).toBe('Me');
-    expect(labels).toContain('Ada Lovelace — ada@example.com (you)');
+    expect(labels).toEqual([
+      'Unassigned',
+      'Ada Lovelace — ada@example.com (you)',
+      'Grace Hopper — grace@example.com',
+    ]);
+    // Regression: no separate "Me" shortcut duplicating yourself.
+    expect(labels).not.toContain('Me');
     // Labelled for assistive tech.
     expect(screen.getByLabelText('Owner')).toBe(select);
   });
 
-  it('maps Me → my user id, Unassigned → null, a member → their id', async () => {
+  it('maps you → your user id, Unassigned → null, a member → their id', async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     renderWithClient(<OwnerPicker value="user-2" onChange={onChange} />);
     const select = screen.getByTestId('owner-picker');
-    await within(select).findByRole('option', { name: 'Me' });
+    await within(select).findByRole('option', { name: /\(you\)/ });
 
-    await user.selectOptions(select, 'Me');
+    await user.selectOptions(select, 'Ada Lovelace — ada@example.com (you)');
     expect(onChange).toHaveBeenLastCalledWith('user-1');
 
     await user.selectOptions(select, 'Unassigned');
@@ -54,8 +58,8 @@ describe('OwnerPicker', () => {
     const select = screen.getByTestId('owner-picker');
     await within(select).findByRole('option', { name: /Grace Hopper/ });
     expect(within(select).queryByRole('option', { name: 'Unassigned' })).toBeNull();
-    // Already me → no redundant Me shortcut.
     expect(within(select).queryByRole('option', { name: 'Me' })).toBeNull();
+    expect(select).toHaveValue('user-1');
     expect(select).toBeDisabled();
   });
 
@@ -80,6 +84,8 @@ describe('OwnerFilter + ScopeToggle', () => {
     expect(onChange).toHaveBeenLastCalledWith('unassigned');
     await user.selectOptions(select, 'Grace Hopper');
     expect(onChange).toHaveBeenLastCalledWith('user-2');
+    // "Me" covers you — you aren't listed a second time.
+    expect(within(select).queryByRole('option', { name: /Ada Lovelace/ })).toBeNull();
   });
 
   it('ScopeToggle reports mine/everyone with aria-pressed', async () => {

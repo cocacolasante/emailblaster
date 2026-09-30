@@ -674,7 +674,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1379 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
+_Backend tests: **1381 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

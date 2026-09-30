@@ -223,8 +223,9 @@ describe('ReportBuilder owner field', () => {
     await user.selectOptions(screen.getByTestId('filter-op-0'), 'equals');
     const value = screen.getByTestId('filter-value');
     expect(value.tagName).toBe('SELECT');
-    await within(value).findByRole('option', { name: /Ada Lovelace/ });
-    expect(within(value).getByRole('option', { name: 'Me' })).toBeInTheDocument();
+    expect(await within(value).findByRole('option', { name: 'Me' })).toBeInTheDocument();
+    // You're covered by "Me", not listed a second time by name.
+    expect(within(value).queryByRole('option', { name: /Ada Lovelace/ })).toBeNull();
     await user.selectOptions(value, 'Me');
 
     await user.click(screen.getByTestId('run-btn'));

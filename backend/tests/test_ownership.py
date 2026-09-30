@@ -318,3 +318,33 @@ async def test_notification_feed_scoped_to_me_and_workspace(client, _engine, db_
     theirs = await db_session.scalar(select(Notification).where(Notification.title == "theirs"))
     await db_session.refresh(theirs)
     assert theirs.read_at is None  # read-all only touches my feed
+
+
+# --- Every response that carries a record must carry its owner ------------------
+# (Regression: campaign responses were built from a hand-written field list and
+# the lead detail field-by-field, so both silently dropped owner_id and the UI
+# showed every record as "Unassigned" even though the DB had an owner.)
+
+
+async def test_campaign_responses_include_owner(client, _engine):
+    uid, _ = await _member(_engine)
+    created = await client.post("/campaigns/", json={
+        "name": "Owned", "goal": "g", "tone": "t", "sender_name": "S", "sender_email": "s@x.com",
+        "schedule_time_start": "09:00:00", "schedule_time_end": "17:00:00",
+    })
+    assert created.status_code == 201, created.text
+    cid = created.json()["id"]
+    assert created.json()["owner_id"] == str(DEFAULT_USER_ID)
+    assert (await client.get(f"/campaigns/{cid}")).json()["owner_id"] == str(DEFAULT_USER_ID)
+    assert (await client.get("/campaigns/")).json()[0]["owner_id"] == str(DEFAULT_USER_ID)
+    patched = await client.patch(f"/campaigns/{cid}", json={"owner_id": str(uid)})
+    assert patched.json()["owner_id"] == str(uid)
+    assert (await client.get(f"/campaigns/{cid}")).json()["owner_id"] == str(uid)
+
+
+async def test_lead_detail_includes_owner(client, _engine, db_session):
+    uid, _ = await _member(_engine)
+    lead = Lead(email="detail@acme.com", owner_id=uid)
+    db_session.add(lead)
+    await db_session.commit()
+    assert (await client.get(f"/leads/{lead.id}")).json()["owner_id"] == str(uid)

@@ -272,7 +272,7 @@ describe('OpportunityDetail owners', () => {
     await within(assignee).findByRole('option', { name: /Grace Hopper/ });
     expect(assignee).toHaveValue('user-2');
 
-    await user.selectOptions(assignee, 'Me');
+    await user.selectOptions(assignee, within(assignee).getByRole('option', { name: /\(you\)/ }));
     await user.type(screen.getByTestId('activity-subject'), 'Call back');
     await user.click(screen.getByTestId('activity-save-btn'));
     await waitFor(() => {
