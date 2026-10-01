@@ -87,7 +87,7 @@ function BestSubjects({ subjects }) {
           <thead>
             <tr>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Subject</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-20">Sent</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-40">Sent</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-24">Open rate</th>
             </tr>
           </thead>
@@ -112,15 +112,16 @@ function SendCohorts({ cohorts }) {
     <div data-testid="send-cohorts" className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-4">
       <h3 className="text-base font-semibold text-slate-900 mb-1">Open rate by send week</h3>
       <p className="text-xs text-slate-500 mb-4">
-        Each row is the batch of leads first emailed that week and the share that has ever
-        opened — this separates &ldquo;we sent less&rdquo; from &ldquo;people stopped opening.&rdquo;
+        Each row is every email sent that week — first emails and follow-ups — and the share of
+        those emails that were opened. This separates &ldquo;we sent less&rdquo; from &ldquo;people
+        stopped opening.&rdquo;
       </p>
       <div className="overflow-hidden rounded-lg border border-slate-200">
         <table className="w-full text-sm">
           <thead>
             <tr>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200">Week of</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-20">Sent</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-40">Sent</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-20">Opened</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border-b border-slate-200 w-40">Open rate</th>
             </tr>
@@ -129,7 +130,14 @@ function SendCohorts({ cohorts }) {
             {cohorts.map((c) => (
               <tr key={c.week_start} data-testid={`cohort-${c.week_start}`} className="hover:bg-slate-50">
                 <td className="px-4 py-3 text-slate-700 border-b border-slate-100">{c.week_start}</td>
-                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">{c.sent}</td>
+                <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">
+                  {c.sent}
+                  {c.follow_ups > 0 && (
+                    <div className="text-xs text-slate-400" data-testid={`cohort-split-${c.week_start}`}>
+                      {c.first_emails} first · {c.follow_ups} follow-up
+                    </div>
+                  )}
+                </td>
                 <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">{c.opened}</td>
                 <td className="px-4 py-3 text-slate-700 border-b border-slate-100 tabular">
                   {pct(c.open_rate)}

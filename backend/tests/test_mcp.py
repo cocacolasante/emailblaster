@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select, text
 
 from app.mcp.tools import TOOLS
-from app.models import Campaign, CampaignStatus, Lead, Opportunity, OpportunityStage
+from app.models import Campaign, CampaignStatus, Lead, Opportunity, OpportunityStage, SendStatus
 from app.tenancy.context import tenant_scope
 from tests.conftest import DEFAULT_USER_ID, create_test_user
 
@@ -243,6 +243,7 @@ PINNED = {
     "send_outreach", "discard_outreach",
     "crm_overview", "deals_report", "activities_report", "report_fields", "run_report",
     "list_saved_reports", "run_saved_report", "save_report", "update_report",
+    "get_campaign_analytics", "get_sequence_funnel", "get_campaign_deliverability",
 }
 
 
@@ -441,3 +442,33 @@ async def test_reports_via_muse(client, anon_client, db_session):
     assert isinstance(won, dict)
     _, acts = await _call(anon_client, token, "activities_report")
     assert isinstance(acts, dict)
+
+
+# --- campaign analytics -------------------------------------------------------
+
+
+async def test_campaign_analytics_tools(client, anon_client, db_session):
+    camp = await _campaign(db_session)
+    db_session.add(Lead(campaign_id=camp.id, email="a@x.com", send_status=SendStatus.SENT,
+                        brevo_message_id="<202607071000.1@smtp-relay.mailin.fr>"))
+    await db_session.commit()
+    token = await _mint(client)
+
+    _, a = await _call(anon_client, token, "get_campaign_analytics", {"campaign_id": str(camp.id)})
+    assert a["overview"]["sent"] == 1
+    assert a["send_cohorts"][0]["week_start"] == "2026-07-06"
+    assert a["send_cohorts"][0]["first_emails"] == 1
+    assert "timeline" not in a
+    _, a = await _call(anon_client, token, "get_campaign_analytics",
+                       {"campaign_id": str(camp.id), "include_timeline": True})
+    assert a["timeline"] == []
+
+    _, funnel = await _call(anon_client, token, "get_sequence_funnel", {"campaign_id": str(camp.id)})
+    assert funnel["campaign_id"] == str(camp.id) and "per_node" in funnel
+
+    _, deliv = await _call(anon_client, token, "get_campaign_deliverability", {"campaign_id": str(camp.id)})
+    assert "auto_pause_reason" in deliv
+
+    result, msg = await _call(anon_client, token, "get_campaign_analytics",
+                              {"campaign_id": "00000000-0000-0000-0000-000000000000"})
+    assert result["isError"] and "not found" in msg.lower()

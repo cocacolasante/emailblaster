@@ -192,7 +192,8 @@ describe('Analytics page', () => {
       ...BASE,
       send_cohorts: [
         { week_start: '2026-06-22', sent: 346, opened: 218, open_rate: 0.6301, accumulating: false },
-        { week_start: '2026-07-27', sent: 76, opened: 22, open_rate: 0.2895, accumulating: true },
+        { week_start: '2026-07-27', sent: 76, opened: 22, open_rate: 0.2895, accumulating: true,
+          first_emails: 10, follow_ups: 66 },
       ],
     });
     renderAnalytics();
@@ -201,6 +202,8 @@ describe('Analytics page', () => {
     expect(screen.getByTestId('cohort-2026-06-22')).toHaveTextContent('63.0%');
     expect(screen.getByTestId('cohort-2026-06-22')).not.toHaveTextContent('still collecting');
     expect(screen.getByTestId('cohort-2026-07-27')).toHaveTextContent('still collecting');
+    expect(screen.getByTestId('cohort-split-2026-07-27')).toHaveTextContent('10 first · 66 follow-up');
+    expect(screen.queryByTestId('cohort-split-2026-06-22')).not.toBeInTheDocument();
   });
 
   it('hides send-week cohorts when empty', async () => {

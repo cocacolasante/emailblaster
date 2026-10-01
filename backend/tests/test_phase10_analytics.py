@@ -348,3 +348,55 @@ async def test_send_cohorts_empty_without_message_ids(client, db_session):
     await _make_lead(db_session, campaign, email="x@x.com")
     body = (await client.get(f"/campaigns/{campaign.id}/analytics")).json()
     assert body["send_cohorts"] == []
+
+
+async def test_send_cohorts_count_follow_ups_and_attribute_opens_per_email(client, db_session):
+    """Follow-up emails count in the week THEY went out (not the lead's
+    first-email week), and an open is credited to the email whose Brevo
+    messageId it carries.  A step reusing the first email's message id
+    counts once; non-email / unsent steps don't count."""
+    from app.models import (
+        LeadStepExecution, LeadStepResult, Sequence, SequenceNode, SequenceNodeKind,
+    )
+
+    campaign = await _make_campaign(db_session)
+    seq = Sequence(campaign_id=campaign.id, is_published=True)
+    db_session.add(seq)
+    await db_session.flush()
+    entry = SequenceNode(sequence_id=seq.id, kind=SequenceNodeKind.EMAIL, config={}, is_entry=True)
+    follow = SequenceNode(sequence_id=seq.id, kind=SequenceNodeKind.EMAIL_REPLY, config={})
+    li = SequenceNode(sequence_id=seq.id, kind=SequenceNodeKind.LINKEDIN_VIEW_PROFILE, config={})
+    db_session.add_all([entry, follow, li])
+    await db_session.flush()
+
+    # Two leads first-emailed in the week of 2026-07-06.
+    first_a = "<202607071000.1@smtp-relay.mailin.fr>"
+    a = await _make_lead(db_session, campaign, email="a@x.com", brevo_message_id=first_a)
+    b = await _make_lead(db_session, campaign, email="b@x.com",
+                         brevo_message_id="<202607071000.2@smtp-relay.mailin.fr>")
+    # Follow-ups the next week (2026-07-13); only a's is opened.
+    fu_a = "<202607141000.3@smtp-relay.mailin.fr>"
+    db_session.add_all([
+        LeadStepExecution(lead_id=a.id, node_id=follow.id, result=LeadStepResult.SENT, external_id=fu_a),
+        LeadStepExecution(lead_id=b.id, node_id=follow.id, result=LeadStepResult.SENT,
+                          external_id="<202607151000.4@smtp-relay.mailin.fr>"),
+        # Not counted: same message as the first email, a failed send, a LinkedIn step.
+        LeadStepExecution(lead_id=a.id, node_id=entry.id, result=LeadStepResult.SENT, external_id=first_a),
+        LeadStepExecution(lead_id=b.id, node_id=follow.id, result=LeadStepResult.FAILED,
+                          external_id="<202607161000.5@smtp-relay.mailin.fr>"),
+        LeadStepExecution(lead_id=b.id, node_id=li.id, result=LeadStepResult.SENT, external_id="li-1"),
+    ])
+    # a opened the follow-up only (not the first email).
+    opened = _ev(a, campaign, EmailEventType.OPENED)
+    opened.event_data = {"messageId": fu_a}
+    db_session.add(opened)
+    await db_session.commit()
+
+    cohorts = (await client.get(f"/campaigns/{campaign.id}/analytics")).json()["send_cohorts"]
+    assert [c["week_start"] for c in cohorts] == ["2026-07-06", "2026-07-13"]
+    first_week, follow_week = cohorts
+    assert (first_week["sent"], first_week["first_emails"], first_week["follow_ups"]) == (2, 2, 0)
+    assert first_week["opened"] == 0
+    assert (follow_week["sent"], follow_week["first_emails"], follow_week["follow_ups"]) == (2, 0, 2)
+    assert follow_week["opened"] == 1
+    assert follow_week["open_rate"] == 0.5

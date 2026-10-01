@@ -48,13 +48,16 @@ class BestSubject(BaseModel):
 
 
 class SendCohort(BaseModel):
-    """Leads grouped by the week their FIRST email was sent, with the share
-    that has ever opened.  Separates "we sent less" from "people stopped
-    opening" — the daily timeline can't tell those apart."""
+    """Emails sent in a week — first emails plus sequence follow-ups — and
+    the share of those emails that were opened.  Separates "we sent less"
+    from "people stopped opening" — the daily timeline can't tell those
+    apart."""
     week_start: date
     sent: int
     opened: int
     open_rate: float | None
+    first_emails: int = 0
+    follow_ups: int = 0
     # True while the cohort's newest send is < 7 days old — opens are
     # still arriving, so the rate reads low and will climb.
     accumulating: bool

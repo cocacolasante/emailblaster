@@ -177,6 +177,24 @@ async def get_campaign(ctx: ToolContext, args: dict) -> Any:
     }
 
 
+async def get_campaign_analytics(ctx: ToolContext, args: dict) -> Any:
+    a = await ctx.call("GET", f"/campaigns/{args['campaign_id']}/analytics")
+    out = _pick(a, "campaign_id", "overview", "rates", "sender_reputation_score",
+                "reply_tracking_enabled", "click_tracking_enabled", "send_cohorts",
+                "best_subject_lines", "research_quality_breakdown")
+    if args.get("include_timeline"):
+        out["timeline"] = a.get("timeline")
+    return out
+
+
+async def get_sequence_funnel(ctx: ToolContext, args: dict) -> Any:
+    return await ctx.call("GET", f"/campaigns/{args['campaign_id']}/sequence/analytics")
+
+
+async def get_campaign_deliverability(ctx: ToolContext, args: dict) -> Any:
+    return await ctx.call("GET", f"/campaigns/{args['campaign_id']}/deliverability")
+
+
 async def search_leads(ctx: ToolContext, args: dict) -> Any:
     email = (args.get("email") or "").strip().lower()
     page = await ctx.call("GET", "/leads", params={
@@ -538,6 +556,23 @@ TOOLS: list[Tool] = [
     Tool("get_campaign", "Campaign details",
          "One campaign's goal, schedule and full stats.",
          _obj({"campaign_id": UUID_S}, ["campaign_id"]), get_campaign),
+    Tool("get_campaign_analytics", "Campaign analytics",
+         "A campaign's Analytics tab: sent/delivered/opened/clicked/replied/bounced counts and "
+         "rates, sender reputation score, open rate by send week (`send_cohorts`: every email "
+         "sent that week — first emails + follow-ups — and the share opened; `accumulating` "
+         "means opens are still arriving), best subject lines and open rate by research "
+         "quality. Set include_timeline for the daily opens/clicks/replies series (30 days).",
+         _obj({"campaign_id": UUID_S, "include_timeline": {"type": "boolean"}}, ["campaign_id"]),
+         get_campaign_analytics),
+    Tool("get_sequence_funnel", "Sequence step funnel",
+         "Per-step funnel for a campaign's sequence: for each step (email, follow-up, LinkedIn "
+         "action, wait) how many sends were attempted / sent / skipped / failed and how many "
+         "leads are on it now, plus active / completed / halted lead totals.",
+         _obj({"campaign_id": UUID_S}, ["campaign_id"]), get_sequence_funnel),
+    Tool("get_campaign_deliverability", "Campaign deliverability",
+         "Recent bounce / spam / open rates, the sending domain's remaining hourly and daily "
+         "send headroom, and whether the deliverability circuit breaker has paused the campaign.",
+         _obj({"campaign_id": UUID_S}, ["campaign_id"]), get_campaign_deliverability),
     Tool("search_leads", "Search leads",
          "Search leads across all campaigns. Use `email` to look someone up by email address "
          "(exact matches first — the same person may be a lead in several campaigns), or "

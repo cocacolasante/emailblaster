@@ -56,8 +56,8 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
     empty + isolated; invite → teammate sees data; assign → "My leads").
   - Applied to the dev DB 2026-09-27 (backup in `backups/`); counts
     verified identical before/after.
-  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 39
-    pinned tools (incl. reports + report builder, human-gated research→draft→confirm→send via
+  - **Then: Muse over MCP** — `/mcp` + workspace API keys (0050), 42
+    pinned tools (incl. reports + report builder, campaign analytics, human-gated research→draft→confirm→send via
     `outreach_drafts`, 0051), named tunnel `outreach.blueprintautomation.tech`; see
     [`docs/muse-mcp.md`](docs/muse-mcp.md).
 
@@ -387,6 +387,14 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   is closed" on the second task.  `sequencer._li_redis()` still caches
   (legacy) — fine for tests that monkeypatch `_LI_REDIS_CLIENT=None`,
   but rewrite if it ever causes issues in production.
+- **"Open rate by send week" counts every email, attributed by Brevo
+  `messageId`.**  `analytics._send_cohorts` buckets first emails
+  (`leads.brevo_message_id`) AND sent email/email_reply steps
+  (`lead_step_executions.external_id`) by the week they went out; an
+  open counts for the email whose `event_data->>'messageId'` it carries
+  (old events with no messageId fall back to the lead's first email).
+  It used to count first emails only, so a campaign whose first emails
+  all went out in one week showed a single row forever.
 - **Activity tab dedupes consecutive same-(lead, node) rows.**  The
   `/campaigns/{id}/activity` endpoint pulls 100 raw rows from
   `lead_step_executions`, clusters them by `(lead_id, node_id)`
@@ -674,7 +682,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1381 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
+_Backend tests: **1383 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

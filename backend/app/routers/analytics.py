@@ -16,7 +16,11 @@ from app.models import (
     EmailEvent,
     EmailEventType,
     Lead,
+    LeadStepExecution,
+    LeadStepResult,
     SendStatus,
+    SequenceNode,
+    SequenceNodeKind,
 )
 from app.schemas.analytics import (
     AnalyticsOverview,
@@ -50,6 +54,103 @@ def _send_time_from_message_id(brevo_message_id: str | None) -> datetime | None:
         return datetime.strptime(m.group(), "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+def _norm_message_id(message_id: str | None) -> str | None:
+    """``<x@y>`` / ``x@y`` / padded → ``x@y`` so Brevo event ids match ours."""
+    mid = (message_id or "").strip().strip("<>").strip()
+    return mid or None
+
+
+async def _send_cohorts(
+    db: AsyncSession, campaign_id: uuid.UUID, now: datetime,
+) -> list[SendCohort]:
+    """Every email the campaign sent — the first email AND sequence
+    follow-ups — bucketed by the week it went out, with the share of those
+    emails that were opened.
+
+    Opens are attributed to the exact email via Brevo's ``messageId`` on
+    the event, so a follow-up's opens land in the follow-up's week (not
+    the first email's).  Older events stored without a ``messageId`` fall
+    back to the old lead-level rule: credited to the lead's first email.
+    """
+    # message id → {"sent_at", "lead_id", "first"}
+    emails: dict[str, dict[str, Any]] = {}
+
+    first_rows = (await db.execute(
+        select(Lead.id, Lead.brevo_message_id).where(
+            Lead.campaign_id == campaign_id,
+            Lead.send_status == SendStatus.SENT,
+            Lead.brevo_message_id.is_not(None),
+        )
+    )).all()
+    for lead_id, message_id in first_rows:
+        mid = _norm_message_id(message_id)
+        sent_at = _send_time_from_message_id(message_id)
+        if mid and sent_at:
+            emails[mid] = {"sent_at": sent_at, "lead_id": lead_id, "first": True}
+
+    step_rows = (await db.execute(
+        select(LeadStepExecution.lead_id, LeadStepExecution.external_id,
+               LeadStepExecution.attempted_at)
+        .join(Lead, Lead.id == LeadStepExecution.lead_id)
+        .join(SequenceNode, SequenceNode.id == LeadStepExecution.node_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadStepExecution.result == LeadStepResult.SENT,
+            LeadStepExecution.external_id.is_not(None),
+            SequenceNode.kind.in_([SequenceNodeKind.EMAIL, SequenceNodeKind.EMAIL_REPLY]),
+        )
+    )).all()
+    for lead_id, message_id, attempted_at in step_rows:
+        mid = _norm_message_id(message_id)
+        if not mid or mid in emails:  # same message as the first email → count once
+            continue
+        sent_at = _send_time_from_message_id(message_id) or attempted_at
+        emails[mid] = {"sent_at": sent_at, "lead_id": lead_id, "first": False}
+
+    opened_mids: set[str] = set()
+    legacy_opened_leads: set[uuid.UUID] = set()
+    open_rows = (await db.execute(
+        select(EmailEvent.lead_id, EmailEvent.event_data["messageId"].astext)
+        .where(
+            EmailEvent.campaign_id == campaign_id,
+            EmailEvent.event_type == EmailEventType.OPENED,
+        )
+        .distinct()
+    )).all()
+    for lead_id, message_id in open_rows:
+        mid = _norm_message_id(message_id)
+        if mid:
+            opened_mids.add(mid)
+        else:
+            legacy_opened_leads.add(lead_id)
+
+    buckets: dict[Any, dict[str, Any]] = {}
+    for mid, e in emails.items():
+        sent_at = e["sent_at"]
+        week_start = (sent_at - timedelta(days=sent_at.weekday())).date()
+        b = buckets.setdefault(week_start, {
+            "sent": 0, "opened": 0, "first": 0, "follow_ups": 0, "newest": sent_at,
+        })
+        b["sent"] += 1
+        b["first" if e["first"] else "follow_ups"] += 1
+        if mid in opened_mids or (e["first"] and e["lead_id"] in legacy_opened_leads):
+            b["opened"] += 1
+        b["newest"] = max(b["newest"], sent_at)
+
+    return [
+        SendCohort(
+            week_start=week_start,
+            sent=b["sent"],
+            opened=b["opened"],
+            open_rate=_rate(b["opened"], b["sent"]),
+            first_emails=b["first"],
+            follow_ups=b["follow_ups"],
+            accumulating=(now - b["newest"]) < timedelta(days=7),
+        )
+        for week_start, b in sorted(buckets.items())
+    ]
 
 
 def _reputation(sent: int, delivered: int, bounced: int, spam: int) -> int | None:
@@ -179,7 +280,6 @@ async def get_campaign_analytics(
     sent_rows = (await db.execute(
         select(
             Lead.id, Lead.research_data, Lead.composed_subject,
-            Lead.brevo_message_id,
         ).where(
             Lead.campaign_id == campaign_id,
             Lead.send_status == SendStatus.SENT,
@@ -196,8 +296,7 @@ async def get_campaign_analytics(
 
     quality_buckets: dict[str, dict[str, int]] = {}
     subject_buckets: dict[str, dict[str, int]] = {}
-    cohort_buckets: dict[Any, dict[str, Any]] = {}
-    for lead_id, research_data, subject, brevo_message_id in sent_rows:
+    for lead_id, research_data, subject in sent_rows:
         quality = str((research_data or {}).get("quality", "low"))
         qb = quality_buckets.setdefault(quality, {"count": 0, "opened": 0})
         qb["count"] += 1
@@ -208,17 +307,6 @@ async def get_campaign_analytics(
             sb["sent"] += 1
             if lead_id in opened_ids:
                 sb["opened"] += 1
-        sent_at = _send_time_from_message_id(brevo_message_id)
-        if sent_at is not None:
-            week_start = (sent_at - timedelta(days=sent_at.weekday())).date()
-            cb = cohort_buckets.setdefault(
-                week_start, {"sent": 0, "opened": 0, "newest": sent_at},
-            )
-            cb["sent"] += 1
-            if lead_id in opened_ids:
-                cb["opened"] += 1
-            if sent_at > cb["newest"]:
-                cb["newest"] = sent_at
 
     quality_breakdown = [
         QualityBreakdownItem(
@@ -243,16 +331,7 @@ async def get_campaign_analytics(
     best_subjects = qualifying_subjects[:10]
 
     # ----- Send-week cohorts -----
-    send_cohorts = [
-        SendCohort(
-            week_start=week_start,
-            sent=data["sent"],
-            opened=data["opened"],
-            open_rate=_rate(data["opened"], data["sent"]),
-            accumulating=(now - data["newest"]) < timedelta(days=7),
-        )
-        for week_start, data in sorted(cohort_buckets.items())
-    ]
+    send_cohorts = await _send_cohorts(db, campaign_id, now)
 
     # ----- Reputation score -----
     reputation = _reputation(sent_count, delivered, bounced, spam)
