@@ -144,6 +144,20 @@ async def test_unipile_webhook_uses_workspace_secret(client, anon_client, _engin
     assert other.status_code == 401
 
 
+async def test_webhook_unknown_workspace_looks_like_bad_secret(client, anon_client):
+    """A made-up workspace id gets the same 401 as a wrong secret, so the
+    webhook URL can't be used to confirm which workspace ids exist."""
+    await _save(client, "unipile", dsn="api1.unipile.com:1", api_key="tok")
+    missing = "11111111-2222-3333-4444-555555555555"
+    for provider, header in (("unipile", "X-Unipile-Auth"), ("brevo", "X-Brevo-Auth")):
+        real = await anon_client.post(f"/webhooks/{provider}/{DEFAULT_TENANT_ID}",
+                                      json={"id": "e1"}, headers={header: "wrong"})
+        fake = await anon_client.post(f"/webhooks/{provider}/{missing}",
+                                      json={"id": "e1"}, headers={header: "wrong"})
+        assert real.status_code == fake.status_code == 401
+        assert real.json() == fake.json() == {"detail": "invalid auth header"}
+
+
 async def test_legacy_unipile_url_resolves_workspace_from_account(client, anon_client, db_session):
     from app.models import LinkedInAccount, LinkedInAccountStatus
 

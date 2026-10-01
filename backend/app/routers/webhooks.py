@@ -547,7 +547,8 @@ async def unipile_webhook_for_tenant(
     The path names the workspace; the auth header must match THAT
     workspace's Unipile webhook secret."""
     if await tenant_of("tenant", tenant_id) is None:
-        raise HTTPException(status_code=404, detail="unknown workspace")
+        # Same answer as a bad secret, so the URL can't confirm a workspace exists.
+        raise HTTPException(status_code=401, detail="invalid auth header")
     return await _handle_unipile_delivery(request, db, tenant_id)
 
 
@@ -660,7 +661,8 @@ async def brevo_webhook_for_tenant(
 ) -> dict[str, Any]:
     """Per-workspace Brevo event webhook (auth = that workspace's secret)."""
     if await tenant_of("tenant", tenant_id) is None:
-        raise HTTPException(status_code=404, detail="unknown workspace")
+        # Same answer as a bad secret, so the URL can't confirm a workspace exists.
+        raise HTTPException(status_code=401, detail="invalid auth header")
     return await _handle_brevo_delivery(request, db, tenant_id)
 
 
