@@ -605,6 +605,14 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   with a 24h lookback floor and 5-min overlap between polls.  Per-event
   dedup is built into ``process_event`` so re-fetching the same day
   window (day-granularity API) doesn't double-insert.
+- **Brevo terminal events dedup per EMAIL (messageId), not per lead.**
+  `process_event` skips a delivered/bounce/spam/unsub/blocked event only
+  if the lead already has that type for the SAME messageId (legacy rows
+  with no messageId count as the first email's).  Per-lead dedup silently
+  dropped every follow-up's "delivered" (fixed 2026-10-01; 3,663 rows
+  recovered via `scripts/backfill_brevo_events.py`, now tenant-aware with
+  `--dry-run`).  Brevo's `requests` event (accepted, pre-delivery) is no
+  longer mapped to DELIVERED.
 - **All four ports bound to `127.0.0.1` only.**  `docker-compose.yml`
   uses `"127.0.0.1:8000:8000"` etc. so the unauthenticated API can't
   be reached from LAN.  Tunnel (ngrok/cloudflared) still works because
@@ -682,7 +690,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1383 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
+_Backend tests: **1384 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

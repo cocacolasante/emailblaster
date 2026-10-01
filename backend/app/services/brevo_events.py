@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -33,9 +33,9 @@ from app.models import (
 # known variant onto our internal ``EmailEventType``.
 EVENT_MAP: dict[str, EmailEventType] = {
     # Delivery confirmations
+    # NOT "request"/"requests": that's Brevo *accepting* the send, before
+    # delivery — mapping it here counted later-bounced emails as delivered.
     "delivered": EmailEventType.DELIVERED,
-    "request": EmailEventType.DELIVERED,  # precedes delivery in webhook payloads
-    "requests": EmailEventType.DELIVERED,
     # Opens
     "opened": EmailEventType.OPENED,
     "unique_opened": EmailEventType.OPENED,
@@ -156,10 +156,23 @@ async def process_event(
     # API has day-level granularity on `startDate`/`endDate`, so each poll
     # re-fetches today's events repeatedly — without this check we'd
     # accumulate one EmailEvent per poll tick per real event.
+    #
+    # Per MESSAGE, not per lead: a lead gets a first email AND follow-ups,
+    # each with its own delivered (or bounce) event.  Deduping per lead
+    # dropped every follow-up's "delivered" once the first email's was in.
+    # Old rows stored without a messageId are taken to be the first email's.
+    stored_mid = func.coalesce(
+        EmailEvent.event_data["messageId"].astext,
+        EmailEvent.event_data["message-id"].astext,
+    )
+    same_message = func.btrim(stored_mid, "<> ") == msg_id
+    if lead.brevo_message_id in forms:
+        same_message = or_(same_message, stored_mid.is_(None))
     existing = await db.scalar(
         select(EmailEvent.id).where(
             EmailEvent.lead_id == lead.id,
             EmailEvent.event_type == event_type,
+            same_message,
         ).limit(1)
     )
     if existing is not None and event_type in {
@@ -170,8 +183,8 @@ async def process_event(
         EmailEventType.UNSUBSCRIBED,
         EmailEventType.BLOCKED,
     }:
-        # These are one-shot terminal events per lead — if we already saw
-        # one, do not record a second.  Opens and clicks legitimately
+        # These are one-shot terminal events per email — if we already saw
+        # one for this message, do not record a second.  Opens and clicks legitimately
         # recur (one per open/click), so we always record those.
         return False
 

@@ -276,3 +276,42 @@ async def test_poller_normalises_brevo_api_event_names(db_session, monkeypatch):
     assert counts["processed"] == 1
     events = (await db_session.execute(select(EmailEvent))).scalars().all()
     assert any(e.event_type == EmailEventType.HARD_BOUNCE for e in events)
+
+
+async def test_delivered_recorded_per_email_not_per_lead(db_session):
+    """A follow-up's "delivered" must be recorded even though the lead's
+    first email was already delivered (it used to be deduped per lead, so
+    no follow-up ever showed as delivered).  Re-fetching still dedupes per
+    message, a legacy row without a messageId counts as the first email's,
+    and Brevo's "requests" (accepted, not delivered) is ignored."""
+    from app.models import Campaign, LeadStepExecution, LeadStepResult, SequenceNode
+    from app.services.brevo_events import process_event
+    from app.services.sequence_service import ensure_default_sequence
+
+    lead = await _make_lead_with_message(db_session, "<first@x>")
+    camp = await db_session.get(Campaign, lead.campaign_id)
+    seq = await ensure_default_sequence(db_session, camp)
+    node = (await db_session.execute(
+        select(SequenceNode).where(SequenceNode.sequence_id == seq.id)
+    )).scalars().first()
+    db_session.add(LeadStepExecution(lead_id=lead.id, node_id=node.id,
+                                     result=LeadStepResult.SENT, external_id="<follow@x>"))
+    # Legacy delivered row for the first email, stored without a messageId.
+    db_session.add(EmailEvent(lead_id=lead.id, campaign_id=camp.id,
+                              event_type=EmailEventType.DELIVERED, event_data={"event": "delivered"}))
+    await db_session.commit()
+
+    async def ingest(ev):
+        ok = await process_event(db_session, ev, apply_side_effects=False)
+        await db_session.commit()
+        return ok
+
+    assert await ingest({"event": "requests", "messageId": "<follow@x>"}) is False
+    assert await ingest({"event": "delivered", "messageId": "<first@x>"}) is False  # legacy row covers it
+    assert await ingest({"event": "delivered", "messageId": "<follow@x>"}) is True
+    assert await ingest({"event": "delivered", "messageId": "follow@x"}) is False   # re-fetch
+
+    rows = (await db_session.execute(select(EmailEvent).where(
+        EmailEvent.lead_id == lead.id, EmailEvent.event_type == EmailEventType.DELIVERED,
+    ))).scalars().all()
+    assert len(rows) == 2
