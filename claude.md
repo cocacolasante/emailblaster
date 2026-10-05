@@ -613,6 +613,17 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   recovered via `scripts/backfill_brevo_events.py`, now tenant-aware with
   `--dry-run`).  Brevo's `requests` event (accepted, pre-delivery) is no
   longer mapped to DELIVERED.
+- **Externally written first emails: `backend/scripts/manual_campaign.py`.**
+  `create` clones a template campaign (settings + sequence) as a DRAFT with
+  `research_mode=none`; `load` inserts a Prospeo CSV (skips suppressed,
+  already-emailed, unverified) with research SKIPPED + compose PENDING and
+  writes compact briefs; `apply` stores `{email,subject,body}` lines through
+  the campaign signature as composed; `preview` → PREVIEWING.  No research /
+  compose API calls.  Uncomposed leads simply never send (the pacer needs
+  compose DONE).  On such a campaign, editing the **Goal** or clicking
+  **Retry failed** WOULD recompose through the API, and AI follow-up steps
+  still call Sonnet at send time.  Used 2026-10 for "grantmind oct 2026 —
+  np grant ops" (925 written, 414 non-grant-seekers skipped).
 - **All four ports bound to `127.0.0.1` only.**  `docker-compose.yml`
   uses `"127.0.0.1:8000:8000"` etc. so the unauthenticated API can't
   be reached from LAN.  Tunnel (ngrok/cloudflared) still works because
