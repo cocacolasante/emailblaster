@@ -624,6 +624,24 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   **Retry failed** WOULD recompose through the API, and AI follow-up steps
   still call Sonnet at send time.  Used 2026-10 for "grantmind oct 2026 —
   np grant ops" (925 written, 414 non-grant-seekers skipped).
+- **Research + compose run on their own Celery queues** (`research`,
+  `compose`; everything else on the default `celery`).  Routes live in
+  `celery_app.conf.task_routes` and the worker's `-Q celery,compose,research`
+  in `docker-compose.yml` must list every routed queue (test-enforced in
+  `test_phase15_hardening.py`).  On one FIFO queue a 3,800-lead upload put
+  3,800 research tasks in front of every beat task and the samples' compose
+  jobs: Preview stayed empty and ALL workspaces stopped sending for ~an hour
+  (2026-10-13).  The worker drains queues in strict name order
+  (`queue_order_strategy="sorted"`: `celery` < `compose` < `research`), so
+  the default queue always goes first — round-robin was not enough, the
+  sequencer's follow-up steps still backed up behind the bulk work.
+- **The signature replaces every AI sign-off shape, not just "Best,".**
+  `signature.strip_signoff` also catches short closing phrases ending in a
+  comma ("Thanks for your time,"), and `strip_signature_echo` drops trailing
+  lines that repeat signature lines (bare "Name / Company", plus a lone
+  email/URL/phone the AI tacked under them — often invented).  Both run in
+  `apply_signature` (compose) and `render_email_with_signature` (send), so
+  an already-stored body is still cleaned when it goes out.
 - **All four ports bound to `127.0.0.1` only.**  `docker-compose.yml`
   uses `"127.0.0.1:8000:8000"` etc. so the unauthenticated API can't
   be reached from LAN.  Tunnel (ngrok/cloudflared) still works because
@@ -701,7 +719,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1385 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **507 passing**._
+_Backend tests: **1391 passing** (+2 pre-existing failures in phase34/phase56, unrelated — fail on clean checkout).  Frontend tests: **509 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

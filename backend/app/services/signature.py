@@ -48,6 +48,23 @@ def _normalize_closing(line: str) -> str:
     return line.strip().rstrip(",.!:;").strip().lower()
 
 
+# A longer closing phrase the fixed list can't enumerate ("Thanks for your
+# time,").  Only a short line that STARTS with a known closing and ENDS with
+# a comma counts, so a sentence like "Thanks for reading this far." in the
+# last paragraph is never mistaken for the sign-off.
+_MAX_CLOSING_PHRASE_WORDS = 6
+
+
+def _is_closing_line(line: str) -> bool:
+    norm = _normalize_closing(line)
+    if norm in _CLOSINGS:
+        return True
+    stripped = line.strip()
+    if not stripped.endswith(",") or len(stripped.split()) > _MAX_CLOSING_PHRASE_WORDS:
+        return False
+    return any(norm.startswith(closing + " ") for closing in _CLOSINGS)
+
+
 def strip_signoff(body: str | None) -> str:
     """Return ``body`` with the AI's sign-off block stripped if one is
     detected near the end (a ``_CLOSINGS`` line within the last
@@ -60,12 +77,64 @@ def strip_signoff(body: str | None) -> str:
     for i in range(len(lines) - 1, -1, -1):
         if len(lines) - 1 - i > _MAX_SIGNOFF_LOOKBACK:
             break
-        if _normalize_closing(lines[i]) in _CLOSINGS:
+        if _is_closing_line(lines[i]):
             cut = i
             break
     if cut is None:
         return body
     return "\n".join(lines[:cut]).rstrip()
+
+
+# A sign-off with no closing word ("Brendan Bradley\nNPO Grant Writing"
+# straight after the last paragraph) has nothing for ``strip_signoff`` to
+# anchor on.  These are the most trailing lines we'll drop when they repeat
+# lines of the signature itself.
+_MAX_DUPLICATE_TAIL_LINES = 5
+# A line that is nothing but an email address, a URL or a phone number.
+_CONTACT_LINE_RE = re.compile(
+    r"^(?:[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?:https?://|www\.)\S+|\+?[\d\s().-]{7,})$"
+)
+
+
+def strip_signature_echo(body: str | None, signature: str | None) -> str:
+    """Drop trailing body lines that repeat lines of ``signature``.
+
+    The AI often signs with just the sender's name / company and no
+    closing word, which ``strip_signoff`` can't see — the email then went
+    out with the name twice (once from the AI, once in the signature).
+    Only whole trailing lines that match a signature line are removed, so
+    real copy is never touched.
+    """
+    body = (body or "").rstrip()
+    sig_lines = {
+        _normalize_closing(line)
+        for line in signature_to_text(signature).split("\n")
+        if line.strip()
+    }
+    if not body or not sig_lines:
+        return body
+    lines = body.split("\n")
+    end = len(lines)
+    removed = echoes = 0
+    while end > 0 and removed < _MAX_DUPLICATE_TAIL_LINES:
+        line = lines[end - 1]
+        if not line.strip():
+            end -= 1
+        elif _normalize_closing(line) in sig_lines:
+            end -= 1
+            removed += 1
+            echoes += 1
+        elif _CONTACT_LINE_RE.match(line.strip()):
+            # A bare email / URL / phone the AI tacked under its name (often
+            # invented).  Only dropped as part of a block that also echoes
+            # the signature — see the ``echoes`` check below.
+            end -= 1
+            removed += 1
+        else:
+            break
+    if not echoes:
+        return body
+    return "\n".join(lines[:end]).rstrip()
 
 
 def apply_signature(body: str | None, signature: str | None) -> str:
@@ -84,9 +153,10 @@ def apply_signature(body: str | None, signature: str | None) -> str:
     if not body:
         return sig
     if body.endswith(sig):
-        return body  # idempotent — already applied
-
-    kept = strip_signoff(body)
+        # Already applied — only tidy a sign-off the AI left above it.
+        kept = strip_signature_echo(strip_signoff(body[: -len(sig)]), sig)
+    else:
+        kept = strip_signature_echo(strip_signoff(body), sig)
     return f"{kept}\n\n{sig}" if kept else sig
 
 
@@ -305,7 +375,8 @@ def render_email_with_signature(
     elif sig_text and body.endswith(sig_text):
         stripped = body[: -len(sig_text)].rstrip()
     else:
-        stripped = strip_signoff(body)
+        stripped = body
+    stripped = strip_signature_echo(strip_signoff(stripped), sig)
 
     html_body = render_html(stripped)
     sig_html = signature_to_html(sig)

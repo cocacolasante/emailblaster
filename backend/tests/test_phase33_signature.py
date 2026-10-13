@@ -340,3 +340,80 @@ def test_render_email_with_signature_strips_ai_signoff():
     # Sign-off line gone; signature present once.
     assert "Best," not in text_body
     assert text_body.count("csuitecode.com") == 1
+
+
+# --------------------------------------------------------------------------
+# Sign-off with no closing word (just the sender's name) above the signature
+# --------------------------------------------------------------------------
+
+_ECHO_SIG = (
+    "Thanks,\nBrendan Bradley\nGrant Writer / Founder\nNPO Grant Writing\n"
+    '<img src="https://example.org/logo.png" alt="logo">'
+)
+
+
+def test_apply_signature_drops_bare_name_signoff():
+    from app.services.signature import apply_signature
+
+    body = "Hi Steve,\n\nWould a call work?\n\nBrendan Bradley\nNPO Grant Writing"
+    out = apply_signature(body, _ECHO_SIG)
+    assert out == f"Hi Steve,\n\nWould a call work?\n\n{_ECHO_SIG}"
+    assert out.count("Brendan Bradley") == 1
+    # Re-applying to an already-signed body that still has the echo fixes it,
+    # and a clean body stays untouched.
+    assert apply_signature(f"{body}\n\n{_ECHO_SIG}", _ECHO_SIG) == out
+    assert apply_signature(out, _ECHO_SIG) == out
+
+
+def test_render_drops_bare_name_signoff_and_keeps_img_tag():
+    from app.services.signature import render_email_with_signature
+
+    body = (
+        "Hi Steve,\n\nWould a call work?\n\nBrendan Bradley\nNPO Grant Writing"
+        f"\n\n{_ECHO_SIG}"
+    )
+    html, text = render_email_with_signature(body, _ECHO_SIG)
+    assert html.count("Brendan Bradley") == 1
+    assert text.count("Brendan Bradley") == 1
+    assert '<img src="https://example.org/logo.png" alt="logo">' in html
+    assert "&lt;img" not in html
+
+
+def test_signature_echo_leaves_real_copy_alone():
+    from app.services.signature import strip_signature_echo
+
+    body = "Hi Steve,\n\nNPO Grant Writing helps teams like yours.\n\nWould a call work?"
+    assert strip_signature_echo(body, _ECHO_SIG) == body
+
+
+def test_closing_phrase_with_comma_is_stripped_but_a_sentence_is_not():
+    from app.services.signature import (
+        apply_signature, render_email_with_signature, strip_signoff,
+    )
+
+    body = "Hi Gina,\n\nOpen to a brief call?\n\nThanks for your time,"
+    signed = apply_signature(body, _ECHO_SIG)
+    assert signed == f"Hi Gina,\n\nOpen to a brief call?\n\n{_ECHO_SIG}"
+    # Already-signed body that still carries the phrase is fixed on re-apply
+    # and at send time.
+    stale = f"{body}\n\n{_ECHO_SIG}"
+    assert apply_signature(stale, _ECHO_SIG) == signed
+    _, text = render_email_with_signature(stale, _ECHO_SIG)
+    assert "Thanks for your time" not in text
+
+    sentence = "Hi Gina,\n\nThanks for reading this far.\n\nOpen to a brief call?"
+    assert strip_signoff(sentence) == sentence
+
+
+def test_signature_echo_drops_contact_line_under_the_name():
+    from app.services.signature import apply_signature, strip_signature_echo
+
+    body = (
+        "Hi Nicole,\n\nHappy to work around your schedule.\n\n"
+        "Brendan Bradley\nNPO Grant Writing\nbrendan@npograntwriting.com"
+    )
+    out = apply_signature(body, _ECHO_SIG)
+    assert out == f"Hi Nicole,\n\nHappy to work around your schedule.\n\n{_ECHO_SIG}"
+    # A contact line on its own (no echoed signature line) is real copy.
+    plain = "Hi Nicole,\n\nYou can reach me here:\nbrendan@example.org"
+    assert strip_signature_echo(plain, _ECHO_SIG) == plain
