@@ -296,3 +296,35 @@ def test_no_decrypt_calls_outside_imap_client():
         f"encryption.decrypt() must only be called inside the allowlisted "
         f"modules ({sorted(allowed)}) but was found in: {offenders}"
     )
+
+
+def test_bulk_lead_tasks_have_their_own_queues_and_worker_consumes_them():
+    """A big upload must not starve beat tasks / sample composes.
+
+    Research + compose are routed off the default queue, and the worker's
+    ``-Q`` list in docker-compose.yml has to include every routed queue or
+    those tasks would never run.
+    """
+    from pathlib import Path
+
+    from app.workers.celery_app import (
+        COMPOSE_QUEUE, DEFAULT_QUEUE, RESEARCH_QUEUE, celery_app,
+    )
+
+    routes = celery_app.conf.task_routes
+    assert routes["research.research_lead"]["queue"] == RESEARCH_QUEUE
+    assert routes["compose.compose_lead"]["queue"] == COMPOSE_QUEUE
+    # Strict priority = alphabetical queue order ("sorted" strategy).
+    opts = celery_app.conf.broker_transport_options
+    assert opts["queue_order_strategy"] == "sorted"
+    assert DEFAULT_QUEUE < COMPOSE_QUEUE < RESEARCH_QUEUE
+
+    compose_file = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    if not compose_file.exists():  # backend-only checkout / image
+        return
+    worker_cmd = next(
+        line for line in compose_file.read_text().splitlines()
+        if "celery_app worker" in line and "command:" in line
+    )
+    consumed = set(worker_cmd.split("-Q", 1)[1].split()[0].split(","))
+    assert {DEFAULT_QUEUE, RESEARCH_QUEUE, COMPOSE_QUEUE} <= consumed

@@ -153,7 +153,10 @@ services:
     # (httpx connection pools, sqlalchemy session caches, anthropic SDK
     # state) before they accumulate into a hard OOM kill (exit 137,
     # which is what knocked the worker over on 2026-06-08).
-    command: celery -A app.workers.celery_app worker --loglevel=info --max-tasks-per-child=50
+    # ``-Q`` must list every queue in ``celery_app.task_routes`` — bulk
+    # research / compose run on their own queues so a large upload can't
+    # starve the beat tasks on the default ``celery`` queue.
+    command: celery -A app.workers.celery_app worker --loglevel=info --max-tasks-per-child=50 -Q celery,compose,research
     # 1.5GB hard ceiling so a single misbehaving task can't take down the
     # whole worker.  Combined with --max-tasks-per-child this is
     # belt-and-suspenders against the OOM kill failure mode.

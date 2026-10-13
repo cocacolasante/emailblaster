@@ -30,6 +30,10 @@ celery_app = Celery(
     ],
 )
 
+DEFAULT_QUEUE = "celery"
+RESEARCH_QUEUE = "research"
+COMPOSE_QUEUE = "compose"
+
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
@@ -48,7 +52,28 @@ celery_app.conf.update(
     # longest realistic task runtime, or in-progress tasks can get
     # double-delivered.  300 s comfortably exceeds any task we run
     # (longest is Brevo POST + DB write, well under 30 s).
-    broker_transport_options={"visibility_timeout": 300},
+    #
+    # ``queue_order_strategy="sorted"`` makes the worker drain its queues
+    # in strict NAME order instead of round-robin: ``celery`` (beat tasks,
+    # sends, follow-ups) before ``compose`` before ``research``.  The
+    # queue names are chosen so that alphabetical order IS the priority
+    # order — keep that true if you rename or add one.
+    broker_transport_options={
+        "visibility_timeout": 300,
+        "queue_order_strategy": "sorted",
+    },
+    # Bulk per-lead work gets its own queues.  A big upload enqueues one
+    # research task per lead at once; on the single default queue (FIFO)
+    # that backlog sat in front of every beat task (pacer, sequencer,
+    # pollers) AND the sample leads' compose jobs, so sending froze for
+    # every workspace and the Preview screen stayed empty until the whole
+    # list was researched.  The worker consumes all three queues (``-Q``
+    # in docker-compose.yml), default queue first — see
+    # ``queue_order_strategy`` above.
+    task_routes={
+        "research.research_lead": {"queue": RESEARCH_QUEUE},
+        "compose.compose_lead": {"queue": COMPOSE_QUEUE},
+    },
 )
 
 celery_app.conf.beat_schedule = {
