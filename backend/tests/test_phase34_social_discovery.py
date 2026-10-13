@@ -35,6 +35,12 @@ def _reset_client():
 
 
 async def test_discover_posts_extracts_valid_linkedin_urls():
+    # Dates must be relative to today: discovery drops posts older than its
+    # recency window, so fixed dates made this test fail once they aged out.
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    recent_1 = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    recent_2 = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     mock = AsyncMock(return_value=_ant("""
     {
       "posts": [
@@ -44,7 +50,7 @@ async def test_discover_posts_extracts_valid_linkedin_urls():
           "author_headline": "CFO at Acme",
           "company_name": "Acme",
           "post_text": "Our MSP is impossible to reach.",
-          "post_date": "2026-05-30T10:00:00Z"
+          "post_date": "RECENT_1"
         },
         {
           "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:7466191548230303745",
@@ -52,11 +58,11 @@ async def test_discover_posts_extracts_valid_linkedin_urls():
           "author_headline": "IT Director",
           "company_name": "Beta",
           "post_text": "Looking for a new phone system, recommendations?",
-          "post_date": "2026-05-29T14:00:00Z"
+          "post_date": "RECENT_2"
         }
       ]
     }
-    """))
+    """.replace("RECENT_1", recent_1).replace("RECENT_2", recent_2)))
     with patch.object(social_listening_discovery, "get_client",
                       return_value=SimpleNamespace(messages=SimpleNamespace(create=mock))):
         out = await social_listening_discovery.discover_posts(

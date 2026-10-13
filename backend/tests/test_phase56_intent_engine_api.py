@@ -21,7 +21,9 @@ from app.services.intent import orgs as orgs_mod
 
 pytestmark = pytest.mark.asyncio
 
-NOW = datetime(2026, 6, 22, tzinfo=timezone.utc)
+# Relative to today: recompute decays a signal's score by its age, so a
+# fixed date eventually fell below the promotion threshold.
+NOW = datetime.now(timezone.utc)
 
 
 async def _seed(db_session):
