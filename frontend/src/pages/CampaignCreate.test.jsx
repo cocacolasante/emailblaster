@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CampaignCreate from './CampaignCreate.jsx';
 
@@ -50,14 +50,20 @@ vi.mock('./SequenceBuilder.jsx', () => ({
 import * as accountsApi from '../api/connectedAccounts.js';
 import * as campaignsApi from '../api/campaigns.js';
 
-function renderPage() {
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="location-search">{loc.search}</div>;
+}
+
+function renderPage(initialEntry = '/campaigns/new') {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <CampaignCreate />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>
   );
@@ -180,6 +186,16 @@ describe('Submitting step 1', () => {
 
     // Step 2 mounts the sequence builder; step 3 mounts the LeadUpload.
     await waitFor(() => expect(screen.getByTestId('embedded-sequence-builder')).toBeInTheDocument());
+    // The URL must carry BOTH the step and the campaign id, or a refresh on
+    // a later step has no campaign to resume (blank "Prepare" screen).
+    const search = screen.getByTestId('location-search').textContent;
+    expect(search).toContain('id=new-campaign-1');
+    expect(search).toContain('step=2');
+  });
+
+  it('falls back to step 1 when the URL names a later step but no campaign', async () => {
+    renderPage('/campaigns/new?step=4');
+    expect(await screen.findByText(/campaign details/i)).toBeInTheDocument();
   });
 
   it('sends template_subject/body when in template mode', async () => {

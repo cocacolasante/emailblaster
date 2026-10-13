@@ -445,6 +445,9 @@ export default function CampaignCreate() {
   const initialStep = (() => {
     const s = Number.isFinite(urlStep) ? urlStep : 1;
     if (urlId && s < 2) return 2;
+    // Steps 2-4 all need a campaign; without an id in the URL there is
+    // nothing to resume, so start over rather than render an empty step.
+    if (!urlId) return 1;
     return Math.min(Math.max(s, 1), 4);
   })();
 
@@ -463,19 +466,10 @@ export default function CampaignCreate() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set('step', String(nextStep));
+      if (campaignId) next.set('id', String(campaignId));
       return next;
     }, { replace: true });
-  }, [setSearchParams]);
-
-  const setCampaignId = useCallback((nextId) => {
-    setCampaignIdRaw(nextId);
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (nextId) next.set('id', String(nextId));
-      else next.delete('id');
-      return next;
-    }, { replace: true });
-  }, [setSearchParams]);
+  }, [setSearchParams, campaignId]);
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['connected-accounts'],
@@ -493,8 +487,18 @@ export default function CampaignCreate() {
   const createMutation = useMutation({
     mutationFn: createCampaign,
     onSuccess: (data) => {
-      setCampaignId(data.id);
-      setStep(2);  // → Sequence
+      // One URL update for both params.  Two back-to-back functional
+      // setSearchParams calls each start from the same stale params, so
+      // the second (step) used to wipe the first (id) — and a refresh on
+      // a later step then had no campaign to resume.
+      setCampaignIdRaw(data.id);
+      setStepRaw(2);  // → Sequence
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('id', String(data.id));
+        next.set('step', '2');
+        return next;
+      }, { replace: true });
     },
     onError: (err) => {
       const detail = err?.response?.data?.detail || err.message || 'Failed to create campaign';
