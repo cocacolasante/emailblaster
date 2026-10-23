@@ -61,7 +61,7 @@ except Exception as exc:  # noqa: BLE001
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],
+    allow_origins=settings.frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -76,14 +76,14 @@ _CSRF_EXEMPT_PREFIXES = ("/webhooks/", "/unsubscribe/")
 async def csrf_origin_check(request: Request, call_next):
     """Defence in depth on top of SameSite=Lax cookies: a state-changing
     request that carries a session cookie AND an Origin header must come
-    from the frontend origin.  (Non-browser clients send no Origin.)"""
+    from a frontend origin.  (Non-browser clients send no Origin.)"""
     if (
         request.method in _UNSAFE_METHODS
         and "eb_session" in request.cookies
         and not request.url.path.startswith(_CSRF_EXEMPT_PREFIXES)
     ):
         origin = request.headers.get("origin")
-        if origin and origin.rstrip("/") != settings.FRONTEND_URL.rstrip("/"):
+        if origin and origin.rstrip("/") not in settings.frontend_origins:
             return JSONResponse(status_code=403, content={"detail": "cross-origin request blocked"})
     return await call_next(request)
 
@@ -143,7 +143,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     # surface in the browser as opaque CORS errors instead of real failures.
     headers: dict[str, str] = {}
     origin = request.headers.get("origin")
-    if origin and origin == settings.FRONTEND_URL:
+    if origin and origin.rstrip("/") in settings.frontend_origins:
         headers["access-control-allow-origin"] = origin
         headers["access-control-allow-credentials"] = "true"
         headers["vary"] = "Origin"

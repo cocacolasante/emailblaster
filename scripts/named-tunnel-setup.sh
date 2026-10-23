@@ -8,15 +8,18 @@
 # Safe to re-run: reuses an existing tunnel of the same name and overwrites
 # the DNS record rather than erroring on the second pass.
 #
-# ONLY the paths an outside caller needs are exposed — the MCP endpoint Muse
-# connects to, provider webhooks, and the unsubscribe links in sent email.
-# The dashboard and the rest of the API stay on localhost.
+# The MCP endpoint, provider webhooks, unsubscribe links and /health go
+# straight to the backend; every other path is the dashboard, served as a
+# production build by the `frontend-public` service (its /api/* calls are
+# proxied to the backend, so app + API share one origin and the session
+# cookie stays first-party).  The API port itself stays on localhost.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TUNNEL_NAME="${TUNNEL_NAME:-outreach}"
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-outreach.blueprintautomation.tech}"
 TUNNEL_SERVICE="${TUNNEL_SERVICE:-http://backend:8000}"
+APP_SERVICE="${APP_SERVICE:-http://frontend-public:4173}"
 CERT="${HOME}/.cloudflared/cert.pem"
 OUT="secrets/cloudflared"
 
@@ -56,8 +59,7 @@ mkdir -p "$OUT"
 cp "$creds" "$OUT/credentials.json"
 chmod 600 "$OUT/credentials.json"
 
-# Rules are matched top to bottom; the last must be a catch-all.  Anything
-# not on the allowlist gets a 404 at Cloudflare's edge and never reaches us.
+# Rules are matched top to bottom; the last must be a catch-all.
 cat > "$OUT/config.yml" <<CFG
 tunnel: ${uuid}
 credentials-file: /etc/cloudflared/credentials.json
@@ -67,8 +69,9 @@ ingress:
   - hostname: ${TUNNEL_HOSTNAME}
     path: ^/(mcp$|webhooks/|unsubscribe/|health$)
     service: ${TUNNEL_SERVICE}
+  # Everything else is the dashboard (production build; /api/* proxied).
   - hostname: ${TUNNEL_HOSTNAME}
-    service: http_status:404
+    service: ${APP_SERVICE}
   - service: http_status:404
 CFG
 

@@ -13,6 +13,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    @property
+    def frontend_origins(self) -> list[str]:
+        """Every origin the dashboard is served from, FRONTEND_URL first."""
+        extra = [o.strip().rstrip("/") for o in self.FRONTEND_EXTRA_ORIGINS.split(",")]
+        origins = [self.FRONTEND_URL.rstrip("/")] + [o for o in extra if o]
+        return list(dict.fromkeys(origins))
+
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://emailblaster:emailblaster@localhost:5432/emailblaster"
 
@@ -284,6 +291,11 @@ class Settings(BaseSettings):
     # App
     SECRET_KEY: str = "dev-secret-change-me"
     FRONTEND_URL: str = "http://localhost:5173"
+    # Other origins the dashboard is ALSO served from (comma-separated), e.g.
+    # the local dev server when FRONTEND_URL is the public tunnel hostname.
+    # CORS and the CSRF origin check accept FRONTEND_URL plus these; invite
+    # and reset links always use FRONTEND_URL.
+    FRONTEND_EXTRA_ORIGINS: str = ""
     WEBHOOK_BASE_URL: str = "http://localhost:8000"
     # Public HTTPS origin (named Cloudflare tunnel) that agents like Muse
     # reach — the MCP endpoint is {PUBLIC_ORIGIN}/mcp.  Empty ⇒ fall back to

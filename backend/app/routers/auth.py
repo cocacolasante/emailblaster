@@ -77,6 +77,18 @@ async def unique_slug(db: AsyncSession, name: str) -> str:
 
 
 def _client_ip(request: Request) -> str:
+    """The caller's IP for rate-limit keys.
+
+    Through the Cloudflare tunnel every request reaches us from the same
+    proxy container, so the TCP peer would put all public users in ONE
+    bucket (one bad actor could lock everyone out).  Cloudflare sets
+    ``CF-Connecting-IP`` to the real client and overwrites any value the
+    client sent; the API port itself is bound to 127.0.0.1, so the header
+    can't be forged from outside.
+    """
+    cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+    if cf_ip:
+        return cf_ip
     return request.client.host if request.client else "unknown"
 
 

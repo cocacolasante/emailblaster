@@ -4,11 +4,39 @@
 #   ./scripts/named-tunnel-setup.sh          # once, after `cloudflared tunnel login`
 #   docker compose -f docker-compose.yml -f docker-compose.named-tunnel.yml up -d
 #
-# The tunnel only forwards /mcp, /webhooks/*, /unsubscribe/* and /health
-# (see secrets/cloudflared/config.yml); everything else 404s at the edge.
+# The tunnel sends /mcp, /webhooks/*, /unsubscribe/* and /health straight to
+# the backend, and everything else to `frontend-public` — a production build
+# of the dashboard whose `/api/*` calls are proxied to the backend, so the
+# app and API share one origin (see secrets/cloudflared/config.yml).
 # Unlike ngrok/quick tunnels the hostname never changes, so the MCP endpoint
 # registered in Muse and the Unipile webhook URLs stay valid across restarts.
 services:
+  frontend-public:
+    # Same image as the dev `frontend`, but a built bundle served by
+    # `vite preview` — no dev server (HMR, unbundled source) on the public
+    # internet.  Rebuilds on every container start: after frontend changes,
+    # `docker compose ... restart frontend-public`.
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: >-
+      sh -c "npx vite build --outDir /tmp/dist --emptyOutDir
+      && exec npx vite preview --outDir /tmp/dist"
+    environment:
+      VITE_API_BASE_URL: /api
+      VITE_API_PROXY_TARGET: http://backend:8000
+      VITE_ALLOWED_HOSTS: ${PUBLIC_APP_HOSTS:-outreach.blueprintautomation.tech}
+    ports:
+      # Loopback only, for checking the public build locally; the outside
+      # world reaches it through the tunnel.
+      - "127.0.0.1:4173:4173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   cloudflared:
     image: cloudflare/cloudflared:2025.8.1
     command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run

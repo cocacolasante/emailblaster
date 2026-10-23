@@ -348,3 +348,41 @@ async def test_login_rate_limited(anon_client):
         assert r.status_code == 401
     r = await anon_client.post("/auth/login", json={"email": "x@y.co", "password": "wrong-pass"})
     assert r.status_code == 429
+
+
+def test_frontend_origins_include_extra_origins(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.org/")
+    monkeypatch.setattr(settings, "FRONTEND_EXTRA_ORIGINS", " http://localhost:5173 ,, https://app.example.org")
+    assert settings.frontend_origins == ["https://app.example.org", "http://localhost:5173"]
+
+
+async def test_csrf_check_accepts_any_configured_frontend_origin(client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.org")
+    monkeypatch.setattr(settings, "FRONTEND_EXTRA_ORIGINS", "http://localhost:5173")
+    for origin, expected in (
+        ("https://app.example.org", 200),
+        ("http://localhost:5173", 200),
+        ("https://evil.example", 403),
+    ):
+        r = await client.post("/auth/logout", headers={"origin": origin})
+        assert r.status_code == expected, origin
+
+
+def test_client_ip_prefers_cloudflare_header():
+    from starlette.requests import Request
+
+    from app.routers.auth import _client_ip
+
+    def req(headers):
+        return Request({
+            "type": "http", "method": "POST", "path": "/auth/login",
+            "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+            "client": ("172.18.0.9", 5000),
+        })
+
+    assert _client_ip(req({"cf-connecting-ip": "203.0.113.7"})) == "203.0.113.7"
+    assert _client_ip(req({})) == "172.18.0.9"
