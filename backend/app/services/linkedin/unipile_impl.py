@@ -784,6 +784,13 @@ class UnipileLinkedInProvider(LinkedInProvider):
                 "GET", "/api/v1/chats",
                 params={"account_id": aid, "limit": 20, "after": since_iso},
             )
+        except UnipileError as exc:
+            # A rejected API key must reach the poller (it flags the
+            # integration); everything else stays best-effort.
+            if exc.status == 401:
+                raise
+            logger.warning("Unipile inbox_recent_events failed: %s", exc)
+            return []
         except Exception as exc:  # noqa: BLE001
             logger.warning("Unipile inbox_recent_events failed: %s", exc)
             return []

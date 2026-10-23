@@ -38,7 +38,7 @@ from app.tenancy.worker import run_per_tenant
 from app.tenancy.keys import brevo_watermark_key
 from app.tenancy.worker_db import worker_engine
 from app.services import brevo
-from app.services import credentials
+from app.services import credentials, integration_health
 from app.services.brevo_events import process_event
 from app.workers.celery_app import celery_app
 
@@ -92,6 +92,12 @@ async def _poll_async() -> dict[str, int]:
                 start_date=floor.date().isoformat(),
                 end_date=now.date().isoformat(),
             )
+        except brevo.BrevoAuthError as exc:
+            # The key stopped working (revoked, or Brevo's IP lock).  Flag
+            # it so the workspace sees it and sends hold instead of looping.
+            await integration_health.mark_broken("brevo", exc.brevo_message)
+            counts["auth_failed"] = 1
+            return counts
         except Exception:  # noqa: BLE001
             logger.exception("brevo.fetch_events failed")
             return counts
@@ -114,6 +120,10 @@ async def _poll_async() -> dict[str, int]:
                 else:
                     counts["deduped_or_unmatched"] += 1
             await session.commit()
+
+        # The poll doubles as a health probe: a key that works again lifts
+        # the send hold and clears the Integrations error.
+        await integration_health.mark_ok("brevo")
 
         # Observability stamp only — nothing filters on this anymore.
         await redis_client.set(brevo_watermark_key(), now.isoformat())

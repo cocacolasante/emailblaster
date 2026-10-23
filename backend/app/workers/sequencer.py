@@ -56,7 +56,7 @@ from app.models import (
     SequenceNodeKind,
     Suppression,
 )
-from app.services import brevo
+from app.services import brevo, integration_health
 from app.services.signature import render_email_with_signature, resolve_campaign_signature
 from app.services.linkedin import get_provider as get_linkedin_provider
 from app.services.linkedin.base import (
@@ -875,7 +875,8 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 if reason == "suppressed":
                     # Permanent — advance the cursor (don't re-try forever).
                     return {"status": "suppressed"}
-                # paused / scheduled / min_delay / hourly_cap / daily_cap
+                # paused / scheduled / min_delay / hourly_cap / daily_cap /
+                # integration_error
                 deferred: dict[str, Any] = {
                     "status": "deferred",
                     "reason": reason,
@@ -964,6 +965,18 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 lead_id=ctx["lead_id"],
                 in_reply_to=ctx["in_reply_to"],
             )
+        except brevo.BrevoAuthError as exc:
+            # Brevo rejected the workspace's key — not transient.  Release the
+            # claim, flag Brevo as broken (holds every send + alerts the
+            # workspace) and park the lead on this node without burning its
+            # retry budget; the send gate lets it through once the key works.
+            await redis_client.delete(claim_key)
+            await integration_health.mark_broken("brevo", exc.brevo_message)
+            return {
+                "status": "deferred",
+                "reason": "integration_error",
+                "retry_in": integration_health.BROKEN_TTL_SECONDS,
+            }
         except Exception:
             # The send did not verifiably succeed — release the claim so a
             # legitimate retry can try again.  We hold the claim only for a
@@ -1350,6 +1363,19 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
             # Slot was already claimed inside the atomic acquire above —
             # no separate bump.
             return {"status": "sent", "external_id": result.external_id, "meta": result.meta}
+        # 401 = Unipile rejected the workspace's API key.  That's about the
+        # workspace, not this lead: flag it (alerts the workspace) and park
+        # the lead on this step without burning retries, rather than skipping
+        # every lead past its LinkedIn step until someone notices.
+        if (result.meta or {}).get("http_status") == 401:
+            await integration_health.mark_broken(
+                "unipile", result.error or "invalid credentials",
+            )
+            return {
+                "status": "deferred",
+                "reason": "integration_error",
+                "retry_in": integration_health.BROKEN_TTL_SECONDS,
+            }
         # A transient infra failure (5xx / network / stray redirect) parks the
         # lead and retries instead of permanently skipping it; permanent client
         # errors fall through to "failed" (advance the cursor) as before.

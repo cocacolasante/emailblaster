@@ -38,7 +38,7 @@ from app.models import (
     Suppression,
     canonical_email,
 )
-from app.services import brevo
+from app.services import brevo, integration_health
 from app.services.email_template import render_html, render_text  # noqa: F401 — render_* kept for callers/tests that patch here
 from app.services.signature import render_email_with_signature, resolve_campaign_signature
 from app.workers.celery_app import celery_app
@@ -384,6 +384,8 @@ async def check_send_gates(
       ``{"ok": False, "reason": "min_delay" | "hourly_cap" | "daily_cap",
           "retry_in": <int seconds>}`` or ``"retry_at": <ISO>`` — defer
           per Brevo / per-campaign rate-limit policy.
+      ``{"ok": False, "reason": "integration_error", "retry_in": <int>}`` —
+          Brevo is rejecting the workspace's key; defer until it's fixed.
     """
     sup = await session.scalar(
         select(Suppression).where(Suppression.email == canonical_email(lead.email))
@@ -411,6 +413,13 @@ async def check_send_gates(
                 "retry_at": opt_eta.isoformat(),
                 "optimized": True,
             }
+
+    # Brevo recently rejected this workspace's key: hold the send (before
+    # the rate claim, so no min-delay slot is burned) until the flag expires
+    # and one attempt is allowed through to probe it again.
+    broken = await integration_health.broken_ttl(redis_client, "brevo")
+    if broken:
+        return {"ok": False, "reason": "integration_error", "retry_in": broken}
 
     domain = await resolve_sending_domain(session, campaign)
     rate = await check_rate_limits(campaign, redis_client, domain=domain)
@@ -518,17 +527,24 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
             html_body, text_body = render_email_with_signature(
                 ctx["body"], effective_signature,
             )
-            message_id = await brevo.send_email(
-                to_email=ctx["to_email"],
-                to_name=ctx["to_name"],
-                subject=ctx["subject"],
-                html_body=html_body,
-                text_body=text_body,
-                sender_name=ctx["sender_name"],
-                sender_email=ctx["sender_email"],
-                campaign_id=ctx["campaign_id"],
-                lead_id=ctx["lead_id"],
-            )
+            try:
+                message_id = await brevo.send_email(
+                    to_email=ctx["to_email"],
+                    to_name=ctx["to_name"],
+                    subject=ctx["subject"],
+                    html_body=html_body,
+                    text_body=text_body,
+                    sender_name=ctx["sender_name"],
+                    sender_email=ctx["sender_email"],
+                    campaign_id=ctx["campaign_id"],
+                    lead_id=ctx["lead_id"],
+                )
+            except brevo.BrevoAuthError as exc:
+                # Not transient — retrying just loops.  Flag the workspace's
+                # Brevo as broken (holds every send, alerts the workspace)
+                # and leave the lead PENDING for the pacer to re-feed.
+                await integration_health.mark_broken("brevo", exc.brevo_message)
+                return {"status": "integration_error", "error": exc.brevo_message}
 
             lead.brevo_message_id = message_id
             lead.send_status = SendStatus.SENT

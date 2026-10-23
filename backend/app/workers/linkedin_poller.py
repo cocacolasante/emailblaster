@@ -34,7 +34,9 @@ from app.models import (
     LinkedInAccountStatus,
     LinkedInConnectionStatus,
 )
+from app.services import integration_health
 from app.services.linkedin import get_provider
+from app.services.linkedin.unipile_impl import UnipileError
 from app.services.linkedin.base import (
     AccountRestricted,
     ChallengeRequired,
@@ -75,10 +77,14 @@ async def _poll_account(session: AsyncSession, account: LinkedInAccount) -> dict
     except Exception as exc:  # noqa: BLE001
         logger.warning("LinkedIn poll failed for account %s: %s", account.id, exc)
         account.last_error = str(exc)
+        if isinstance(exc, UnipileError) and exc.status == 401:
+            # Unipile rejected the workspace's API key — flag the integration.
+            await integration_health.mark_broken("unipile", str(exc))
         return counts
 
     account.last_polled_at = datetime.now(timezone.utc)
     account.last_error = None
+    await integration_health.mark_ok("unipile")
 
     if not events:
         return counts

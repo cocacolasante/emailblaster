@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.tenant_keys import TenantProviderKey
-from app.services import credentials
+from app.services import credentials, integration_health
 from app.tenancy.context import require_tenant_id
 
 _TIMEOUT = 15.0
@@ -166,6 +166,7 @@ async def save(
         row.last_tested_at = None
         row.last_test_error = None
     await db.flush()
+    await integration_health.clear_flag(provider)  # new key → let sends try it
     return row
 
 
@@ -183,6 +184,16 @@ async def rotate_webhook_secret(db: AsyncSession, provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Live connection tests — one cheap authenticated call per provider
 # ---------------------------------------------------------------------------
+
+
+def _provider_message(resp: httpx.Response) -> str:
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("message") or body.get("title") or "")[:300]
 
 
 async def _probe(provider: str, data: dict[str, str]) -> None:
@@ -224,8 +235,11 @@ async def _probe(provider: str, data: dict[str, str]) -> None:
         else:  # pragma: no cover — guarded by PROVIDERS
             raise IntegrationError(f"unknown provider {provider!r}")
     if resp.status_code in (401, 403):
+        # Keep the provider's own reason — e.g. Brevo's "unrecognised IP
+        # address …" names the exact fix, a bare 401 doesn't.
+        reason = _provider_message(resp)
         raise IntegrationError(f"{PROVIDERS[provider].label} rejected the credentials "
-                               f"(HTTP {resp.status_code})")
+                               f"(HTTP {resp.status_code})" + (f": {reason}" if reason else ""))
     if resp.status_code >= 400:
         raise IntegrationError(f"{PROVIDERS[provider].label} returned HTTP {resp.status_code}")
 
@@ -246,6 +260,10 @@ async def test_connection(db: AsyncSession, provider: str) -> TenantProviderKey:
     row.last_test_status = "failed" if error else "ok"
     row.last_test_error = error
     await db.flush()
+    if not error:
+        # A passing test lifts a background "key rejected" hold right away
+        # instead of waiting for it to expire.
+        await integration_health.clear_flag(provider)
     return row
 
 

@@ -1,6 +1,7 @@
 """Pytest configuration: set test env vars BEFORE app modules load."""
 import asyncio
 import os
+import re
 
 from cryptography.fernet import Fernet
 
@@ -27,9 +28,19 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 # Tests run on the owner role (app-level scoping); RLS is exercised by
 # test_rls_isolation.py against its own database + role.
 os.environ["APP_DATABASE_URL"] = ""
-_force_env("REDIS_URL", "redis://localhost:6379/15")
+# ALWAYS a separate Redis db: compose injects the dev REDIS_URL (db 0), and
+# the test workspace shares the bootstrap workspace's id, so tenant-keyed
+# keys (integration-health flags, the Brevo watermark) would otherwise
+# read and clobber the live workspace's state.
+os.environ["REDIS_URL"] = re.sub(
+    r"/\d*$", "", os.environ.get("REDIS_URL") or "redis://localhost:6379",
+) + "/15"
 _force_env("ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ["SECRET_KEY"] = "test-secret"
+# Pin the dashboard origin: the container env may carry the public tunnel
+# hostname, and tests assume the local dev origin.
+os.environ["FRONTEND_URL"] = "http://localhost:5173"
+os.environ["FRONTEND_EXTRA_ORIGINS"] = ""
 _force_env("FRONTEND_URL", "http://localhost:5173")
 _force_env("WEBHOOK_BASE_URL", "http://localhost:8000")
 # Force-blank UNCONDITIONALLY (docker compose injects the real .env value):
@@ -162,18 +173,25 @@ def _default_tenant_context():
 
 
 @pytest.fixture(autouse=True)
-def _isolated_auth_ratelimit(monkeypatch):
-    """Auth rate-limit counters go to a per-test fakeredis, never the real
-    Redis the test container can reach (counters would leak across runs)."""
+def fake_redis_server(monkeypatch):
+    """Auth rate-limit counters and integration-health flags go to a
+    per-test fakeredis, never the real Redis the test container can reach
+    (counters would leak across runs, and the test workspace shares the
+    bootstrap workspace's id).  Tests that need the same Redis for their
+    own clients build ``FakeRedis(server=fake_redis_server)``."""
     import fakeredis.aioredis
 
     from app.auth import ratelimit
+    from app.services import integration_health
 
     server = fakeredis.FakeServer()
-    monkeypatch.setattr(
-        ratelimit, "_redis",
-        lambda: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True),
-    )
+
+    def factory():
+        return fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+
+    monkeypatch.setattr(ratelimit, "_redis", factory)
+    monkeypatch.setattr(integration_health, "_redis", factory)
+    return server
 
 
 @pytest_asyncio.fixture

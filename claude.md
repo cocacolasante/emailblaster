@@ -249,11 +249,22 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   (they refuse API keys).
 - **Public origin = named Cloudflare tunnel** `outreach.blueprintautomation.tech`
   (tunnel `outreach`, `scripts/named-tunnel-setup.sh`,
-  `docker-compose.named-tunnel.yml`).  It forwards only `/mcp`,
-  `/webhooks/*`, `/unsubscribe/*`, `/health`.  `.env` has
-  `PUBLIC_ORIGIN` + `WEBHOOK_BASE_URL` pointing at it — bring the stack up
-  with `-f docker-compose.yml -f docker-compose.named-tunnel.yml`.  This
-  replaces ngrok / `scripts/dev_tunnel.py` for day-to-day use.
+  `docker-compose.named-tunnel.yml`; ingress in the gitignored
+  `secrets/cloudflared/config.yml`).  `/mcp`, `/webhooks/*`,
+  `/unsubscribe/*`, `/health` go to the backend; **every other path is the
+  dashboard** (since 2026-10-16, so clients like the NPO workspace can log
+  in): the `frontend-public` service builds the app with
+  `VITE_API_BASE_URL=/api` and serves it with `vite preview`, whose `/api/*`
+  proxy strips the prefix to the backend — app + API share one origin, so
+  the session cookie is first-party and no CORS is involved.  It rebuilds on
+  start: after frontend changes, `restart frontend-public`.  `.env`:
+  `FRONTEND_URL` = the public origin (invite/reset links),
+  `FRONTEND_EXTRA_ORIGINS=http://localhost:5173` (CORS + the CSRF origin
+  check accept both — `settings.frontend_origins`), `ALLOW_SIGNUP=false`
+  (public ⇒ invite-only).  Auth rate limits key on `CF-Connecting-IP` (all
+  tunnel traffic arrives from one proxy container).  Bring the stack up
+  with `-f docker-compose.yml -f docker-compose.named-tunnel.yml`; tests
+  pin `FRONTEND_URL` back to localhost in `conftest.py`.
 - **Two DB roles.**  `DATABASE_URL` = owner (Alembic, `set_password`,
   `bootstrap_db`); `APP_DATABASE_URL` = non-owner runtime role that RLS
   binds (backend/worker/beat).  The backend runs `bootstrap_db` on start
@@ -635,6 +646,28 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   (`queue_order_strategy="sorted"`: `celery` < `compose` < `research`), so
   the default queue always goes first — round-robin was not enough, the
   sequencer's follow-up steps still backed up behind the bulk work.
+- **A provider rejecting a workspace's key is a workspace outage, not a
+  transient error** (`app/services/integration_health.py`).  2026-10-14→23
+  the bootstrap workspace silently stopped sending follow-ups and pulling
+  opens/clicks: Brevo's **"authorised IPs" lock** 401'd every call after the
+  home IP changed ("unrecognised IP address …"), and the 401 was retried
+  forever with nothing recorded (it looked like "it only works when I'm logged
+  into the other workspace" — login never mattered; workers loop every
+  workspace).  Now `brevo.BrevoAuthError` (401/403) → `mark_broken`: Redis
+  flag `integration:broken:{tenant}:{provider}` (10 min TTL) makes
+  `check_send_gates` defer with reason `integration_error` BEFORE the
+  min-delay claim (leads wait in place — no FAILED rows, no burned retries,
+  one probe per window), the Integrations row goes `last_test_status=failed`
+  with the provider's message (app-wide red `IntegrationHealthBanner`), and
+  one workspace-wide notification per provider per day.  The 10-min Brevo
+  events poll is the health probe: success → `mark_ok` clears it; so does a
+  passing Settings "Test" or re-saving the key.  Unipile 401s do the same
+  (LinkedIn steps park instead of skipping the lead).  The events poll only
+  looks back 24h — after an outage, backfill with
+  `scripts/backfill_brevo_events.py`.  Tests now force Redis **db 15**
+  (`conftest.py`): compose's dev `REDIS_URL` used to leak in, and the test
+  workspace id equals the bootstrap workspace's, so tests read/clobbered its
+  live tenant-keyed keys.
 - **The signature replaces every AI sign-off shape, not just "Best,".**
   `signature.strip_signoff` also catches short closing phrases ending in a
   comma ("Thanks for your time,"), and `strip_signature_echo` drops trailing
@@ -719,7 +752,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1393 passing**.  Frontend tests: **508 passing**._
+_Backend tests: **1404 passing**.  Frontend tests: **511 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

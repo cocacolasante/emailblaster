@@ -26,3 +26,7 @@ def funding_stop_key(source: str) -> str:
 
 def brevo_watermark_key() -> str:
     return f"brevo:events:{require_tenant_id()}:last_polled_at"
+
+
+def integration_broken_key(provider: str) -> str:
+    return f"integration:broken:{require_tenant_id()}:{provider}"

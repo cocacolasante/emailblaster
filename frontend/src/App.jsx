@@ -31,6 +31,7 @@ import Nav from './components/Nav.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { ToastProvider } from './components/Toast.jsx';
 import NotificationBell from './components/NotificationBell.jsx';
+import IntegrationHealthBanner from './components/IntegrationHealthBanner.jsx';
 import { spring } from './utils/motion.js';
 
 /**
@@ -85,6 +86,7 @@ function AppShell() {
       <Nav />
       <main className="flex-1 min-w-0 overflow-auto">
         <NotificationBell />
+        <IntegrationHealthBanner />
         <ErrorBoundary>
           <RoutedContent />
         </ErrorBoundary>

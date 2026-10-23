@@ -25,6 +25,29 @@ _BLOCKED_PAGE_LIMIT = 100  # Brevo caps blockedContacts at 100 per page
 _EVENTS_PAGE_LIMIT = 5000
 
 
+class BrevoAuthError(httpx.HTTPStatusError):
+    """Brevo refused the workspace's API key (401/403) — e.g. a revoked key,
+    or the account's "authorised IPs" lock rejecting a new public IP.  Not
+    transient: retrying won't help until someone fixes the key, so callers
+    hand it to ``integration_health.mark_broken`` instead of retrying."""
+
+    @property
+    def brevo_message(self) -> str:
+        try:
+            return str((self.response.json() or {}).get("message") or "")[:500] or str(self)
+        except ValueError:
+            return str(self)
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    if resp.status_code in (401, 403):
+        raise BrevoAuthError(
+            f"Brevo rejected the API key (HTTP {resp.status_code})",
+            request=resp.request, response=resp,
+        )
+    resp.raise_for_status()
+
+
 def _creds(creds: BrevoCreds | None) -> BrevoCreds:
     """Explicit creds (platform mail) or the current workspace's."""
     if creds is not None:
@@ -70,7 +93,8 @@ async def send_email(
     mail client threads this message as a reply to that email rather than
     showing it as a new thread.
 
-    Raises httpx.HTTPStatusError on non-2xx response, or
+    Raises ``BrevoAuthError`` when Brevo rejects the key (401/403),
+    httpx.HTTPStatusError on any other non-2xx response, or
     ``credentials.MissingCredential`` (a RuntimeError) when the workspace
     has no Brevo key.
     """
@@ -116,7 +140,7 @@ async def send_email(
                 "content-type": "application/json",
             },
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json() or {}
         message_id = data.get("messageId")
         if not message_id:
@@ -157,7 +181,7 @@ async def fetch_events(
                 "sort": "asc",
             }
             resp = await client.get(BREVO_EVENTS_URL, params=params, headers=headers)
-            resp.raise_for_status()
+            _raise_for_status(resp)
             payload = resp.json() or {}
             page = payload.get("events") or []
             if not isinstance(page, list):
@@ -193,7 +217,7 @@ async def fetch_blocked_contacts(
             if start_date:
                 params["startDate"] = start_date
             resp = await client.get(BREVO_BLOCKED_URL, params=params, headers=headers)
-            resp.raise_for_status()
+            _raise_for_status(resp)
             payload = resp.json() or {}
             page = payload.get("contacts") or []
             if not isinstance(page, list):
