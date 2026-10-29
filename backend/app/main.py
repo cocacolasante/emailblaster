@@ -13,6 +13,7 @@ from app.routers import (
     agent,
     api_keys,
     mcp,
+    oauth,
     outreach_drafts,
     auth,
     owners,
@@ -192,6 +193,7 @@ _AUTHED = [Depends(get_tenant_context)]
 app.include_router(auth.router)
 # MCP authenticates its own bearer API key (agents have no session cookie).
 app.include_router(mcp.router)
+app.include_router(oauth.router)
 app.include_router(team.router, dependencies=_AUTHED)
 app.include_router(owners.router, dependencies=_AUTHED)
 app.include_router(api_keys.router, dependencies=_AUTHED)

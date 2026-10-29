@@ -22,6 +22,9 @@ GLOBAL_TABLES = {
     "linkedin_profile_cache",
     # webhook dedup: tagged with tenant_id, but inserted before tenant resolution
     "webhook_events",
+    # OAuth client registrations (claude.ai, ChatGPT, ...): made before any
+    # user signs in, shared by every workspace
+    "oauth_clients",
 }
 
 

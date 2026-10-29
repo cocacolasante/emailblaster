@@ -8,7 +8,7 @@
 # Safe to re-run: reuses an existing tunnel of the same name and overwrites
 # the DNS record rather than erroring on the second pass.
 #
-# The MCP endpoint, provider webhooks, unsubscribe links and /health go
+# The MCP endpoint + its OAuth endpoints, provider webhooks, unsubscribe links and /health go
 # straight to the backend; every other path is the dashboard, served as a
 # production build by the `frontend-public` service (its /api/* calls are
 # proxied to the backend, so app + API share one origin and the session
@@ -67,7 +67,7 @@ metrics: 0.0.0.0:2000
 
 ingress:
   - hostname: ${TUNNEL_HOSTNAME}
-    path: ^/(mcp$|webhooks/|unsubscribe/|health$)
+    path: ^/(mcp$|webhooks/|unsubscribe/|health$|oauth/(authorize|token|register)$|\.well-known/)
     service: ${TUNNEL_SERVICE}
   # Everything else is the dashboard (production build; /api/* proxied).
   - hostname: ${TUNNEL_HOSTNAME}

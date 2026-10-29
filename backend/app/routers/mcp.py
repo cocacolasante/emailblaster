@@ -29,6 +29,7 @@ from app.auth import ratelimit
 from app.auth.deps import authenticate_api_key, bearer_api_key
 from app.database import get_session_factory
 from app.mcp.tools import TOOLS, TOOLS_BY_NAME, ToolContext, ToolError
+from app.routers.oauth import resource_metadata_url
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,15 @@ def _rpc_error(msg_id: Any, code: int, message: str) -> dict:
 
 
 def _unauthorized(message: str) -> JSONResponse:
+    # resource_metadata is how OAuth-only clients (Claude, ChatGPT) discover
+    # where to sign in (MCP authorization spec / RFC 9728); key-holding
+    # clients ignore it.
     return JSONResponse(
         status_code=401,
         content={"error": message},
-        headers={"WWW-Authenticate": 'Bearer realm="emailblaster"'},
+        headers={"WWW-Authenticate": (
+            f'Bearer realm="emailblaster", resource_metadata="{resource_metadata_url()}"'
+        )},
     )
 
 
@@ -117,7 +123,7 @@ async def mcp_endpoint(
 ) -> Response:
     token = bearer_api_key(request)
     if token is None:
-        return _unauthorized("An Email Blaster API key is required (Settings → Agent access).")
+        return _unauthorized("Sign in with OAuth, or send an Email Blaster API key (Settings → Agent access).")
     client_ip = request.client.host if request.client else "unknown"
     try:
         identity = await authenticate_api_key(token, request, factory)

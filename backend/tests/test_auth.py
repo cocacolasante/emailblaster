@@ -65,7 +65,8 @@ def test_every_route_is_authenticated_or_allowlisted():
     from app.database import get_db, get_identity, get_tenant_context
     from app.main import app
 
-    public_prefixes = ("/auth/", "/webhooks/", "/unsubscribe/", "/health", "/docs", "/openapi", "/redoc", "/mcp")
+    public_prefixes = ("/auth/", "/webhooks/", "/unsubscribe/", "/health", "/docs", "/openapi", "/redoc", "/mcp",
+                       "/oauth/", "/.well-known/")
 
     def deps(dependant):
         for d in dependant.dependencies:
@@ -84,7 +85,7 @@ def test_every_route_is_authenticated_or_allowlisted():
 
 def test_public_db_only_used_by_allowlisted_modules():
     app_dir = pathlib.Path(__file__).resolve().parent.parent / "app"
-    allowed = {"database.py", "routers/auth.py", "routers/webhooks.py"}
+    allowed = {"database.py", "routers/auth.py", "routers/webhooks.py", "routers/oauth.py"}
     offenders = [
         str(p.relative_to(app_dir))
         for p in app_dir.rglob("*.py")

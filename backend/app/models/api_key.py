@@ -50,3 +50,8 @@ class ApiKey(TenantMixin, Base):
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when the key was issued as an OAuth access token (see
+    # models/oauth_client.py) rather than minted in Settings → Agent access.
+    oauth_client_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("oauth_clients.client_id", ondelete="SET NULL"), nullable=True,
+    )

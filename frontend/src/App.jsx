@@ -24,6 +24,7 @@ import Signup from './pages/Signup.jsx';
 import ForgotPassword from './pages/ForgotPassword.jsx';
 import ResetPassword from './pages/ResetPassword.jsx';
 import AcceptInvite from './pages/AcceptInvite.jsx';
+import ConnectAgent from './pages/ConnectAgent.jsx';
 import RequireAuth from './components/RequireAuth.jsx';
 import IntegrationMissingListener from './components/IntegrationMissingListener.jsx';
 import { useAuth } from './hooks/useAuth.js';
@@ -110,6 +111,15 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
+          {/* OAuth consent for agent apps — needs a session, but no app shell. */}
+          <Route
+            path="/connect-agent"
+            element={(
+              <RequireAuth>
+                <ConnectAgent />
+              </RequireAuth>
+            )}
+          />
           {/* Everything else requires a session. */}
           <Route
             path="*"

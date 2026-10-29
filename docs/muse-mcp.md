@@ -20,6 +20,35 @@ in owner fields). Revoke it anytime from the same page; it also stops
 working if that member leaves the workspace or the workspace is
 suspended.
 
+## Connect Claude, ChatGPT (OAuth)
+
+Clients that only speak OAuth — Claude (claude.ai / desktop / mobile
+custom connectors) and ChatGPT connectors — need nothing pasted:
+
+1. Add a custom connector with URL
+   `https://outreach.blueprintautomation.tech/mcp` (leave client id/secret
+   empty).
+2. The app opens Email Blaster: sign in, pick the workspace (if you're in
+   more than one), click **Allow**.
+3. Done — it now shows under Settings → **Agent access** as
+   "Claude (OAuth, <date>)"; revoke it there to disconnect.
+
+How: `POST /mcp` without a token answers 401 with
+`WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource/mcp"`
+(RFC 9728) → authorization-server metadata
+(`/.well-known/oauth-authorization-server`, RFC 8414) → dynamic client
+registration (`/oauth/register`, RFC 7591, table `oauth_clients`,
+migration 0052) → `/oauth/authorize` (PKCE S256 required; redirect URI
+must exactly match a registered one) parks the request in Redis
+(`oauth:req:*`, 15 min) and redirects to the dashboard's `/connect-agent`
+consent page → Allow mints a one-time code (`oauth:code:*`, 5 min) →
+`/oauth/token` checks code + client + redirect + PKCE verifier and returns
+an access token that **is a workspace API key** (`api_keys.oauth_client_id`
+set) acting as the approving member.  Everything after the exchange is
+the API-key path.  Tokens don't expire (like pasted keys), so there are no
+refresh tokens.  Code: `app/routers/oauth.py`,
+`frontend/src/pages/ConnectAgent.jsx`; tests `tests/test_oauth.py`.
+
 ## What it can and can't do
 
 | Can | Can't |
@@ -54,10 +83,11 @@ deliberate edit there.
 
 ## Public origin (named Cloudflare tunnel)
 
-`outreach.blueprintautomation.tech` → tunnel `outreach` →
-`http://backend:8000`, forwarding ONLY `/mcp`, `/webhooks/*`,
-`/unsubscribe/*` and `/health` (everything else 404s at Cloudflare's
-edge; the dashboard stays on localhost).
+`outreach.blueprintautomation.tech` → tunnel `outreach`: `/mcp`,
+`/oauth/{authorize,token,register}`, `/.well-known/*`, `/webhooks/*`,
+`/unsubscribe/*` and `/health` go to `http://backend:8000`; everything
+else is the dashboard (`frontend-public`, whose `/api/*` is proxied to the
+backend — the consent page's `/oauth/requests/*` calls go that way).
 
 ```bash
 ./scripts/named-tunnel-setup.sh     # once (after `cloudflared tunnel login`)

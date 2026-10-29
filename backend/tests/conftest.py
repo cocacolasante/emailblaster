@@ -182,6 +182,7 @@ def fake_redis_server(monkeypatch):
     import fakeredis.aioredis
 
     from app.auth import ratelimit
+    from app.routers import oauth
     from app.services import integration_health
 
     server = fakeredis.FakeServer()
@@ -191,6 +192,7 @@ def fake_redis_server(monkeypatch):
 
     monkeypatch.setattr(ratelimit, "_redis", factory)
     monkeypatch.setattr(integration_health, "_redis", factory)
+    monkeypatch.setattr(oauth, "_redis", factory)
     return server
 
 
@@ -218,7 +220,7 @@ async def _engine():
             "webhook_events, research_cache, "
             "social_listening_opportunities, social_listening_posts, "
             "social_listening_searches, "
-            "tenant_provider_keys, api_keys, outreach_drafts, "
+            "tenant_provider_keys, api_keys, oauth_clients, outreach_drafts, "
             "invitations, auth_tokens, user_sessions, memberships, users, tenants "
             "RESTART IDENTITY CASCADE"
         ))

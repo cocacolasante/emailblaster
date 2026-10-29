@@ -41,6 +41,7 @@ from app.models.crm import (
     PipelineStage,
 )
 from app.models.api_key import ApiKey
+from app.models.oauth_client import OAuthClient
 from app.models.outreach_draft import OutreachChannel, OutreachDraft, OutreachDraftStatus
 from app.models.report import ReportDefinition
 from app.models.tenant_keys import TenantProviderKey
@@ -109,6 +110,7 @@ __all__ = [
     "OutreachDraft",
     "OutreachDraftStatus",
     "ApiKey",
+    "OAuthClient",
     "TenantProviderKey",
     "AuthToken",
     "AuthTokenPurpose",

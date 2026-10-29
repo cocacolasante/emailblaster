@@ -244,7 +244,13 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   `tests/test_mcp.py` must be edited deliberately — nothing that
   launches, deletes, or manages team/keys/integrations.  The ONLY send
   path is `send_outreach`, gated server-side by `/outreach-drafts/{id}/
-  confirm` (one-time code bound to the draft version) + `user_approved`.  New endpoints
+  confirm` (one-time code bound to the draft version) + `user_approved`.
+  OAuth-only clients (Claude, ChatGPT) connect via `app/routers/oauth.py`
+  (RFC 9728/8414/7591 discovery + DCR, PKCE, consent at the dashboard's
+  `/connect-agent`); the access token it issues IS an `api_keys` row
+  (`oauth_client_id` set), so nothing downstream changed.  The tunnel
+  ingress must route `/oauth/(authorize|token|register)` and
+  `/.well-known/` to the backend.  New endpoints
   that manage credentials/team use `require_session`/`require_manager`
   (they refuse API keys).
 - **Public origin = named Cloudflare tunnel** `outreach.blueprintautomation.tech`
@@ -752,7 +758,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1404 passing**.  Frontend tests: **511 passing**._
+_Backend tests: **1416 passing**.  Frontend tests: **514 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)
