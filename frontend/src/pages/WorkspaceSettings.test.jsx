@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { Route } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import Settings from './Settings.jsx';
-import { server, api, TEST_ME } from '../test/server.js';
+import { server, api, TEST_ME, TEST_DELIVERABILITY } from '../test/server.js';
 import { renderRoutes } from '../test/utils.jsx';
 
 const MEMBERS = [
@@ -97,5 +97,52 @@ describe('Settings — Profile tab', () => {
     await user.click(toggle);
     await vi.waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
     expect(body).toEqual({ digest_enabled: true });
+  });
+});
+
+describe('Settings — Workspace tab — bounce-rate auto-pause', () => {
+  it('lets an owner raise the threshold and reset it', async () => {
+    teamHandlers();
+    const bodies = [];
+    server.use(http.put(api('/settings/deliverability'), async ({ request }) => {
+      const body = await request.json();
+      bodies.push(body);
+      const t = body.bounce_threshold;
+      return HttpResponse.json({
+        ...TEST_DELIVERABILITY, bounce_threshold: t ?? 0.05, custom: t !== null,
+      });
+    }));
+    const user = userEvent.setup();
+    renderRoutes(routes, { path: '/settings?tab=workspace' });
+
+    const input = await screen.findByTestId('bounce-threshold-input');
+    expect(input).toHaveValue(5);
+    expect(screen.getByTestId('bounce-threshold-save')).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '10');
+    await user.click(screen.getByTestId('bounce-threshold-save'));
+    await vi.waitFor(() => expect(bodies).toEqual([{ bounce_threshold: 0.1 }]));
+
+    await user.click(await screen.findByTestId('bounce-threshold-reset'));
+    await vi.waitFor(() => expect(bodies[1]).toEqual({ bounce_threshold: null }));
+    await vi.waitFor(() => expect(screen.getByTestId('bounce-threshold-input')).toHaveValue(5));
+  });
+
+  it('rejects values outside 1–30%', async () => {
+    teamHandlers();
+    const user = userEvent.setup();
+    renderRoutes(routes, { path: '/settings?tab=workspace' });
+    const input = await screen.findByTestId('bounce-threshold-input');
+    await user.clear(input);
+    await user.type(input, '45');
+    expect(screen.getByTestId('bounce-threshold-save')).toBeDisabled();
+  });
+
+  it('is read-only for members', async () => {
+    teamHandlers();
+    server.use(http.get(api('/auth/me'), () => HttpResponse.json({ ...TEST_ME, role: 'member' })));
+    renderRoutes(routes, { path: '/settings?tab=workspace' });
+    expect(await screen.findByTestId('bounce-threshold-readonly')).toHaveTextContent('5% hard-bounce rate (default)');
+    expect(screen.queryByTestId('bounce-threshold-input')).toBeNull();
   });
 });

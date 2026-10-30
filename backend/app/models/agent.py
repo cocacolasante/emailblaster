@@ -137,6 +137,11 @@ class AgentSettings(TenantMixin, Base):
     quiet_hours_start_utc: Mapped[int | None] = mapped_column(Integer, nullable=True)
     quiet_hours_end_utc: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Hard-bounce rate (fraction) at which the deliverability breaker pauses
+    # a campaign (services/deliverability.py).  NULL = the deployment default
+    # CIRCUIT_BREAKER_BOUNCE_RATE.  Edited in Settings → Workspace.
+    breaker_bounce_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

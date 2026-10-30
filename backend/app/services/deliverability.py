@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import (
+    AgentSettings,
     Campaign,
     CampaignStatus,
     EmailEvent,
@@ -49,6 +50,13 @@ _SAMPLE_TYPES = (
     EmailEventType.SOFT_BOUNCE,
     EmailEventType.SPAM,
 )
+
+
+async def bounce_threshold(session: AsyncSession) -> float:
+    """The current workspace's hard-bounce trip rate: its own setting
+    (Settings → Workspace) or the deployment default."""
+    custom = await session.scalar(select(AgentSettings.breaker_bounce_rate))
+    return float(custom) if custom is not None else settings.CIRCUIT_BREAKER_BOUNCE_RATE
 
 
 async def evaluate_campaign_health(
@@ -85,14 +93,15 @@ async def evaluate_campaign_health(
     if sample < settings.CIRCUIT_BREAKER_MIN_SAMPLE:
         return HealthVerdict(False, sample, bounce_rate, spam_rate)
 
-    if bounce_rate >= settings.CIRCUIT_BREAKER_BOUNCE_RATE:
+    threshold = await bounce_threshold(session)
+    if bounce_rate >= threshold:
         return HealthVerdict(
             True, sample, bounce_rate, spam_rate,
             reason=(
                 f"Hard-bounce rate {bounce_rate:.1%} over the last "
                 f"{settings.CIRCUIT_BREAKER_WINDOW_HOURS}h "
                 f"({bounces}/{sample} sends) crossed the "
-                f"{settings.CIRCUIT_BREAKER_BOUNCE_RATE:.0%} threshold"
+                f"{threshold * 100:g}% threshold"
             ),
         )
     if spam_rate >= settings.CIRCUIT_BREAKER_SPAM_RATE:
@@ -208,7 +217,7 @@ async def deliverability_stats(session: AsyncSession, campaign_id) -> dict:
         "breaker": {
             "enabled": settings.CIRCUIT_BREAKER_ENABLED,
             "min_sample": settings.CIRCUIT_BREAKER_MIN_SAMPLE,
-            "bounce_threshold": settings.CIRCUIT_BREAKER_BOUNCE_RATE,
+            "bounce_threshold": await bounce_threshold(session),
             "spam_threshold": settings.CIRCUIT_BREAKER_SPAM_RATE,
         },
     }

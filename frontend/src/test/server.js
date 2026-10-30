@@ -77,7 +77,13 @@ export const TEST_MCP_CONNECTION = {
   public: true,
 };
 
+export const TEST_DELIVERABILITY = {
+  enabled: true, bounce_threshold: 0.05, default_bounce_threshold: 0.05, custom: false,
+  spam_threshold: 0.001, min_sample: 20, window_hours: 24,
+};
+
 export const defaultHandlers = [
+  http.get(api('/settings/deliverability'), () => HttpResponse.json(TEST_DELIVERABILITY)),
   http.get(api('/api-keys/connection'), () => HttpResponse.json(TEST_MCP_CONNECTION)),
   http.get(api('/api-keys'), () => HttpResponse.json([])),
   http.get(api('/settings/integrations'), () => HttpResponse.json(TEST_INTEGRATIONS)),

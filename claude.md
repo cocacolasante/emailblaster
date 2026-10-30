@@ -674,6 +674,12 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   (`conftest.py`): compose's dev `REDIS_URL` used to leak in, and the test
   workspace id equals the bootstrap workspace's, so tests read/clobbered its
   live tenant-keyed keys.
+- **The breaker's bounce threshold is per workspace.**
+  `agent_settings.breaker_bounce_rate` (0053; NULL = the deployment default
+  `CIRCUIT_BREAKER_BOUNCE_RATE`, 5%) is set by owners/admins in Settings →
+  Workspace → "Bounce-rate auto-pause" (`GET/PUT /settings/deliverability`,
+  1–30%).  `deliverability.bounce_threshold(session)` resolves it; the
+  spam rate, min sample and window stay deployment-wide.
 - **The signature replaces every AI sign-off shape, not just "Best,".**
   `signature.strip_signoff` also catches short closing phrases ending in a
   comma ("Thanks for your time,"), and `strip_signature_echo` drops trailing
@@ -758,7 +764,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1416 passing**.  Frontend tests: **514 passing**._
+_Backend tests: **1423 passing**.  Frontend tests: **517 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

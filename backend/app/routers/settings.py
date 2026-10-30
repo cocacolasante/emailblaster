@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import Identity, get_identity, require_manager
 from app.database import get_db
-from app.services import brevo_blocklist, credentials, integrations
+from app.services import agent_core, brevo_blocklist, credentials, integrations
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -239,3 +240,68 @@ async def register_unipile_webhooks(
     except integrations.IntegrationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"registered": sources, "url": integrations.webhook_url("unipile", identity.tenant_id)}
+
+
+# --------------------------------------------------------------------------
+# Deliverability breaker (per workspace)
+# --------------------------------------------------------------------------
+
+# Bounds for the workspace's hard-bounce trip rate.  Below 1% one unlucky
+# list trips constantly; above 30% the breaker no longer protects anything.
+MIN_BOUNCE_THRESHOLD = 0.01
+MAX_BOUNCE_THRESHOLD = 0.30
+
+
+class DeliverabilitySettingsOut(BaseModel):
+    enabled: bool
+    bounce_threshold: float
+    default_bounce_threshold: float
+    custom: bool
+    spam_threshold: float
+    min_sample: int
+    window_hours: int
+
+
+class DeliverabilitySettingsUpdate(BaseModel):
+    # A fraction (0.06 = 6%); null resets to the default.
+    bounce_threshold: float | None = Field(default=None, ge=MIN_BOUNCE_THRESHOLD, le=MAX_BOUNCE_THRESHOLD)
+
+
+async def _deliverability_out(db: AsyncSession) -> DeliverabilitySettingsOut:
+    from app.config import settings as app_settings
+
+    row = await agent_core.get_agent_settings(db)
+    custom = row.breaker_bounce_rate
+    return DeliverabilitySettingsOut(
+        enabled=app_settings.CIRCUIT_BREAKER_ENABLED,
+        bounce_threshold=float(custom) if custom is not None else app_settings.CIRCUIT_BREAKER_BOUNCE_RATE,
+        default_bounce_threshold=app_settings.CIRCUIT_BREAKER_BOUNCE_RATE,
+        custom=custom is not None,
+        spam_threshold=app_settings.CIRCUIT_BREAKER_SPAM_RATE,
+        min_sample=app_settings.CIRCUIT_BREAKER_MIN_SAMPLE,
+        window_hours=app_settings.CIRCUIT_BREAKER_WINDOW_HOURS,
+    )
+
+
+@router.get("/deliverability", response_model=DeliverabilitySettingsOut)
+async def get_deliverability_settings(db: AsyncSession = Depends(get_db)) -> DeliverabilitySettingsOut:
+    out = await _deliverability_out(db)
+    await db.commit()  # persists the lazily created settings row
+    return out
+
+
+@router.put("/deliverability", response_model=DeliverabilitySettingsOut)
+async def update_deliverability_settings(
+    body: DeliverabilitySettingsUpdate,
+    _: Identity = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+) -> DeliverabilitySettingsOut:
+    """Owners/admins set the bounce rate that auto-pauses this workspace's
+    campaigns.  Applies on the next health check; campaigns already paused
+    stay paused until someone resumes them."""
+    row = await agent_core.get_agent_settings(db)
+    row.breaker_bounce_rate = (
+        None if body.bounce_threshold is None else Decimal(str(round(body.bounce_threshold, 4)))
+    )
+    await db.commit()
+    return await _deliverability_out(db)

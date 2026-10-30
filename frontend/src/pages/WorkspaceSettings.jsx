@@ -9,6 +9,7 @@ import {
   updateWorkspace,
 } from '../api/team.js';
 import { errorDetail } from '../api/auth.js';
+import { getDeliverabilitySettings, updateDeliverabilitySettings } from '../api/settings.js';
 import { AUTH_ME_KEY, useAuth } from '../hooks/useAuth.js';
 import { TEAM_MEMBERS_KEY, useMembers } from '../hooks/useMembers.js';
 import { useToast } from '../components/Toast.jsx';
@@ -16,6 +17,7 @@ import { Badge, Button, Card, Field, Input, Select } from '../components/ui.jsx'
 import { formatDate } from '../utils/format.js';
 
 const TEAM_INVITES_KEY = ['team-invites'];
+const DELIVERABILITY_KEY = ['settings', 'deliverability'];
 
 const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 const ROLE_BADGE = { owner: 'info', admin: 'success', member: 'neutral' };
@@ -397,6 +399,101 @@ function InviteCard() {
   );
 }
 
+// --------------------------------------------------------------------------
+// Deliverability breaker
+// --------------------------------------------------------------------------
+
+/** Percent for display: 0.05 → "5", 0.065 → "6.5". */
+function toPercent(fraction) {
+  return String(Math.round(fraction * 1000) / 10);
+}
+
+function DeliverabilityCard() {
+  const { isManager } = useAuth();
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const { data } = useQuery({ queryKey: DELIVERABILITY_KEY, queryFn: getDeliverabilitySettings });
+  const [value, setValue] = useState('');
+
+  useEffect(() => { if (data) setValue(toPercent(data.bounce_threshold)); }, [data]);
+
+  const mutation = useMutation({
+    mutationFn: updateDeliverabilitySettings,
+    onSuccess: (next) => {
+      queryClient.setQueryData(DELIVERABILITY_KEY, next);
+      toast.success(`Campaigns now pause at a ${toPercent(next.bounce_threshold)}% bounce rate`);
+    },
+  });
+
+  if (!data) return null;
+  const pct = Number(value);
+  const valid = value !== '' && Number.isFinite(pct) && pct >= 1 && pct <= 30;
+  const dirty = valid && toPercent(pct / 100) !== toPercent(data.bounce_threshold);
+  const defaultPct = toPercent(data.default_bounce_threshold);
+
+  return (
+    <Card className="p-5" data-testid="deliverability-card">
+      <SectionTitle
+        title="Bounce-rate auto-pause"
+        subtitle={
+          `A running campaign pauses itself when its hard-bounce rate over the last ${data.window_hours} hours `
+          + `reaches this level (checked once it has at least ${data.min_sample} send outcomes). `
+          + 'It stays paused until someone resumes it.'
+        }
+      />
+      {isManager ? (
+        <form
+          className="flex flex-wrap items-end gap-3"
+          onSubmit={(e) => { e.preventDefault(); if (dirty) mutation.mutate(pct / 100); }}
+        >
+          <Field
+            label="Pause at hard-bounce rate (%)"
+            hint={`Between 1 and 30. Default ${defaultPct}%.`}
+            className="w-56"
+          >
+            {(p) => (
+              <Input
+                {...p}
+                type="number"
+                min="1"
+                max="30"
+                step="0.5"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                data-testid="bounce-threshold-input"
+              />
+            )}
+          </Field>
+          <Button type="submit" disabled={!dirty} loading={mutation.isPending} data-testid="bounce-threshold-save">
+            Save
+          </Button>
+          {data.custom && (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={mutation.isPending}
+              onClick={() => mutation.mutate(null)}
+              data-testid="bounce-threshold-reset"
+            >
+              Reset to {defaultPct}%
+            </Button>
+          )}
+        </form>
+      ) : (
+        <div className="text-sm text-slate-800" data-testid="bounce-threshold-readonly">
+          {toPercent(data.bounce_threshold)}% hard-bounce rate{data.custom ? '' : ' (default)'}
+        </div>
+      )}
+      {!data.enabled && (
+        <p className="text-xs text-amber-700 mt-2 mb-0">The auto-pause is switched off for this server.</p>
+      )}
+      <InlineError testId="bounce-threshold-error">
+        {mutation.isError ? errorDetail(mutation.error) : null}
+      </InlineError>
+    </Card>
+  );
+}
+
 export default function WorkspaceTab() {
   const { isManager } = useAuth();
   return (
@@ -404,6 +501,7 @@ export default function WorkspaceTab() {
       <WorkspaceNameCard />
       <MembersCard />
       {isManager && <InviteCard />}
+      <DeliverabilityCard />
     </div>
   );
 }
