@@ -243,11 +243,13 @@ async def test_poll_account_trims_processed_ids_to_max(db_session):
 # --------------------------------------------------------------------------
 
 
-async def test_poll_all_replies_skips_failed_accounts(db_session):
+async def test_poll_all_replies_skips_accounts_with_bad_credentials(db_session):
     ok_acc = await _make_account(db_session, label="OK", email="ok@x.com",
                                   status=ConnectedAccountTestStatus.OK)
     failed_acc = await _make_account(db_session, label="Broken", email="broken@x.com",
                                       status=ConnectedAccountTestStatus.FAILED)
+    failed_acc.last_test_error = "b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'"
+    await db_session.commit()
     await _make_campaign(db_session, ok_acc.id)
     await _make_campaign(db_session, failed_acc.id)
 
@@ -257,8 +259,29 @@ async def test_poll_all_replies_skips_failed_accounts(db_session):
     ) as fetch:
         result = await poll_all_replies_async()
 
-    assert result["accounts_checked"] == 1  # only the OK account
+    assert result["accounts_checked"] == 1  # a wrong password waits for a re-test
     assert fetch.call_count == 1
+
+
+async def test_poll_all_replies_retries_after_a_timeout_and_recovers(db_session):
+    """Regression: one "read operation timed out" used to park the inbox as
+    Failed until someone clicked Test, so replies stopped every day."""
+    acc = await _make_account(db_session, email="npo@x.com", status=ConnectedAccountTestStatus.FAILED)
+    acc.last_test_error = "The read operation timed out"
+    await db_session.commit()
+    await _make_campaign(db_session, acc.id)
+
+    with patch(
+        "app.workers.reply_poller.imap_client.fetch_recent_with_account",
+        return_value=[],
+    ) as fetch:
+        result = await poll_all_replies_async()
+
+    assert fetch.call_count == 1 and result["accounts_checked"] == 1
+    await db_session.refresh(acc)
+    assert acc.last_test_status == ConnectedAccountTestStatus.OK
+    assert acc.last_test_error is None
+    assert acc.last_polled_at is not None
 
 
 async def test_poll_all_replies_skips_account_with_no_active_campaigns(db_session):

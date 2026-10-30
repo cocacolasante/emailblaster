@@ -674,6 +674,14 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   (`conftest.py`): compose's dev `REDIS_URL` used to leak in, and the test
   workspace id equals the bootstrap workspace's, so tests read/clobbered its
   live tenant-keyed keys.
+- **A failed inbox poll retries itself.**  `reply_poller` used to skip any
+  `last_test_status=FAILED` inbox until someone clicked Test, so one Gmail
+  "read operation timed out" stopped reply tracking every day.  Now it keeps
+  polling failed inboxes and a successful poll flips them back to OK; only
+  credential errors (`reply_poller.needs_human`: AUTHENTICATIONFAILED,
+  invalid credentials, undecryptable password, ...) wait for a re-test, since
+  retrying a bad password gets the login locked.  The poll's IMAP timeout is
+  30s (`IMAP_POLL_TIMEOUT_SECONDS`); the Test button keeps 10s.
 - **The breaker's bounce threshold is per workspace.**
   `agent_settings.breaker_bounce_rate` (0053; NULL = the deployment default
   `CIRCUIT_BREAKER_BOUNCE_RATE`, 5%) is set by owners/admins in Settings →
@@ -764,7 +772,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1423 passing**.  Frontend tests: **517 passing**._
+_Backend tests: **1424 passing**.  Frontend tests: **517 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

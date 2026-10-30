@@ -74,6 +74,25 @@ async def _run_agent_for_reply(session: AsyncSession, lead, msg: dict) -> None:
     await agent_core.process_inbound_reply(session, lead, dict(msg), classification)
 
 
+# Errors that need a person to fix the inbox (wrong or revoked password).
+# Retrying those every cycle only gets the login locked by the provider, so
+# the poller waits for a re-test.  Anything else — a timeout, a dropped
+# connection — is retried on the next cycle and clears itself on success.
+_NEEDS_HUMAN_MARKERS = (
+    "authenticationfailed",
+    "authentication failed",
+    "invalid credentials",
+    "login failed",
+    "application-specific password",
+    "invalidtoken",  # stored password can't be decrypted
+)
+
+
+def needs_human(error: str | None) -> bool:
+    text = (error or "").lower()
+    return any(m in text for m in _NEEDS_HUMAN_MARKERS)
+
+
 async def poll_account_for_replies(
     account: ConnectedAccount,
     campaign_ids: list[uuid.UUID],
@@ -82,8 +101,9 @@ async def poll_account_for_replies(
     """Pull new replies for one account and link them to leads.
 
     Updates ``account.last_polled_at`` and ``account.processed_imap_message_ids``
-    on success.  On IMAP/auth failure, marks the account's
-    ``last_test_status=FAILED`` so the beat task skips it next cycle.
+    on success, and marks the account OK (clearing an earlier failure).  On
+    failure, marks it ``last_test_status=FAILED`` with the error; the beat
+    keeps retrying it unless the error ``needs_human``.
     Caller is responsible for committing the session.
     """
     raw_since = account.last_polled_at or (
@@ -101,7 +121,7 @@ async def poll_account_for_replies(
         )
     except Exception as e:  # noqa: BLE001 — auth, network, ssl, decrypt
         account.last_test_status = ConnectedAccountTestStatus.FAILED
-        account.last_test_error = str(e)
+        account.last_test_error = str(e) or type(e).__name__
         logger.warning(
             "IMAP poll failed for %s: %s", account.email_address, e
         )
@@ -166,6 +186,10 @@ async def poll_account_for_replies(
                 merged.append(x)
         account.processed_imap_message_ids = merged[-MAX_PROCESSED_IDS:]
     account.last_polled_at = datetime.now(timezone.utc)
+    # A successful poll proves the inbox works: lift an earlier failure
+    # (e.g. one timeout) without anyone having to click Test.
+    account.last_test_status = ConnectedAccountTestStatus.OK
+    account.last_test_error = None
     return {"ok": True, "replies_found": replies_found}
 
 
@@ -176,11 +200,11 @@ async def poll_all_replies_async() -> dict[str, Any]:
 
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
-            accounts = list((await session.execute(
-                select(ConnectedAccount).where(
-                    ConnectedAccount.last_test_status != ConnectedAccountTestStatus.FAILED
-                )
-            )).scalars().all())
+            accounts = [
+                a for a in (await session.execute(select(ConnectedAccount))).scalars().all()
+                if not (a.last_test_status == ConnectedAccountTestStatus.FAILED
+                        and needs_human(a.last_test_error))
+            ]
 
             for account in accounts:
                 campaign_ids = list((await session.execute(

@@ -20,6 +20,9 @@ from typing import Any, TypedDict
 logger = logging.getLogger(__name__)
 
 IMAP_TIMEOUT_SECONDS = 10
+# The background poll can wait longer than the interactive "Test" button:
+# a busy mailbox's SINCE search occasionally takes more than 10s on Gmail.
+IMAP_POLL_TIMEOUT_SECONDS = 30
 
 
 class ImapTestResult(TypedDict, total=False):
@@ -188,7 +191,7 @@ def fetch_recent_messages(
     broken.
     """
     cls = IMAP4_SSL if use_ssl else IMAP4
-    client = cls(host=host, port=port, timeout=IMAP_TIMEOUT_SECONDS)
+    client = cls(host=host, port=port, timeout=IMAP_POLL_TIMEOUT_SECONDS)
     out: list[FetchedMessage] = []
     skip_set = processed_message_ids or set()
     try:
