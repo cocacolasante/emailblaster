@@ -34,7 +34,7 @@ from app.models import (
     LinkedInAccountStatus,
     LinkedInConnectionStatus,
 )
-from app.services import integration_health
+from app.services import integration_health, reply_stop
 from app.services.linkedin import get_provider
 from app.services.linkedin.unipile_impl import UnipileError
 from app.services.linkedin.base import (
@@ -110,6 +110,7 @@ async def _poll_account(session: AsyncSession, account: LinkedInAccount) -> dict
                 continue
             counts["messages_matched"] += 1
             lead.linkedin_last_reply_at = ev.occurred_at
+            await reply_stop.stop_on_reply(session, lead)
             # First DM is a strong signal they accepted the connect at some
             # point; promote status if we don't already have it.
             if lead.linkedin_connection_status != LinkedInConnectionStatus.CONNECTED:

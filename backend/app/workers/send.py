@@ -38,7 +38,7 @@ from app.models import (
     Suppression,
     canonical_email,
 )
-from app.services import brevo, integration_health
+from app.services import brevo, integration_health, previously_emailed, reply_stop
 from app.services.email_template import render_html, render_text  # noqa: F401 — render_* kept for callers/tests that patch here
 from app.services.signature import render_email_with_signature, resolve_campaign_signature
 from app.workers.celery_app import celery_app
@@ -377,6 +377,10 @@ async def check_send_gates(
     Returns one of:
       ``{"ok": True}`` — green light, caller may render + send.
       ``{"ok": False, "reason": "suppressed"}`` — permanent skip.
+      ``{"ok": False, "reason": "replied"}`` — permanent: they answered.
+      ``{"ok": False, "reason": "previously_emailed"}`` — permanent for this
+          campaign: another campaign already emailed them and this one doesn't
+          allow that.
       ``{"ok": False, "reason": "paused"}`` — defer indefinitely while
           the campaign is paused.
       ``{"ok": False, "reason": "scheduled", "retry_at": <ISO>}`` —
@@ -392,6 +396,12 @@ async def check_send_gates(
     )
     if sup is not None:
         return {"ok": False, "reason": "suppressed"}
+
+    if await reply_stop.has_replied(session, lead):
+        return {"ok": False, "reason": "replied"}
+
+    if await previously_emailed.should_skip(session, lead, campaign):
+        return {"ok": False, "reason": "previously_emailed"}
 
     if campaign.status == CampaignStatus.PAUSED:
         return {"ok": False, "reason": "paused"}
@@ -475,6 +485,16 @@ async def send_lead_async(lead_id: str) -> dict[str, Any]:
                     lead.send_status = SendStatus.SUPPRESSED
                     await session.commit()
                     return {"status": "suppressed"}
+                if reason == "replied":
+                    # Same terminal send state; also ends the enrollment so
+                    # the sequencer stops waiting on this first email.
+                    await reply_stop.stop_on_reply(session, lead)
+                    await session.commit()
+                    return {"status": "replied"}
+                if reason == "previously_emailed":
+                    await previously_emailed.skip_lead(session, lead)
+                    await session.commit()
+                    return {"status": "previously_emailed"}
                 if reason == "paused":
                     return {"status": "paused"}
                 if reason == "scheduled":

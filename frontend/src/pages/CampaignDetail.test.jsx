@@ -603,6 +603,20 @@ describe('Deliverability guard', () => {
     expect(screen.getByTestId('pause-resume-button')).toHaveTextContent('Resume');
   });
 
+  it('saving the "include people already emailed" toggle includes it in the PATCH', async () => {
+    api.updateCampaign.mockResolvedValue({});
+    renderPage();
+    await screen.findByTestId('schedule-editor');
+    fireEvent.click(screen.getByTestId('schedule-editor-toggle'));
+    const toggle = screen.getByTestId('allow-previously-emailed-toggle');
+    expect(within(toggle).getByRole('checkbox')).not.toBeChecked();
+    fireEvent.click(within(toggle).getByRole('checkbox'));
+    fireEvent.click(screen.getByTestId('save-schedule-btn'));
+    await waitFor(() => {
+      expect(api.updateCampaign.mock.calls[0][1].allow_previously_emailed).toBe(true);
+    });
+  });
+
   it('saving the send-time-optimization toggle includes it in the PATCH', async () => {
     api.updateCampaign.mockResolvedValue({});
     renderPage();

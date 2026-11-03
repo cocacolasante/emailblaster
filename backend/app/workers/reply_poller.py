@@ -2,8 +2,9 @@
 
 A single Celery beat task fans out per connected account, calling the IMAP
 client to fetch recent messages (read-only, no Seen-flag mutation) and
-matching them to outbound leads.  Accounts whose last credential test
-failed are skipped so we don't hammer broken inboxes.
+matching them to outbound leads.  A matched reply takes the person out of
+every sequence (services/reply_stop.py).  Inboxes whose password was rejected
+are skipped so the provider doesn't lock the login; other failures retry.
 
 Dedup model: we store the last ``MAX_PROCESSED_IDS`` Message-IDs we've
 turned into REPLIED events on the account row
@@ -36,7 +37,7 @@ from app.models import (
     EmailEvent,
     EmailEventType,
 )
-from app.services import agent_core, imap_client, reply_sentiment
+from app.services import agent_core, imap_client, reply_sentiment, reply_stop
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,9 @@ async def poll_account_for_replies(
         # would keep getting re-parsed every poll cycle.
         if mid:
             newly_processed.append(mid)
+        # An out-of-office isn't a reply: it doesn't count and the sequence goes on.
+        if msg.get("auto_reply"):
+            continue
         lead = await imap_client.match_message_to_lead(session, msg, campaign_ids)
         if lead is None:
             continue
@@ -152,6 +156,7 @@ async def poll_account_for_replies(
             },
         ))
         replies_found += 1
+        await reply_stop.stop_on_reply(session, lead)
 
         # ---- agent pipeline (classify → log → remind → notify) ----
         # Runs ONLY for newly-processed messages: the fetcher already

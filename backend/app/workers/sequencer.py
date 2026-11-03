@@ -56,7 +56,7 @@ from app.models import (
     SequenceNodeKind,
     Suppression,
 )
-from app.services import brevo, integration_health
+from app.services import brevo, integration_health, previously_emailed, reply_stop
 from app.services.signature import render_email_with_signature, resolve_campaign_signature
 from app.services.linkedin import get_provider as get_linkedin_provider
 from app.services.linkedin.base import (
@@ -875,6 +875,8 @@ async def _send_email_step_async(lead_id: str, node_id: str) -> dict[str, Any]:
                 if reason == "suppressed":
                     # Permanent — advance the cursor (don't re-try forever).
                     return {"status": "suppressed"}
+                if reason in ("replied", "previously_emailed"):
+                    return {"status": reason}
                 # paused / scheduled / min_delay / hourly_cap / daily_cap /
                 # integration_error
                 deferred: dict[str, Any] = {
@@ -1090,6 +1092,8 @@ async def _send_linkedin_step_async(lead_id: str, node_id: str) -> dict[str, Any
                     "status": "suppressed",
                     "error": "lead email is on the suppression list",
                 }
+            if await reply_stop.has_replied(session, lead):
+                return {"status": "replied"}
 
             campaign = await session.get(Campaign, lead.campaign_id)
             if campaign is None or campaign.linkedin_account_id is None:
@@ -1455,7 +1459,7 @@ async def _record_execution_and_advance(
             mapped: LeadStepResult
             if status == "sent":
                 mapped = LeadStepResult.SENT
-            elif status in {"suppressed", "skipped", "paused", "rate_limited",
+            elif status in {"suppressed", "replied", "previously_emailed", "skipped", "paused", "rate_limited",
                             "misconfigured", "challenged", "restricted",
                             "not_found", "deferred", "transient_error"}:
                 mapped = LeadStepResult.SKIPPED
@@ -1581,6 +1585,17 @@ async def _record_execution_and_advance(
                                     cap_reset.isoformat(),
                                     next_window.isoformat() if next_window else "now",
                                 )
+                    elif status == "replied":
+                        # They answered: the whole sequence is over for them.
+                        state.status = LeadSequenceStatus.HALTED
+                        state.halt_reason = reply_stop.HALT_REASON
+                        state.next_run_at = None
+                        logger.info("Halting lead=%s — replied; sequence stopped", lead_id)
+                    elif status == "previously_emailed":
+                        # Skipped by this campaign; other campaigns unaffected.
+                        state.status = LeadSequenceStatus.HALTED
+                        state.halt_reason = previously_emailed.HALT_REASON
+                        state.next_run_at = None
                     elif status == "suppressed":
                         # The lead's email is on the suppression list —
                         # the WHOLE sequence is moot for them, not just

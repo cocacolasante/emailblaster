@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -58,6 +58,49 @@ class SuppressionResult:
     campaigns_affected: list[UUID] = field(default_factory=list)
 
 
+async def halt_address(
+    db: AsyncSession,
+    canonical: str,
+    reason_text: str,
+    *,
+    lead_id: UUID | None = None,
+) -> tuple[int, set[UUID], int]:
+    """Halt every ACTIVE enrollment for this address and pull its not-yet-sent
+    first emails out of the send queue (SENT/FAILED untouched).  ``lead_id`` also
+    covers that lead when it has no email (LinkedIn-only).  Caller commits.
+    Returns ``(enrollments halted, campaigns affected, leads marked)``."""
+    # func.lower so mixed-case legacy rows are caught too.
+    conditions = []
+    if canonical:
+        conditions.append(func.lower(Lead.email) == canonical)
+    if lead_id is not None:
+        conditions.append(Lead.id == lead_id)
+    if not conditions:
+        return 0, set(), 0
+    who = or_(*conditions)
+
+    state_rows = (await db.execute(
+        select(LeadSequenceState, Lead.campaign_id)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(who)
+        .where(LeadSequenceState.status == LeadSequenceStatus.ACTIVE)
+    )).all()
+    campaigns: set[UUID] = set()
+    for state, campaign_id in state_rows:
+        state.status = LeadSequenceStatus.HALTED
+        state.halt_reason = reason_text
+        state.next_run_at = None
+        if campaign_id is not None:
+            campaigns.add(campaign_id)
+
+    marked = await db.execute(
+        update(Lead)
+        .where(who, Lead.send_status.in_((SendStatus.PENDING, SendStatus.SCHEDULED)))
+        .values(send_status=SendStatus.SUPPRESSED)
+    )
+    return len(state_rows), campaigns, marked.rowcount or 0
+
+
 async def suppress_email(
     db: AsyncSession,
     email: str | None,
@@ -84,33 +127,10 @@ async def suppress_email(
     if existing is None:
         db.add(Suppression(email=canonical, reason=reason))
 
-    # 2) Halt every ACTIVE sequence state for any lead with this email
-    #    (func.lower so mixed-case legacy rows are caught too).
-    state_rows = (await db.execute(
-        select(LeadSequenceState, Lead.campaign_id)
-        .join(Lead, Lead.id == LeadSequenceState.lead_id)
-        .where(func.lower(Lead.email) == canonical)
-        .where(LeadSequenceState.status == LeadSequenceStatus.ACTIVE)
-    )).all()
-    campaigns: set[UUID] = set()
-    for state, campaign_id in state_rows:
-        state.status = LeadSequenceStatus.HALTED
-        state.halt_reason = reason_text
-        state.next_run_at = None
-        result.leads_halted += 1
-        if campaign_id is not None:
-            campaigns.add(campaign_id)
-
-    # 3) Pull not-yet-sent leads out of the send queue (SENT/FAILED untouched).
-    marked = await db.execute(
-        update(Lead)
-        .where(
-            func.lower(Lead.email) == canonical,
-            Lead.send_status.in_((SendStatus.PENDING, SendStatus.SCHEDULED)),
-        )
-        .values(send_status=SendStatus.SUPPRESSED)
+    # 2) + 3) Halt every enrollment for this email; pull unsent first emails.
+    result.leads_halted, campaigns, result.leads_marked_suppressed = await halt_address(
+        db, canonical, reason_text,
     )
-    result.leads_marked_suppressed = marked.rowcount or 0
 
     result.campaigns_affected = sorted(campaigns)
     return result

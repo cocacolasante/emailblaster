@@ -28,6 +28,7 @@ const DEFAULT_FORM = {
   sender_name: '',
   sender_email: '',
   research_mode: 'fast',
+  allow_previously_emailed: false,
   template_subject: '',
   template_body: '',
   sample_count: 5,
@@ -256,6 +257,21 @@ function Step1({ form, setForm, onSubmit, submitting, error, accounts, linkedinA
                 </div>
               </div>
             )}
+            <label className="mt-4 flex items-start gap-2 cursor-pointer" data-testid="allow-previously-emailed-toggle">
+              <input
+                type="checkbox"
+                checked={form.allow_previously_emailed}
+                onChange={(e) => update('allow_previously_emailed', e.target.checked)}
+                className="mt-0.5 w-4 h-4"
+              />
+              <span>
+                <span className="block text-sm font-medium text-slate-800">Include people already emailed</span>
+                <span className="block text-xs text-slate-500 mt-0.5">
+                  Off: anyone this workspace has emailed from another campaign is skipped.
+                  Turn on for follow-ups, existing customers or retargeting.
+                </span>
+              </span>
+            </label>
           </div>
         </div>
       </div>

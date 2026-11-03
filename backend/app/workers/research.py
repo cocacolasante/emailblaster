@@ -30,7 +30,7 @@ from app.models import (
     Suppression,
     canonical_email,
 )
-from app.services import apollo, hunter, research_cache, web_research
+from app.services import apollo, hunter, previously_emailed, research_cache, sequence_service, web_research
 from app.services.campaign_stop import stop_requested
 from app.workers.celery_app import celery_app
 from app.workers.compose import compose_lead
@@ -142,6 +142,23 @@ async def research_lead_async(lead_id: str) -> dict[str, Any]:
                     }
                     await session.commit()
                     return {"status": "skipped_suppressed"}
+
+            # Same reasoning: this campaign won't email someone the workspace
+            # has already emailed, so don't pay to research or compose for them.
+            # Only when it opens with an email: a LinkedIn-first campaign still
+            # works this lead, and its email steps hit the send gate later.
+            if (
+                await sequence_service.campaign_sends_legacy_first_email(session, campaign.id)
+                and await previously_emailed.should_skip(session, lead, campaign)
+            ):
+                lead.research_status = ResearchStatus.DONE
+                lead.compose_status = ComposeStatus.DONE
+                lead.research_data = {
+                    "quality": "low", "skipped": True, "previously_emailed": True,
+                }
+                await previously_emailed.skip_lead(session, lead)
+                await session.commit()
+                return {"status": "skipped_previously_emailed"}
 
             # Cooperative stop check — covers the window where the kill
             # races a redelivery: if the user hit Stop, the campaign's

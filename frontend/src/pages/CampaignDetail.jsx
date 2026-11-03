@@ -820,6 +820,7 @@ function ActivityTab({ campaignId, campaign }) {
               { label: 'Pending', value: activity.sequence_pending, color: 'text-amber-600' },
               { label: 'Completed', value: activity.sequence_completed, color: 'text-brand-700' },
               { label: 'Halted', value: activity.sequence_halted, color: 'text-red-600' },
+              { label: 'Already emailed', value: activity.sequence_skipped_emailed ?? 0, color: 'text-slate-500' },
               { label: 'Suppressed', value: activity.sequence_suppressed ?? 0, color: 'text-slate-500' },
             ].map(({ label, value, color }) => (
               <div key={label} className="text-center">
@@ -1297,6 +1298,7 @@ function ScheduleEditor({ campaignId, campaign }) {
     max_per_hour: campaign.max_per_hour ?? '',
     max_per_day: campaign.max_per_day ?? '',
     send_time_optimization: !!campaign.send_time_optimization,
+    allow_previously_emailed: !!campaign.allow_previously_emailed,
   };
   const [draft, setDraft] = useState(initial);
   const [open, setOpen] = useState(false);
@@ -1310,6 +1312,7 @@ function ScheduleEditor({ campaignId, campaign }) {
     || String(draft.max_per_hour) !== String(initial.max_per_hour)
     || String(draft.max_per_day) !== String(initial.max_per_day)
     || draft.send_time_optimization !== initial.send_time_optimization
+    || draft.allow_previously_emailed !== initial.allow_previously_emailed
   );
 
   const validationError = (() => {
@@ -1337,6 +1340,7 @@ function ScheduleEditor({ campaignId, campaign }) {
         schedule_timezone: draft.schedule_timezone,
         min_delay_seconds: Number(draft.min_delay_seconds),
         send_time_optimization: draft.send_time_optimization,
+        allow_previously_emailed: draft.allow_previously_emailed,
       };
       if (draft.max_per_hour !== '' && draft.max_per_hour !== null) {
         payload.max_per_hour = Number(draft.max_per_hour);
@@ -1515,6 +1519,26 @@ function ScheduleEditor({ campaignId, campaign }) {
               <span className="block text-xs text-slate-400 mt-0.5">
                 Defer each email to the recipient's optimal local hour (their
                 past opens, else weekday mornings) within the send window.
+              </span>
+            </span>
+          </label>
+
+          <label
+            className="flex items-start gap-2 border-t border-slate-200 pt-3 cursor-pointer"
+            data-testid="allow-previously-emailed-toggle"
+          >
+            <input
+              type="checkbox"
+              checked={draft.allow_previously_emailed}
+              onChange={(e) => setDraft({ ...draft, allow_previously_emailed: e.target.checked })}
+              className="mt-0.5 w-4 h-4"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-800">Include people already emailed</span>
+              <span className="block text-xs text-slate-400 mt-0.5">
+                Off: anyone this workspace has emailed from another campaign is
+                skipped. Turn on for follow-ups, existing customers or
+                retargeting. Leads already skipped stay skipped.
               </span>
             </span>
           </label>

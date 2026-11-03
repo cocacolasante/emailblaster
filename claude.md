@@ -674,6 +674,32 @@ sequences + LinkedIn outreach**, broken into M1–M5 in the roadmap.
   (`conftest.py`): compose's dev `REDIS_URL` used to leak in, and the test
   workspace id equals the bootstrap workspace's, so tests read/clobbered its
   live tenant-keyed keys.
+- **A reply ends the sequence, by address, across the workspace**
+  (`services/reply_stop.py`, positive or negative, email or LinkedIn).  Graph
+  edges can't be relied on: most are `always` or `days_since_entered_node`, so
+  repliers kept getting follow-ups, and retargets re-contacted them.
+  `stop_on_reply` runs when a reply is recorded (reply poller, LinkedIn poller
+  + webhook); `has_replied` runs at send time in `check_send_gates` and the
+  LinkedIn step, reason/status `replied`.  So a `replied` edge never fires a
+  further automated step.  One-off approved outreach is NOT gated.  Auto-replies
+  (`imap_client.is_auto_reply`: `Auto-Submitted`, "Automatic reply:") are dropped
+  by the poller: no REPLIED event, no stop.  `match_message_to_lead` falls back
+  to the sender's address, because answers to new-thread follow-ups match
+  neither our Message-ID nor the subject.  `email_events.occurred_at` on REPLIED
+  is DETECTION time, not when they replied; use the mailbox's Date to audit.
+- **Campaigns skip anyone the workspace already emailed**
+  (`services/previously_emailed.py`), unless `campaigns.allow_previously_emailed`
+  (0055) is on: the "Include people already emailed" toggle in the wizard and
+  the schedule editor, for follow-ups, customers and retargeting.  Retarget
+  campaigns set it themselves.  Checked before research (no tokens spent; only
+  when the campaign opens with an email, so LinkedIn-first leads stay) and
+  in `check_send_gates` (status `previously_emailed`), so "Add to campaign"
+  paths are covered.  Scoped to THAT campaign, unlike a reply: send SUPPRESSED,
+  enrollment halted, counted as `sequence_skipped_emailed`, not as an error.
+  Only stops a campaign STARTING on someone: once it has emailed them, its
+  follow-ups continue.  Email only; LinkedIn steps aren't gated.  Workspaces
+  never affect each other.  Turning the toggle on later doesn't revive leads
+  already skipped.
 - **A failed inbox poll retries itself.**  `reply_poller` used to skip any
   `last_test_status=FAILED` inbox until someone clicked Test, so one Gmail
   "read operation timed out" stopped reply tracking every day.  Now it keeps
@@ -772,7 +798,7 @@ per-workspace credentials, RLS) on branch `multitenancy`; see
 [`docs/tenancy.md`](docs/tenancy.md).  (2026-07-27: compacted this file;
 task-by-task history lives in [`docs/claude-history.md`](docs/claude-history.md).)_
 
-_Backend tests: **1424 passing**.  Frontend tests: **517 passing**._
+_Backend tests: **1456 passing**.  Frontend tests: **519 passing**._
 
 > **🚀 Starting on a fresh dev box?** Jump to
 > [Unipile setup runbook](#unipile-setup-runbook-any-computer-local-dev)

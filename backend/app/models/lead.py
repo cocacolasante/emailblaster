@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,6 +53,10 @@ class LinkedInConnectionStatus(str, enum.Enum):
 
 class Lead(TenantMixin, OwnedMixin, Base):
     __tablename__ = "leads"
+    __table_args__ = (
+        # "Has this address replied?" is asked on every send (reply_stop.py).
+        Index("ix_leads_tenant_lower_email", "tenant_id", text("lower(email)")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Nullable since migration 0025: a CRM lead can be created manually,

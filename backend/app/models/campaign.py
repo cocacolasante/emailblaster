@@ -105,6 +105,12 @@ class Campaign(TenantMixin, OwnedMixin, Base):
     send_time_optimization: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false",
     )
+    # Off: skip anyone the workspace has already emailed from another campaign.
+    # On: deliberately go back to them (follow-up, customers, retargeting).
+    # See services/previously_emailed.py.
+    allow_previously_emailed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     # Set by the bounce/spam circuit breaker.  UNLIKE auto_paused_until,
     # a breaker pause NEVER auto-resumes — a human must hit Resume (which
     # clears both fields).  reason is the human-readable trip explanation.

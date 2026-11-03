@@ -61,6 +61,7 @@ from app.schemas.lead import (
 )
 from app.services.sender import campaign_sender_ready, is_valid_sender_email
 from app.services.intent.enrich import enrich_draft_lead
+from app.services import previously_emailed
 from app.services import retarget as retarget_svc
 from app.services.sequence_service import ensure_default_sequence
 from app.services.signature import apply_signature, resolve_campaign_signature
@@ -234,6 +235,7 @@ async def create_campaign(
     if retarget_src is not None:
         # Retarget campaigns reuse existing engaged leads — no fresh research.
         data["research_mode"] = ResearchMode.NONE
+        data["allow_previously_emailed"] = True
     campaign = Campaign(**data)
     db.add(campaign)
     await db.flush()
@@ -303,6 +305,8 @@ async def update_campaign(
         # toggle mid-flight (no re-enqueue needed — the next gate pass
         # applies it).
         "send_time_optimization",
+        # Same: read at each gate pass.  Leads already skipped stay skipped.
+        "allow_previously_emailed",
     }
     if "owner_id" in updates:
         await ownership.set_owner(db, c, updates.pop("owner_id"))
@@ -1008,7 +1012,17 @@ async def get_campaign_activity(
             func.lower(Lead.email).in_(select(Suppression.email)),
         )
     )) or 0
-    sequence_halted = total_halted - sequence_suppressed
+    sequence_skipped_emailed = (await db.scalar(
+        select(func.count())
+        .select_from(LeadSequenceState)
+        .join(Lead, Lead.id == LeadSequenceState.lead_id)
+        .where(
+            Lead.campaign_id == campaign_id,
+            LeadSequenceState.status == LeadSequenceStatus.HALTED,
+            LeadSequenceState.halt_reason == previously_emailed.HALT_REASON,
+        )
+    )) or 0
+    sequence_halted = total_halted - sequence_suppressed - sequence_skipped_emailed
 
     # Recent sequence step executions (includes LinkedIn + follow-up emails).
     # Pull a wider window than we display so we can dedupe consecutive
@@ -1139,6 +1153,7 @@ async def get_campaign_activity(
         sequence_active=sequence_active,
         sequence_halted=sequence_halted,
         sequence_suppressed=sequence_suppressed,
+        sequence_skipped_emailed=sequence_skipped_emailed,
         sequence_completed=sequence_completed,
         sequence_pending=sequence_pending,
         next_window_at=next_window_at,

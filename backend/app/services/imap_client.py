@@ -77,6 +77,25 @@ def test_imap_connection(
 _SUBJECT_PREFIX_RE = re.compile(r"^\s*(?:re|fwd?|fw):\s*", re.IGNORECASE)
 
 
+_AUTO_SUBJECT_RE = re.compile(
+    r"^\s*(?:automatic reply|auto(?:matic)?[- ]?(?:reply|response)|autoreply|out of (?:the )?office)\b",
+    re.IGNORECASE,
+)
+
+
+def is_auto_reply(headers: Any) -> bool:
+    """An out-of-office or autoresponder rather than a person answering.
+    Headers first (RFC 3834 ``Auto-Submitted``), then the subject Outlook uses.
+    A plain "Re:" stays a reply even if it mentions being away: when unsure, the
+    safe mistake is to stop emailing someone."""
+    auto_submitted = (headers.get("Auto-Submitted", "") or "").strip().lower()
+    if auto_submitted and auto_submitted != "no":
+        return True
+    if headers.get("X-Autoreply") or headers.get("X-Autorespond"):
+        return True
+    return bool(_AUTO_SUBJECT_RE.match(str(headers.get("Subject", "") or "")))
+
+
 class FetchedMessage(TypedDict, total=False):
     uid: str
     message_id: str
@@ -89,6 +108,8 @@ class FetchedMessage(TypedDict, total=False):
     body_text: str
     # Parsed from the Date header; None when missing/unparseable.
     received_at: datetime | None
+    # Out-of-office / autoresponder, not something the person wrote.
+    auto_reply: bool
 
 
 # Classifier input cap — replies longer than this carry no extra signal
@@ -255,6 +276,7 @@ def fetch_recent_messages(
                         from_email=(from_email_addr or "").lower(),
                         body_text=body_text,
                         received_at=_parse_received_at(headers),
+                        auto_reply=is_auto_reply(headers),
                     ))
                     break
         return out
@@ -281,8 +303,11 @@ async def match_message_to_lead(
       1. In-Reply-To against Lead.brevo_message_id (scoped to campaign_ids)
       2. References (any matching brevo_message_id)
       3. Cleaned Subject + from-email match against Lead.composed_subject / Lead.email
+      4. The sender is a lead in these campaigns, whatever the subject: answers
+         to a new-thread follow-up carry neither our first Message-ID nor its
+         subject, and anyone writing in should stop getting automated email.
     """
-    from sqlalchemy import select  # local import to keep service-layer light
+    from sqlalchemy import func, select  # local import to keep service-layer light
 
     from app.models import Lead  # noqa: E402
 
@@ -320,6 +345,17 @@ async def match_message_to_lead(
         )
         if lead is not None:
             return lead
+
+    if msg["from_email"]:
+        return await session.scalar(
+            select(Lead)
+            .where(
+                func.lower(Lead.email) == msg["from_email"].lower(),
+                Lead.campaign_id.in_(campaign_ids),
+            )
+            .order_by(Lead.created_at.desc())
+            .limit(1)
+        )
 
     return None
 

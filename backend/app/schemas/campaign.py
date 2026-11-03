@@ -124,6 +124,7 @@ class CampaignCreate(BaseModel):
     send_time_optimization: bool = Field(
         default_factory=lambda: settings.SEND_TIME_OPTIMIZATION_DEFAULT
     )
+    allow_previously_emailed: bool = False
     # When set, this is a RETARGET campaign — engaged leads (clicked a link /
     # LinkedIn-connected) from the source are copied in on create, and
     # research_mode is forced to NONE (reuse existing leads).
@@ -166,6 +167,7 @@ class CampaignUpdate(BaseModel):
     max_per_day: int | None = Field(default=None, ge=1)
     min_delay_seconds: int | None = Field(default=None, ge=0)
     send_time_optimization: bool | None = None
+    allow_previously_emailed: bool | None = None
     owner_id: uuid.UUID | None = None
 
     _v_days = field_validator("schedule_days")(_validate_days)
@@ -245,6 +247,8 @@ class CampaignActivity(BaseModel):
     # Halted specifically because the email is suppressed (bounce/unsub/spam/
     # blocked) — terminal, not re-enrollable; counted apart from sequence_halted.
     sequence_suppressed: int = 0
+    # Skipped because another campaign already emailed them (not an error).
+    sequence_skipped_emailed: int = 0
     sequence_completed: int
     sequence_pending: int
     # When the send window next opens (None = open right now)
@@ -303,6 +307,7 @@ class CampaignResponse(BaseModel):
     # Deliverability guard: send-time optimization toggle + circuit-breaker
     # pause marker (auto_paused_at/reason; requires a human Resume).
     send_time_optimization: bool
+    allow_previously_emailed: bool = False
     auto_paused_at: datetime | None
     auto_pause_reason: str | None
     # Stamped on the most recent post-draft goal edit (NULL on campaigns
@@ -341,6 +346,7 @@ def campaign_to_dict(c: Any) -> dict[str, Any]:
         "status": c.status,
         "auto_paused_until": c.auto_paused_until,
         "send_time_optimization": c.send_time_optimization,
+        "allow_previously_emailed": c.allow_previously_emailed,
         "auto_paused_at": c.auto_paused_at,
         "auto_pause_reason": c.auto_pause_reason,
         "goal_updated_at": c.goal_updated_at,

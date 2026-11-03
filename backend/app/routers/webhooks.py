@@ -28,7 +28,7 @@ from app.models import (
     SuppressionReason,
     WebhookEvent,
 )
-from app.services import credentials
+from app.services import credentials, reply_stop
 from app.services.brevo_events import process_event
 from app.tenancy.context import tenant_scope
 from app.tenancy.worker import tenant_context, tenant_of
@@ -455,6 +455,7 @@ async def _handle_message_received(
         if isinstance(src, dict):
             ts_raw = ts_raw or src.get("timestamp") or src.get("created_at")
     lead.linkedin_last_reply_at = _parse_iso(ts_raw) or datetime.now(timezone.utc)
+    await reply_stop.stop_on_reply(db, lead)
     # First inbound message implies 1st-degree connection.
     if lead.linkedin_connection_status != LinkedInConnectionStatus.CONNECTED:
         lead.linkedin_connection_status = LinkedInConnectionStatus.CONNECTED

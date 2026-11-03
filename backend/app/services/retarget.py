@@ -111,6 +111,7 @@ async def create_retarget_campaign(
         sender_email=source.sender_email,
         connected_account_id=source.connected_account_id,
         research_mode=ResearchMode.NONE,
+        allow_previously_emailed=True,  # re-contacting them is the point
         schedule_days=list(source.schedule_days or []),
         schedule_time_start=source.schedule_time_start,
         schedule_time_end=source.schedule_time_end,
@@ -173,6 +174,8 @@ async def retarget_into_campaign(
     stamping each with its retarget context.  Returns (result, engaged_count).
     Dedup (no duplicate emails in the target) is enforced by
     add_leads_to_campaign."""
+    # Also covers retargeting into an existing campaign the user picked.
+    target.allow_previously_emailed = True
     pairs = await engaged_leads(db, source.id)
     rdbs: dict[uuid.UUID, dict] = {}
     for lead, ctx in pairs:

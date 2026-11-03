@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -191,6 +191,20 @@ describe('Submitting step 1', () => {
     const search = screen.getByTestId('location-search').textContent;
     expect(search).toContain('id=new-campaign-1');
     expect(search).toContain('step=2');
+  });
+
+  it('skips people already emailed by default; the toggle goes in the payload', async () => {
+    const user = userEvent.setup();
+    campaignsApi.createCampaign.mockResolvedValue({ id: 'new-campaign-1' });
+    renderPage();
+    await screen.findByText(/campaign details/i);
+    await fillForm(user);
+    const box = within(screen.getByTestId('allow-previously-emailed-toggle')).getByRole('checkbox');
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    fireEvent.click(screen.getByTestId('step1-submit'));
+    await waitFor(() => expect(campaignsApi.createCampaign).toHaveBeenCalled());
+    expect(campaignsApi.createCampaign.mock.calls[0][0].allow_previously_emailed).toBe(true);
   });
 
   it('falls back to step 1 when the URL names a later step but no campaign', async () => {
